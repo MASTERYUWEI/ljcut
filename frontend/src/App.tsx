@@ -1325,7 +1325,7 @@ export default function App() {
                 return; // 不再 requestAnimationFrame
             }
             // 播放頭位置
-            if (ph) ph.style.left = `${tl * pixelsPerSecond + LABEL_W}px`;
+            if (ph) ph.style.transform = `translateX(${tl * pixelsPerSecond + LABEL_W}px)`;
             // 自動捲動
             if (el && duration > 0) {
                 const pos = tl * pixelsPerSecond + LABEL_W;
@@ -1993,7 +1993,7 @@ export default function App() {
                                     <div
                                         ref={playheadRef}
                                         className={`timeline-playhead ${isDraggingPlayhead ? 'dragging' : ''}`}
-                                        style={{ left: currentTime * pixelsPerSecond + LABEL_W }}
+                                        style={{ left: 0, transform: `translateX(${currentTime * pixelsPerSecond + LABEL_W}px)` }}
                                         onMouseDown={handlePlayheadMouseDown}
                                     />
                                 )}
