@@ -19,6 +19,10 @@ if not exist "frontend\node_modules" (
     cmd /c "cd frontend && npm install"
 )
 
+REM Build the screen-recorder helper exe (tauri dev does not build extra bins)
+echo [LJCUT] Building screen recorder helper...
+cargo build --manifest-path src-tauri\Cargo.toml --bin ljcut-recorder
+
 REM Start the Tauri desktop app.
 REM   - Frontend Vite dev server is auto-started via tauri.conf.json beforeDevCommand
 REM   - Python sidecar is auto-started by Rust on launch and stopped on exit
