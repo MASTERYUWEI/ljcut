@@ -14,6 +14,7 @@ for _nvidia_dir in glob.glob(os.path.join(_venv_site, "nvidia", "*", "bin")):
 import json
 import uuid
 import shutil
+import threading
 import subprocess
 from pathlib import Path
 from contextlib import asynccontextmanager
@@ -35,15 +36,69 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 OUTPUT_DIR.mkdir(exist_ok=True)
 
 transcribe_svc: TranscribeService | None = None
+_model_lock = threading.Lock()
+
+
+def _ensure_model() -> TranscribeService:
+    """惰性載入 Whisper 模型（thread-safe）。首次呼叫會阻塞直到載入完成。"""
+    global transcribe_svc
+    if transcribe_svc is None:
+        with _model_lock:
+            if transcribe_svc is None:
+                print("🔄 載入 faster-whisper 模型（首次需要下載）...", flush=True)
+                transcribe_svc = TranscribeService()
+                print("✅ 模型已就緒", flush=True)
+    return transcribe_svc
+
+
+def _pid_alive(pid: int) -> bool:
+    """跨平台檢查 pid 是否存活"""
+    if os.name == "nt":
+        import ctypes
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        STILL_ACTIVE = 259
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            return False
+        code = ctypes.c_ulong()
+        ok = kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
+        kernel32.CloseHandle(handle)
+        return bool(ok) and code.value == STILL_ACTIVE
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def _start_parent_watchdog():
+    """父進程（Tauri）消失時自我終止，避免 dev 重建留下孤兒 sidecar"""
+    ppid_str = os.environ.get("LJCUT_PARENT_PID")
+    if not ppid_str:
+        return
+    try:
+        ppid = int(ppid_str)
+    except ValueError:
+        return
+    import time
+
+    def _watch():
+        while True:
+            if not _pid_alive(ppid):
+                print("🔌 父進程已結束，sidecar 自我終止", flush=True)
+                os._exit(0)
+            time.sleep(2)
+
+    threading.Thread(target=_watch, daemon=True).start()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """啟動時載入 Whisper 模型"""
-    global transcribe_svc
-    print("🔄 載入 faster-whisper 模型（首次需要下載）...")
-    transcribe_svc = TranscribeService()
-    print("✅ 模型已就緒")
+    # 父進程看門狗：Tauri 關閉/重建時自動收掉自己
+    _start_parent_watchdog()
+    # 背景預熱模型，不阻塞 HTTP 服務啟動 → 前端可立即連線（顯示載入中）
+    threading.Thread(target=_ensure_model, daemon=True).start()
     yield
     print("👋 關閉服務")
 
@@ -102,8 +157,7 @@ async def upload_video(file: UploadFile = File(...)):
 @app.post("/api/transcribe/{file_id}")
 async def transcribe(file_id: str, language: str = Form(default="zh")):
     """語音辨識"""
-    if not transcribe_svc:
-        raise HTTPException(503, "模型尚未載入")
+    svc = _ensure_model()  # 惰性載入；模型還沒好時會在此阻塞直到就緒
 
     # 找上傳的檔案
     matches = list(UPLOAD_DIR.glob(f"{file_id}.*"))
@@ -117,7 +171,7 @@ async def transcribe(file_id: str, language: str = Form(default="zh")):
     FFmpegService.extract_audio(video_path, audio_path)
 
     # 執行辨識
-    result = transcribe_svc.transcribe(audio_path, language=language)
+    result = svc.transcribe(audio_path, language=language)
 
     # 清理暫存音頻
     if os.path.exists(audio_path) and not video_path.endswith(".wav"):
@@ -132,52 +186,6 @@ async def export_srt(file_id: str, segments: list = Body(default=[])):
     srt_path = OUTPUT_DIR / f"{file_id}.srt"
     SubtitleService.segments_to_srt(segments, str(srt_path))
     return FileResponse(str(srt_path), filename=f"{file_id}.srt", media_type="text/plain")
-
-
-@app.post("/api/burn-subtitle/{file_id}")
-async def burn_subtitle(file_id: str, body: dict = Body(default={})):
-    """字幕燒入影片 — 接收 segments + style 執行燒入，返回下載連結"""
-    segments = body.get("segments", [])
-    style = body.get("style", {})
-    speed = float(body.get("speed", 1.0))
-
-    matches = list(UPLOAD_DIR.glob(f"{file_id}.*"))
-    matches = [m for m in matches if not m.name.endswith(".wav")]
-    if not matches:
-        raise HTTPException(404, f"找不到檔案: {file_id}")
-
-    video_path = str(matches[0])
-    srt_path = str(OUTPUT_DIR / f"{file_id}.srt")
-
-    # 從 segments 產生 SRT（考慮倍速縮放時間軸）
-    if segments:
-        if speed != 1.0:
-            scaled_segments = []
-            for seg in segments:
-                scaled_segments.append({
-                    **seg,
-                    "start": seg["start"] / speed,
-                    "end": seg["end"] / speed,
-                })
-            SubtitleService.segments_to_srt(scaled_segments, srt_path)
-        else:
-            SubtitleService.segments_to_srt(segments, srt_path)
-    elif not os.path.exists(srt_path):
-        raise HTTPException(400, "沒有字幕資料，請先辨識或提供 segments")
-
-    output_path = str(OUTPUT_DIR / f"{file_id}_subtitled.mp4")
-
-    try:
-        FFmpegService.burn_subtitles(video_path, srt_path, output_path, style=style, speed=speed)
-    except subprocess.CalledProcessError as e:
-        error_msg = e.stderr.decode("utf-8", errors="replace") if e.stderr else str(e)
-        raise HTTPException(500, f"FFmpeg 燒入失敗: {error_msg}")
-
-    return {
-        "success": True,
-        "download_url": f"/api/download/{file_id}",
-        "preview_url": f"/outputs/{file_id}_subtitled.mp4",
-    }
 
 
 @app.post("/api/export-video/{file_id}")

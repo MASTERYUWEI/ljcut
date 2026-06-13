@@ -21,11 +21,23 @@ class TranscribeService:
         - float16: 3090 支援，省 VRAM
         """
         print(f"📦 模型: {model_size}")
-        self.model = WhisperModel(
-            model_size,
-            device=device,
-            compute_type=compute_type,
-        )
+        # 優先嘗試 CUDA(float16)，失敗自動退回 CPU(int8)，避免無 GPU/驅動異常時整個服務啟動失敗
+        try:
+            self.model = WhisperModel(
+                model_size,
+                device=device,
+                compute_type=compute_type,
+            )
+            self.device = device
+            print(f"✅ 使用 {device} ({compute_type})")
+        except Exception as e:
+            print(f"⚠️ {device} 初始化失敗（{e}），改用 CPU(int8)")
+            self.model = WhisperModel(
+                model_size,
+                device="cpu",
+                compute_type="int8",
+            )
+            self.device = "cpu"
         self.model_size = model_size
 
     def transcribe(

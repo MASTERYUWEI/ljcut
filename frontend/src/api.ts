@@ -11,16 +11,49 @@ async function tauriInvoke<T>(cmd: string, args?: Record<string, unknown>): Prom
     return invoke<T>(cmd, args);
 }
 
-// ── Vite proxy 或直接後端 ──
-const BASE = '';
-
 /**
- * 混合模式策略：
- * - 上傳/辨識/波形/AI 等 → 透過 fetch 呼叫 Python 後端（Vite proxy 轉發）
- * - 原生功能（檔案對話框）→ Tauri plugin
- * - 未來完全遷移到 Rust 時，切換 USE_RUST_BACKEND = true
+ * 後端 base URL。
+ * - Tauri 桌面：Python sidecar 由 Rust 啟動在隨機 port，啟動後向 Rust 查詢，
+ *   組成 http://127.0.0.1:<port>，直連後端（不經 Vite proxy）。
+ * - 純瀏覽器 dev：留空字串，走 Vite proxy 轉發到 :8000。
  */
-const USE_RUST_BACKEND = false;
+let resolvedBase = '';
+
+/** 在 App 掛載前呼叫一次：解析後端 port 並等待後端就緒 */
+export async function initApiBase(): Promise<void> {
+    if (!IS_TAURI) {
+        resolvedBase = ''; // Vite proxy
+        return;
+    }
+    // 1. 向 Rust 取得 sidecar port（setup 可能稍慢，重試）
+    let port: number | null = null;
+    for (let i = 0; i < 50 && port == null; i++) {
+        try {
+            port = await tauriInvoke<number | null>('get_backend_port');
+        } catch { /* 指令尚未就緒 */ }
+        if (port == null) await new Promise(r => setTimeout(r, 200));
+    }
+    if (port == null) {
+        console.error('無法取得後端 port，sidecar 可能未啟動');
+        return;
+    }
+    resolvedBase = `http://127.0.0.1:${port}`;
+
+    // 2. 等待 FastAPI 真的可連（best-effort，最多 ~15s）
+    for (let i = 0; i < 75; i++) {
+        try {
+            const res = await fetch(`${resolvedBase}/health`);
+            if (res.ok) { console.log(`✅ 後端就緒: ${resolvedBase}`); return; }
+        } catch { /* 尚未起來 */ }
+        await new Promise(r => setTimeout(r, 200));
+    }
+    console.warn(`後端 ${resolvedBase} 健康檢查逾時，仍嘗試使用`);
+}
+
+/** 取得目前後端 base URL（已解析） */
+export function getBase(): string {
+    return resolvedBase;
+}
 
 export const api = {
     /** 上傳影片 */
@@ -28,7 +61,7 @@ export const api = {
         // 無論是否 Tauri，都用 fetch 上傳到 Python 後端
         const form = new FormData();
         form.append('file', file);
-        const res = await fetch(`${BASE}/api/upload`, { method: 'POST', body: form });
+        const res = await fetch(`${resolvedBase}/api/upload`, { method: 'POST', body: form });
         if (!res.ok) throw new Error(await res.text());
         return res.json();
     },
@@ -46,11 +79,6 @@ export const api = {
         });
         if (!selected) return null;
 
-        if (USE_RUST_BACKEND) {
-            const filePath = typeof selected === 'string' ? selected : (selected as any).path || String(selected);
-            return tauriInvoke<UploadResult>('upload_file', { path: filePath });
-        }
-
         // 使用 fetch 讀取選中的檔案並上傳到 Python 後端
         const filePath = typeof selected === 'string' ? selected : String(selected);
         const response = await fetch(`https://tauri.localhost/` + filePath);
@@ -62,12 +90,9 @@ export const api = {
 
     /** 語音辨識 */
     async transcribe(fileId: string, language = 'zh'): Promise<TranscribeResult> {
-        if (USE_RUST_BACKEND) {
-            return tauriInvoke<TranscribeResult>('transcribe', { fileId, language });
-        }
         const form = new FormData();
         form.append('language', language);
-        const res = await fetch(`${BASE}/api/transcribe/${fileId}`, { method: 'POST', body: form });
+        const res = await fetch(`${resolvedBase}/api/transcribe/${fileId}`, { method: 'POST', body: form });
         if (!res.ok) throw new Error(await res.text());
         return res.json();
     },
@@ -80,7 +105,7 @@ export const api = {
         // Tauri 桌面模式：透過後端產生 SRT，再複製到目標路徑
         if (IS_TAURI) {
             // 1. 先透過後端產生 SRT 到 ./outputs
-            const res = await fetch(`${BASE}/api/export/srt/${fileId}`, {
+            const res = await fetch(`${resolvedBase}/api/export/srt/${fileId}`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(segments),
@@ -113,7 +138,7 @@ export const api = {
         }
 
         // Web 模式：blob 下載
-        const res = await fetch(`${BASE}/api/export/srt/${fileId}`, {
+        const res = await fetch(`${resolvedBase}/api/export/srt/${fileId}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(segments),
@@ -126,22 +151,6 @@ export const api = {
         a.download = srtFileName;
         a.click();
         URL.revokeObjectURL(url);
-    },
-
-    /** 字幕燒入（舊 API，保留向後相容） */
-    async burnSubtitle(
-        fileId: string,
-        segments: Segment[],
-        style?: Record<string, unknown>,
-        speed?: number,
-    ): Promise<{ download_url: string; preview_url: string; output_path?: string }> {
-        const res = await fetch(`${BASE}/api/burn-subtitle/${fileId}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ segments, style, speed: speed || 1.0 }),
-        });
-        if (!res.ok) throw new Error(await res.text());
-        return res.json();
     },
 
     /** 匯出影片（含字幕）— 含存檔對話框 + 進度回報 */
@@ -174,7 +183,7 @@ export const api = {
         }
 
         // 2. POST 到 SSE 端點
-        const res = await fetch(`${BASE}/api/export-video/${fileId}`, {
+        const res = await fetch(`${resolvedBase}/api/export-video/${fileId}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -246,7 +255,7 @@ export const api = {
         }
 
         // 2. POST 到 SSE 端點
-        const res = await fetch(`${BASE}/api/export-timeline`, {
+        const res = await fetch(`${resolvedBase}/api/export-timeline`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -299,27 +308,14 @@ export const api = {
 
     /** AI 狀態檢查 */
     async aiStatus(): Promise<{ ollama_running: boolean; model_available: boolean; model_name: string }> {
-        if (USE_RUST_BACKEND) {
-            const result = await tauriInvoke<{ available: boolean; model?: string; provider?: string }>(
-                'ai_status',
-            );
-            return {
-                ollama_running: result.available,
-                model_available: result.available,
-                model_name: result.model || '',
-            };
-        }
-        const res = await fetch(`${BASE}/api/ai/status`);
+        const res = await fetch(`${resolvedBase}/api/ai/status`);
         if (!res.ok) return { ollama_running: false, model_available: false, model_name: '' };
         return res.json();
     },
 
     /** AI 生成文案 */
     async aiGenerate(segments: Segment[], promptType: string): Promise<string> {
-        if (USE_RUST_BACKEND) {
-            return tauriInvoke<string>('ai_generate', { segments, promptType });
-        }
-        const res = await fetch(`${BASE}/api/ai/generate`, {
+        const res = await fetch(`${resolvedBase}/api/ai/generate`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ segments, prompt_type: promptType }),
@@ -331,10 +327,7 @@ export const api = {
 
     /** 取得音頻波形 peak 數據 */
     async getWaveform(fileId: string): Promise<number[]> {
-        if (USE_RUST_BACKEND) {
-            return tauriInvoke<number[]>('get_waveform', { fileId });
-        }
-        const res = await fetch(`${BASE}/api/waveform/${fileId}`);
+        const res = await fetch(`${resolvedBase}/api/waveform/${fileId}`);
         if (!res.ok) return [];
         const data = await res.json();
         return data.peaks || [];
@@ -342,7 +335,14 @@ export const api = {
 
     /** 取得影片首幀縮圖 URL */
     getThumbnailUrl(fileId: string): string {
-        return `${BASE}/api/thumbnail/${fileId}`;
+        return `${resolvedBase}/api/thumbnail/${fileId}`;
+    },
+
+    /** 將後端相對路徑（/uploads/..., /outputs/...）補成可直接存取的絕對 URL */
+    mediaUrl(path: string): string {
+        if (!path) return path;
+        if (/^https?:\/\//.test(path)) return path; // 已是絕對 URL
+        return `${resolvedBase}${path}`;
     },
 
     /** 是否為 Tauri 桌面模式 */

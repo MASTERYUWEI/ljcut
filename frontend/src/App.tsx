@@ -337,7 +337,7 @@ export default function App() {
             const item: MediaItem = {
                 id: result.file_id,
                 filename: result.filename,
-                url: result.url,
+                url: api.mediaUrl(result.url),
                 info: result.info,
                 waveformPeaks: [],
                 thumbnailUrl: api.getThumbnailUrl(result.file_id),
@@ -400,10 +400,10 @@ export default function App() {
                             const item: MediaItem = {
                                 id: result.file_id,
                                 filename: result.filename,
-                                url: result.url,
+                                url: api.mediaUrl(result.url),
                                 info: result.info,
                                 waveformPeaks: [],
-                                thumbnailUrl: result.thumbnail_url,
+                                thumbnailUrl: api.mediaUrl(result.thumbnail_url),
                             };
                             addMedia(item);
                             // 背景載入波形

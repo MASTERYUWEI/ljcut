@@ -2,7 +2,18 @@
 
 import json
 import subprocess
+from fractions import Fraction
 from pathlib import Path
+
+
+def _parse_frame_rate(fr: str) -> float:
+    """安全解析 ffprobe 的 r_frame_rate（如 '30000/1001'），取代不安全的 eval()"""
+    try:
+        if "/" in fr:
+            return round(float(Fraction(fr)), 3)
+        return round(float(fr), 3)
+    except (ValueError, ZeroDivisionError):
+        return 0.0
 
 
 class FFmpegService:
@@ -30,7 +41,7 @@ class FFmpegService:
                 if stream["codec_type"] == "video":
                     info["width"] = stream.get("width", 0)
                     info["height"] = stream.get("height", 0)
-                    info["fps"] = eval(stream.get("r_frame_rate", "0/1")) if "/" in stream.get("r_frame_rate", "") else float(stream.get("r_frame_rate", 0))
+                    info["fps"] = _parse_frame_rate(stream.get("r_frame_rate", "0/1"))
                     info["video_codec"] = stream.get("codec_name", "")
                 elif stream["codec_type"] == "audio":
                     info["audio_codec"] = stream.get("codec_name", "")
@@ -66,127 +77,6 @@ class FFmpegService:
             output_path,
         ]
         subprocess.run(cmd, capture_output=True, timeout=300, check=True)
-        return output_path
-
-    @staticmethod
-    def burn_subtitles(
-        video_path: str,
-        srt_path: str,
-        output_path: str,
-        use_nvenc: bool = True,
-        style: dict | None = None,
-        speed: float = 1.0,
-    ) -> str:
-        """
-        將 SRT 字幕燒入影片
-
-        Args:
-            video_path: 輸入影片
-            srt_path: SRT 字幕檔
-            output_path: 輸出影片
-            use_nvenc: 是否使用 NVIDIA 硬體編碼（3090 支援）
-            style: 字幕樣式設定 dict
-        """
-        if style is None:
-            style = {}
-
-        # 使用絕對路徑，FFmpeg subtitles 濾鏡需要特殊轉義
-        srt_abs = str(Path(srt_path).resolve())
-        # Windows: C:\Users\... → C\\:/Users/...
-        # 先換反斜線為正斜線，再轉義冒號
-        srt_escaped = srt_abs.replace("\\", "/").replace(":", "\\:")
-
-        # 動態組合字幕樣式
-        font_name = style.get("fontName", "Microsoft JhengHei")
-        font_size = int(style.get("fontSize", 20))
-        outline_w = int(style.get("outlineWidth", 2))
-        bg_enabled = bool(style.get("bgEnabled", False))
-        bg_opacity = int(style.get("bgOpacity", 60))  # 0-100
-        pos_y = int(style.get("posY", 90))  # 0-100, 0=top, 100=bottom
-
-        # 映射 posY → ASS Alignment + MarginV
-        # posY: 0=頂部, 50=中間, 100=底部
-        # 統一使用 Alignment=2 (下方)，用 MarginV 控制垂直位置
-        # posY=90 → 離底部 10% → MarginV 小
-        # posY=10 → 離底部 90% → MarginV 大
-        alignment = 2  # 底部對齊
-        margin_v = int((100 - pos_y) * 10)  # 0~1000 像素
-
-        parts = [
-            f"FontName={font_name}",
-            f"FontSize={font_size}",
-            "PrimaryColour=&H00FFFFFF",
-            "OutlineColour=&H00000000",
-            f"Outline={outline_w}",
-            "Shadow=1",
-            f"Alignment={alignment}",
-            f"MarginV={margin_v}",
-        ]
-
-        if bg_enabled:
-            # ASS BackColour alpha: 00=不透明, FF=全透明
-            # 用戶 bgOpacity 0=全透明, 100=不透明
-            alpha = int(255 * (1 - bg_opacity / 100))
-            alpha_hex = f"{alpha:02X}"
-            parts.append("BorderStyle=4")  # 不透明背景框
-            parts.append(f"BackColour=&H{alpha_hex}000000")
-            parts.append("Shadow=0")  # 背景模式下關閉陰影
-
-        subtitle_style = ",".join(parts)
-
-        codec_args = []
-        if use_nvenc:
-            codec_args = ["-c:v", "h264_nvenc", "-preset", "p4", "-b:v", "8M"]
-        else:
-            codec_args = ["-c:v", "libx264", "-preset", "medium", "-crf", "23"]
-
-        vf = f"subtitles='{srt_escaped}':force_style='{subtitle_style}'"
-
-        # 加速濾鏡
-        if speed != 1.0:
-            # 先 setpts 壓縮影片，再用 subtitles 疊字幕（SRT 時間已調整）
-            vf_speed = f"[0:v]setpts=PTS/{speed},{vf}[v]"
-        
-        # 音訊濾鏡 — atempo 範圍 0.5~2.0，超過需串聯
-        af = None
-        if speed != 1.0:
-            atempo_parts = []
-            remaining = speed
-            while remaining > 2.0:
-                atempo_parts.append("atempo=2.0")
-                remaining /= 2.0
-            if remaining < 0.5:
-                remaining = 0.5
-            atempo_parts.append(f"atempo={remaining:.4f}")
-            af = ",".join(atempo_parts)
-
-        cmd = [
-            "ffmpeg",
-            "-y",
-            "-i", video_path,
-        ]
-
-        if speed != 1.0:
-            cmd += ["-filter_complex", f"{vf_speed};[0:a]{af}[a]", "-map", "[v]", "-map", "[a]"]
-        else:
-            cmd += ["-vf", vf]
-
-        cmd += [
-            *codec_args,
-            "-c:a", "aac",
-            "-b:a", "192k",
-            "-ar", "48000",
-            output_path,
-        ]
-
-        print(f"🎬 FFmpeg 燒入指令: {' '.join(cmd)}")
-        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-        result = subprocess.run(cmd, capture_output=True, timeout=600)
-        if result.returncode != 0:
-            stderr = result.stderr.decode("utf-8", errors="replace")
-            print(f"❌ FFmpeg 錯誤:\n{stderr}")
-            raise subprocess.CalledProcessError(result.returncode, cmd, stderr=result.stderr)
-        print(f"✅ 燒入完成: {output_path}")
         return output_path
 
     @staticmethod

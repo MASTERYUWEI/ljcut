@@ -13,15 +13,9 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
+        .manage(commands::sidecar::SidecarState::default())
         .invoke_handler(tauri::generate_handler![
-            commands::upload::upload_file,
-            commands::transcribe::transcribe,
-            commands::subtitle::export_srt,
-            commands::subtitle::burn_subtitle,
-            commands::ffmpeg::get_waveform,
-            commands::ffmpeg::get_thumbnail,
-            commands::ai::ai_status,
-            commands::ai::ai_generate,
+            commands::sidecar::get_backend_port,
             commands::recorder::list_audio_devices,
             commands::recorder::set_rec_options,
             commands::recorder::start_region_select,
@@ -33,9 +27,20 @@ pub fn run() {
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(data_dir.join("uploads")).ok();
             std::fs::create_dir_all(data_dir.join("outputs")).ok();
+
+            // 啟動 Python sidecar（FastAPI）
+            let handle = app.handle().clone();
+            commands::sidecar::start_sidecar(&handle);
+
             log::info!("✅ LJCUT 已啟動 — data dir: {}", data_dir.display());
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            // app 結束時收掉 sidecar
+            if let tauri::RunEvent::ExitRequested { .. } = event {
+                commands::sidecar::stop_sidecar(app_handle);
+            }
+        });
 }
