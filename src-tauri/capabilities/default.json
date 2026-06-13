@@ -1,0 +1,40 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "LJCUT default permissions",
+  "windows": [
+    "main",
+    "overlay"
+  ],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:event:allow-emit",
+    "core:event:allow-listen",
+    "core:window:default",
+    "core:window:allow-close",
+    "core:window:allow-outer-position",
+    "core:window:allow-outer-size",
+    "core:window:allow-start-dragging",
+    "core:window:allow-start-resize-dragging",
+    "core:window:allow-set-position",
+    "core:window:allow-set-size",
+    "core:window:allow-current-monitor",
+    "core:window:allow-inner-position",
+    "core:window:allow-inner-size",
+    "dialog:default",
+    "dialog:allow-open",
+    "dialog:allow-save",
+    "fs:default",
+    "fs:allow-read",
+    "fs:allow-write",
+    "fs:allow-exists",
+    "fs:allow-mkdir",
+    "fs:allow-copy-file",
+    "fs:allow-write-text-file",
+    "fs:allow-appdata-read-recursive",
+    "fs:allow-appdata-write-recursive",
+    "shell:default",
+    "shell:allow-open"
+  ]
+}

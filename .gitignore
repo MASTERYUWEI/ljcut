@@ -1,0 +1,27 @@
+# ── Python ──
+backend/venv/
+**/__pycache__/
+*.pyc
+backend/.env
+.env
+
+# ── Node ──
+frontend/node_modules/
+frontend/dist/
+
+# ── Rust / Tauri ──
+src-tauri/target/
+src-tauri/gen/
+
+# ── 產生物 / 媒體（不進版控）──
+backend/uploads/
+backend/outputs/
+*.mp4
+*.exe
+*.wav
+*.srt
+*.ass
+
+# ── OS ──
+Thumbs.db
+.DS_Store

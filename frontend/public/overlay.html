@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="utf-8">
+    <title>LJCUT 錄影選區</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        html,
+        body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: transparent;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+
+        /* 整個視窗可拖曳移動（handle 和 control-panel 會 override） */
+        .drag-area {
+            position: fixed;
+            top: 12px;
+            left: 12px;
+            right: 12px;
+            bottom: 12px;
+            -webkit-app-region: drag;
+            cursor: grab;
+            z-index: 1;
+        }
+
+        .drag-area:active {
+            cursor: grabbing;
+        }
+
+        /* 邊框：選區時綠色虛線，錄影時紅色實線 */
+        .overlay-border {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            border: 3px dashed #7cb342;
+            pointer-events: none;
+            z-index: 2;
+            transition: border-color 0.3s, border-style 0.3s;
+        }
+
+        .overlay-border.recording {
+            border: 3px solid #ff3b30;
+        }
+
+        /* ── 8 個 Resize Handles ── */
+        .handle {
+            position: fixed;
+            width: 10px;
+            height: 10px;
+            background: #c5e156;
+            border: 1px solid #8a9a3c;
+            z-index: 20;
+            -webkit-app-region: no-drag;
+            transition: background 0.3s, border-color 0.3s;
+        }
+
+        .handle:hover {
+            background: #d4ef6b;
+        }
+
+        .handle.recording {
+            background: #ff3b30;
+            border-color: #cc2a22;
+        }
+
+        /* 四角 */
+        .handle.nw {
+            top: -2px;
+            left: -2px;
+            cursor: nw-resize;
+        }
+
+        .handle.ne {
+            top: -2px;
+            right: -2px;
+            cursor: ne-resize;
+        }
+
+        .handle.sw {
+            bottom: -2px;
+            left: -2px;
+            cursor: sw-resize;
+        }
+
+        .handle.se {
+            bottom: -2px;
+            right: -2px;
+            cursor: se-resize;
+        }
+
+        /* 四邊中點 */
+        .handle.n {
+            top: -2px;
+            left: 50%;
+            transform: translateX(-50%);
+            cursor: n-resize;
+        }
+
+        .handle.s {
+            bottom: -2px;
+            left: 50%;
+            transform: translateX(-50%);
+            cursor: s-resize;
+        }
+
+        .handle.w {
+            left: -2px;
+            top: 50%;
+            transform: translateY(-50%);
+            cursor: w-resize;
+        }
+
+        .handle.e {
+            right: -2px;
+            top: 50%;
+            transform: translateY(-50%);
+            cursor: e-resize;
+        }
+
+        /* ── 中央控制面板 ── */
+        .control-panel {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0, 0, 0, 0.85);
+            backdrop-filter: blur(12px);
+            border-radius: 16px;
+            padding: 24px 32px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 16px;
+            z-index: 30;
+            min-width: 240px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+            -webkit-app-region: no-drag;
+        }
+
+        .control-panel.hidden {
+            display: none;
+        }
+
+        .size-display {
+            font-family: 'Segoe UI', 'Microsoft JhengHei', sans-serif;
+            font-size: 28px;
+            font-weight: 700;
+            color: #fff;
+            letter-spacing: 2px;
+        }
+
+        .size-label {
+            font-family: 'Segoe UI', 'Microsoft JhengHei', sans-serif;
+            font-size: 12px;
+            color: rgba(255, 255, 255, 0.5);
+            margin-top: -8px;
+        }
+
+        .hint {
+            font-family: 'Microsoft JhengHei', sans-serif;
+            font-size: 13px;
+            color: rgba(255, 255, 255, 0.6);
+            text-align: center;
+            line-height: 1.6;
+        }
+
+        .btn-row {
+            display: flex;
+            gap: 12px;
+            width: 100%;
+        }
+
+        .btn {
+            flex: 1;
+            padding: 12px 0;
+            border: none;
+            border-radius: 10px;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            font-family: 'Microsoft JhengHei', sans-serif;
+            transition: all 0.15s ease;
+        }
+
+        .btn-record {
+            background: #ff3b30;
+            color: #fff;
+        }
+
+        .btn-record:hover {
+            background: #e0342b;
+            transform: scale(1.03);
+        }
+
+        .btn-cancel {
+            background: rgba(255, 255, 255, 0.12);
+            color: #fff;
+        }
+
+        .btn-cancel:hover {
+            background: rgba(255, 255, 255, 0.2);
+        }
+    </style>
+</head>
+
+<body>
+    <!-- 中央可拖曳移動區域 -->
+    <div class="drag-area"></div>
+
+    <!-- 邊框 -->
+    <div class="overlay-border" id="border"></div>
+
+    <!-- 8 個 Resize Handles -->
+    <div class="handle nw" data-dir="NorthWest"></div>
+    <div class="handle n" data-dir="North"></div>
+    <div class="handle ne" data-dir="NorthEast"></div>
+    <div class="handle w" data-dir="West"></div>
+    <div class="handle e" data-dir="East"></div>
+    <div class="handle sw" data-dir="SouthWest"></div>
+    <div class="handle s" data-dir="South"></div>
+    <div class="handle se" data-dir="SouthEast"></div>
+
+    <!-- 控制面板 -->
+    <div class="control-panel" id="controlPanel">
+        <div class="size-display" id="sizeDisplay">800 × 600</div>
+        <div class="size-label">錄影區域</div>
+        <div class="hint">↔ 拖拉邊緣或控制點調整範圍<br>✥ 拖拉中央移動位置</div>
+        <div class="btn-row">
+            <button class="btn btn-cancel" id="btnCancel">取消</button>
+            <button class="btn btn-record" id="btnRecord">⏺ 開始錄製</button>
+        </div>
+    </div>
+
+    <script>
+        const sizeDisplay = document.getElementById('sizeDisplay');
+        const border = document.getElementById('border');
+        const controlPanel = document.getElementById('controlPanel');
+        const handles = document.querySelectorAll('.handle');
+
+        // 尺寸顯示（顯示物理像素 = 實際錄影解析度）
+        function updateSize() {
+            const dpr = window.devicePixelRatio || 1;
+            const pw = Math.round(window.outerWidth * dpr);
+            const ph = Math.round(window.outerHeight * dpr);
+            // 偶數化（跟 Rust 端一致）
+            const w = pw - (pw % 2);
+            const h = ph - (ph % 2);
+            sizeDisplay.textContent = w + ' × ' + h;
+        }
+        updateSize();
+        window.addEventListener('resize', updateSize);
+
+        // ── Resize Handles：呼叫 Tauri startResizeDragging ──
+        handles.forEach(handle => {
+            handle.addEventListener('mousedown', async (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const dir = handle.dataset.dir;
+                try {
+                    await window.__TAURI_INTERNALS__.invoke(
+                        'plugin:window|start_resize_dragging',
+                        { label: 'overlay', value: dir }
+                    );
+                } catch (err) {
+                    console.error('Resize failed:', err);
+                }
+            });
+        });
+
+        // ── 開始錄製 ──
+        document.getElementById('btnRecord').addEventListener('click', async function () {
+            try {
+                // 先隱藏所有視覺元素，避免第一幀錄到邊框
+                document.body.style.opacity = '0';
+                await new Promise(r => setTimeout(r, 200));
+
+                await window.__TAURI_INTERNALS__.invoke('start_recording', { fps: 60 });
+            } catch (e) {
+                document.body.style.opacity = '1'; // 失敗時恢復顯示
+                alert('錄影啟動失敗: ' + e);
+            }
+        });
+
+        // ── 空白鍵：滿鋪當前螢幕 ──
+        document.addEventListener('keydown', async (e) => {
+            if (e.code === 'Space' && !e.repeat) {
+                e.preventDefault();
+                try {
+                    // 取得 overlay 當前所在的螢幕資訊
+                    const monitor = await window.__TAURI_INTERNALS__.invoke(
+                        'plugin:window|current_monitor', { label: 'overlay' }
+                    );
+                    if (!monitor) return;
+
+                    // 計算 Windows DWM 不可見邊框（decorations:false 也有）
+                    const outerPos = await window.__TAURI_INTERNALS__.invoke(
+                        'plugin:window|outer_position', { label: 'overlay' }
+                    );
+                    const innerPos = await window.__TAURI_INTERNALS__.invoke(
+                        'plugin:window|inner_position', { label: 'overlay' }
+                    );
+                    const outerSz = await window.__TAURI_INTERNALS__.invoke(
+                        'plugin:window|outer_size', { label: 'overlay' }
+                    );
+                    const innerSz = await window.__TAURI_INTERNALS__.invoke(
+                        'plugin:window|inner_size', { label: 'overlay' }
+                    );
+                    const borderL = innerPos.x - outerPos.x;
+                    const borderT = innerPos.y - outerPos.y;
+                    const borderR = outerSz.width - innerSz.width - borderL;
+                    const borderB = outerSz.height - innerSz.height - borderT;
+
+                    const mx = monitor.position.x;
+                    const my = monitor.position.y;
+                    const mw = monitor.size.width;
+                    const mh = monitor.size.height;
+
+                    // 補償邊框：讓可見區域完全覆蓋螢幕
+                    await window.__TAURI_INTERNALS__.invoke('plugin:window|set_position', {
+                        label: 'overlay',
+                        value: { Physical: { x: mx - borderL, y: my - borderT } }
+                    });
+                    await window.__TAURI_INTERNALS__.invoke('plugin:window|set_size', {
+                        label: 'overlay',
+                        value: { Physical: { width: mw, height: mh } }
+                    });
+                } catch (err) {
+                    console.error('Fullscreen failed:', err);
+                }
+            }
+        });
+
+        // ── 取消 ──
+        document.getElementById('btnCancel').addEventListener('click', async function () {
+            try {
+                await window.__TAURI_INTERNALS__.invoke('plugin:window|close', { label: 'overlay' });
+            } catch (e) {
+                window.close();
+            }
+        });
+    </script>
+</body>
+
+</html>
