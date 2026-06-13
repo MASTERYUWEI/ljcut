@@ -92,6 +92,10 @@ pub fn start_sidecar(app: &AppHandle) {
     let mut cmd = Command::new(&python);
     cmd.current_dir(&backend_dir)
         .env("LJCUT_PARENT_PID", std::process::id().to_string())
+        // 強制 Python 以 UTF-8 輸出：stdout 被導向 pipe 時 Python 預設用系統編碼(cp950)，
+        // 會讓含 emoji/中文的 print 觸發 UnicodeEncodeError，連帶使模型載入執行緒崩潰。
+        .env("PYTHONUTF8", "1")
+        .env("PYTHONIOENCODING", "utf-8")
         .args([
             "-m",
             "uvicorn",
