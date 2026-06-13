@@ -1,34 +1,25 @@
-//! 螢幕區域錄影 — 原生 Windows.Graphics.Capture (WGC) + 硬體編碼
+//! 螢幕區域錄影 — 以子程序方式驅動 WGC 擷取
 //!
-//! 影像：windows-capture (WGC) 擷取主螢幕 → buffer_crop 裁成選區 → 硬體 H.264 編碼。
-//!       （取代舊的 ffmpeg gdigrab/ddagrab，後者在 WebView2 競爭下會崩到個位數 fps）
-//! 音訊：沿用 ffmpeg dshow 並行擷取到暫存檔，停止後與影像合流。
+//! 影像：啟動獨立的 `ljcut-recorder.exe`（Windows.Graphics.Capture + 硬體編碼）。
+//!       之所以獨立成 exe：在 Tauri 主程式（有 WebView2）內直接呼叫 WGC 會卡死，
+//!       但在乾淨的獨立 process 內穩定 60fps。
+//! 音訊：ffmpeg dshow 並行擷取到暫存檔，停止後與影像合流。
 
 use crate::services::ffmpeg_service;
 use serde::{Deserialize, Serialize};
-use std::io::Write;
+use std::io::{BufRead, BufReader, Write};
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command as StdCommand, Stdio};
 use std::sync::Mutex;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
-use windows_capture::capture::{CaptureControl, Context, GraphicsCaptureApiHandler};
-use windows_capture::encoder::{
-    AudioSettingsBuilder, ContainerSettingsBuilder, VideoEncoder, VideoSettingsBuilder,
-    VideoSettingsSubType,
-};
-use windows_capture::frame::Frame;
-use windows_capture::graphics_capture_api::InternalCaptureControl;
-use windows_capture::monitor::Monitor;
-use windows_capture::settings::{
-    ColorFormat, CursorCaptureSettings, DirtyRegionSettings, DrawBorderSettings,
-    MinimumUpdateIntervalSettings, SecondaryWindowSettings, Settings,
-};
 
-type RecError = Box<dyn std::error::Error + Send + Sync>;
+/// Windows：不要為子程序彈出 console 視窗
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
-/// 進行中的 WGC 影像擷取控制
-static VIDEO_CONTROL: Mutex<Option<CaptureControl<RecHandler, RecError>>> = Mutex::new(None);
+/// 進行中的影像擷取子程序（ljcut-recorder.exe）
+static RECORDER_PROC: Mutex<Option<Child>> = Mutex::new(None);
 /// 進行中的音訊 ffmpeg 子程序
 static AUDIO_PROCESS: Mutex<Option<Child>> = Mutex::new(None);
 /// 本次錄影的暫存/輸出路徑
@@ -55,7 +46,7 @@ pub struct RecOptions {
     #[serde(default = "default_fps")]
     pub fps: u32,
     #[serde(default = "default_vol")]
-    pub mic_vol: f32, // 0.0 ~ 2.0，1.0 = 100%
+    pub mic_vol: f32,
     #[serde(default = "default_vol")]
     pub sys_vol: f32,
 }
@@ -67,84 +58,13 @@ fn default_vol() -> f32 {
     1.0
 }
 
-// ── WGC 擷取 handler ──
-
-/// 傳給 handler 的設定：裁切區域 + 編碼參數 + 輸出路徑
-#[derive(Clone)]
-pub struct RecFlags {
-    left: u32,
-    top: u32,
-    right: u32,
-    bottom: u32,
-    width: u32,
-    height: u32,
-    fps: u32,
-    out: String,
-}
-
-pub struct RecHandler {
-    encoder: Option<VideoEncoder>,
-    left: u32,
-    top: u32,
-    right: u32,
-    bottom: u32,
-    scratch: Vec<u8>,
-}
-
-impl GraphicsCaptureApiHandler for RecHandler {
-    type Flags = RecFlags;
-    type Error = RecError;
-
-    fn new(ctx: Context<Self::Flags>) -> Result<Self, Self::Error> {
-        let f = ctx.flags;
-        let encoder = VideoEncoder::new(
-            VideoSettingsBuilder::new(f.width, f.height)
-                .frame_rate(f.fps)
-                .bitrate(12_000_000)
-                .sub_type(VideoSettingsSubType::H264),
-            AudioSettingsBuilder::default().disabled(true),
-            ContainerSettingsBuilder::default(),
-            &f.out,
-        )?;
-        Ok(Self {
-            encoder: Some(encoder),
-            left: f.left,
-            top: f.top,
-            right: f.right,
-            bottom: f.bottom,
-            scratch: Vec::new(),
-        })
-    }
-
-    fn on_frame_arrived(
-        &mut self,
-        frame: &mut Frame,
-        _control: InternalCaptureControl,
-    ) -> Result<(), Self::Error> {
-        if let Some(enc) = self.encoder.as_mut() {
-            let ts = frame.timestamp()?.Duration;
-            let fb = frame.buffer_crop(self.left, self.top, self.right, self.bottom)?;
-            let bytes = fb.as_nopadding_buffer(&mut self.scratch);
-            enc.send_frame_buffer(bytes, ts)?;
-        }
-        Ok(())
-    }
-
-    fn on_closed(&mut self) -> Result<(), Self::Error> {
-        // 若擷取項目意外關閉，盡量收尾 encoder（避免 mp4 不完整）
-        if let Some(enc) = self.encoder.take() {
-            let _ = enc.finish();
-        }
-        Ok(())
-    }
-}
-
 // ── 列出 dshow 音訊裝置 ──
 
 #[tauri::command]
 pub fn list_audio_devices() -> Result<Vec<String>, String> {
     let output = StdCommand::new("ffmpeg")
         .args(["-list_devices", "true", "-f", "dshow", "-i", "dummy"])
+        .creation_flags(CREATE_NO_WINDOW)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
@@ -288,7 +208,6 @@ fn start_audio_capture(
     let sys_v = opts.sys_vol;
     let mic_v = opts.mic_vol;
     if has_sys && has_mic {
-        // sys=input0, mic=input1
         let fc = if (sys_v - 1.0).abs() < 0.01 && (mic_v - 1.0).abs() < 0.01 {
             "[0:a][1:a]amerge=inputs=2[a]".to_string()
         } else {
@@ -303,7 +222,6 @@ fn start_audio_capture(
             "2".into(),
         ]);
     } else {
-        // 單一來源（input0），需要時調音量
         let vol = if has_sys { sys_v } else { mic_v };
         if (vol - 1.0).abs() >= 0.01 {
             args.extend(["-af".into(), format!("volume={vol:.2}")]);
@@ -322,6 +240,7 @@ fn start_audio_capture(
 
     match StdCommand::new("ffmpeg")
         .args(&args)
+        .creation_flags(CREATE_NO_WINDOW)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -330,7 +249,6 @@ fn start_audio_capture(
         Ok(mut c) => {
             if let Some(err) = c.stderr.take() {
                 std::thread::spawn(move || {
-                    use std::io::{BufRead, BufReader};
                     for line in BufReader::new(err).lines().map_while(Result::ok) {
                         log::debug!("[rec-audio] {line}");
                     }
@@ -342,6 +260,18 @@ fn start_audio_capture(
             log::error!("啟動音訊擷取失敗: {e}");
             (None, None)
         }
+    }
+}
+
+/// 找到 ljcut-recorder.exe（與主程式同目錄）
+fn find_recorder_exe() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?;
+    let candidate = dir.join("ljcut-recorder.exe");
+    if candidate.exists() {
+        Some(candidate)
+    } else {
+        None
     }
 }
 
@@ -364,7 +294,9 @@ pub async fn start_recording(app: AppHandle, fps: Option<u32>) -> Result<String,
         fps.unwrap_or(60)
     };
 
-    // 取得 overlay 視窗座標（物理像素）
+    let recorder_exe = find_recorder_exe().ok_or("找不到 ljcut-recorder.exe")?;
+
+    // overlay 座標（物理像素）
     let overlay = app
         .get_webview_window("overlay")
         .ok_or("overlay 視窗不存在")?;
@@ -375,17 +307,21 @@ pub async fn start_recording(app: AppHandle, fps: Option<u32>) -> Result<String,
         .inner_size()
         .map_err(|e| format!("取得大小失敗: {e}"))?;
 
-    // 主螢幕（WGC 以單一顯示器為單位；使用者為單螢幕，主螢幕通常起點 0,0）
-    let monitor = Monitor::primary().map_err(|e| format!("取得主螢幕失敗: {e}"))?;
-    let mon_w = monitor.width().map_err(|e| format!("取得螢幕寬失敗: {e}"))?;
-    let mon_h = monitor.height().map_err(|e| format!("取得螢幕高失敗: {e}"))?;
+    // 主螢幕實體尺寸（用於 clamp）
+    let (mon_w, mon_h) = app
+        .primary_monitor()
+        .ok()
+        .flatten()
+        .map(|m| {
+            let s = m.size();
+            (s.width, s.height)
+        })
+        .unwrap_or((1920, 1080));
 
     let mut x = position.x.max(0) as u32;
     let mut y = position.y.max(0) as u32;
     let mut w = size.width;
     let mut h = size.height;
-
-    // clamp 到螢幕範圍內
     if x >= mon_w {
         x = mon_w.saturating_sub(2);
     }
@@ -398,19 +334,14 @@ pub async fn start_recording(app: AppHandle, fps: Option<u32>) -> Result<String,
     if y + h > mon_h {
         h = mon_h - y;
     }
-    // 寬高需為偶數（H.264 要求）且至少 4 像素
     let w = (w - (w % 2)).max(4);
     let h = (h - (h % 2)).max(4);
-    let left = x;
-    let top = y;
-    let right = left + w;
-    let bottom = top + h;
 
     // 關閉 overlay，等它完全消失才開始擷取
     let _ = overlay.close();
     std::thread::sleep(Duration::from_millis(300));
 
-    // 準備輸出路徑
+    // 輸出路徑
     let data_dir = app
         .path()
         .app_data_dir()
@@ -421,58 +352,69 @@ pub async fn start_recording(app: AppHandle, fps: Option<u32>) -> Result<String,
     let video_path = outputs.join(format!("rec_video_{stamp}.mp4"));
     let final_path = outputs.join(format!("錄影_{stamp}.mp4"));
 
-    // 啟動音訊擷取（與影像並行）
+    // 音訊（並行）
     let (audio_path, audio_child) = start_audio_capture(&rec_opts, &outputs, &stamp);
 
-    // 啟動 WGC 影像擷取
-    let flags = RecFlags {
-        left,
-        top,
-        right,
-        bottom,
-        width: w,
-        height: h,
-        fps,
-        out: video_path.to_string_lossy().to_string(),
-    };
-    let interval = Duration::from_nanos(1_000_000_000 / fps.max(1) as u64);
-    let settings = Settings::new(
-        monitor,
-        CursorCaptureSettings::Default,
-        DrawBorderSettings::Default,
-        SecondaryWindowSettings::Default,
-        MinimumUpdateIntervalSettings::Custom(interval),
-        DirtyRegionSettings::Default,
-        ColorFormat::Rgba8,
-        flags,
-    );
-
-    // 重要：start_free_threaded 內部會建立 COM/WGC 並阻塞等待擷取執行緒就緒。
-    // 直接在 Tauri 的 async 指令（tokio 工作執行緒）上呼叫會卡死（tokio 執行緒的
-    // COM apartment 與 WGC 啟動衝突）。改在一條乾淨的 std::thread 上呼叫，再用
-    // channel 把 CaptureControl 傳回（等同已驗證可行的獨立執行情境）。
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let res = RecHandler::start_free_threaded(settings).map_err(|e| e.to_string());
-        let _ = tx.send(res);
-    });
-    let control = match rx.recv() {
-        Ok(Ok(c)) => c,
-        Ok(Err(e)) => {
-            if let Some(mut child) = audio_child {
-                let _ = child.kill();
+    // 影像擷取子程序
+    let mut child = match StdCommand::new(&recorder_exe)
+        .args([
+            x.to_string(),
+            y.to_string(),
+            w.to_string(),
+            h.to_string(),
+            fps.to_string(),
+            video_path.to_string_lossy().to_string(),
+        ])
+        .creation_flags(CREATE_NO_WINDOW)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            if let Some(mut a) = audio_child {
+                let _ = a.kill();
             }
-            return Err(format!("啟動螢幕擷取失敗: {e}"));
+            return Err(format!("啟動錄影程式失敗: {e}"));
         }
+    };
+
+    // 排空 stderr 到 log
+    if let Some(err) = child.stderr.take() {
+        std::thread::spawn(move || {
+            for line in BufReader::new(err).lines().map_while(Result::ok) {
+                log::warn!("[recorder] {line}");
+            }
+        });
+    }
+
+    // 讀 stdout：等待 "READY"（並持續排空避免 pipe 阻塞）
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    if let Some(out) = child.stdout.take() {
+        std::thread::spawn(move || {
+            for line in BufReader::new(out).lines().map_while(Result::ok) {
+                if line.trim() == "READY" {
+                    let _ = ready_tx.send(());
+                } else {
+                    log::info!("[recorder] {line}");
+                }
+            }
+        });
+    }
+
+    match ready_rx.recv_timeout(Duration::from_secs(8)) {
+        Ok(()) => {}
         Err(_) => {
-            if let Some(mut child) = audio_child {
-                let _ = child.kill();
+            let _ = child.kill();
+            if let Some(mut a) = audio_child {
+                let _ = a.kill();
             }
-            return Err("擷取執行緒未回應".into());
+            return Err("錄影程式未就緒（逾時），請查看日誌".into());
         }
-    };
+    }
 
-    *VIDEO_CONTROL.lock().unwrap() = Some(control);
+    *RECORDER_PROC.lock().unwrap() = Some(child);
     *AUDIO_PROCESS.lock().unwrap() = audio_child;
     *REC_PATHS.lock().unwrap() = Some(RecPaths {
         video: video_path,
@@ -480,7 +422,7 @@ pub async fn start_recording(app: AppHandle, fps: Option<u32>) -> Result<String,
         final_out: final_path.clone(),
     });
 
-    log::info!("🎬 開始 WGC 錄影: 區域 ({left},{top}) {w}x{h} @ {fps}fps");
+    log::info!("🎬 開始錄影: 區域 ({x},{y}) {w}x{h} @ {fps}fps");
     let final_str = final_path.to_string_lossy().to_string();
     let _ = app.emit("recording_started", &final_str);
     Ok(final_str)
@@ -501,6 +443,7 @@ fn mux_av(video: &Path, audio: Option<&Path>, out: &Path) -> bool {
 
     match StdCommand::new("ffmpeg")
         .args(&args)
+        .creation_flags(CREATE_NO_WINDOW)
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .output()
@@ -517,6 +460,30 @@ fn mux_av(video: &Path, audio: Option<&Path>, out: &Path) -> bool {
     }
 }
 
+/// 等待子程序結束（最多 timeout 秒），逾時強制終止
+fn wait_or_kill(child: &mut Child, timeout: Duration) {
+    let step = Duration::from_millis(100);
+    let mut waited = Duration::ZERO;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return,
+            Ok(None) => {
+                if waited >= timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return;
+                }
+                std::thread::sleep(step);
+                waited += step;
+            }
+            Err(_) => {
+                let _ = child.kill();
+                return;
+            }
+        }
+    }
+}
+
 // ── 3. 停止錄影 ──
 
 #[tauri::command]
@@ -527,46 +494,32 @@ pub async fn stop_recording(app: AppHandle) -> Result<String, String> {
         .take()
         .ok_or("沒有正在進行的錄影")?;
 
-    // 停止影像擷取並收尾 encoder
-    if let Some(control) = VIDEO_CONTROL.lock().unwrap().take() {
-        let cb = control.callback();
-        if let Err(e) = control.stop() {
-            log::warn!("停止擷取執行緒: {e:?}");
+    // 停止影像子程序：送 'q' + 關閉 stdin(EOF)，等它收尾 mp4 後結束
+    if let Some(mut child) = RECORDER_PROC.lock().unwrap().take() {
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = stdin.write_all(b"q\n");
+            let _ = stdin.flush();
+            // drop stdin → EOF（雙保險）
         }
-        // windows-capture 使用 parking_lot::Mutex，.lock() 直接回傳 guard
-        let mut handler = cb.lock();
-        if let Some(enc) = handler.encoder.take() {
-            if let Err(e) = enc.finish() {
-                log::error!("encoder 收尾失敗: {e}");
-            }
-        }
+        wait_or_kill(&mut child, Duration::from_secs(15));
     }
 
-    // 停止音訊 ffmpeg（送 'q' 優雅結束，逾時則強制）
+    // 停止音訊 ffmpeg（送 'q'，逾時強制）
     if let Some(mut child) = AUDIO_PROCESS.lock().unwrap().take() {
         if let Some(ref mut stdin) = child.stdin {
             let _ = stdin.write_all(b"q");
             let _ = stdin.flush();
         }
-        std::thread::sleep(Duration::from_millis(200));
-        match child.try_wait() {
-            Ok(Some(_)) => {}
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-            }
-        }
+        wait_or_kill(&mut child, Duration::from_secs(5));
     }
 
-    std::thread::sleep(Duration::from_millis(300));
+    std::thread::sleep(Duration::from_millis(200));
 
     // 影音合流（無音訊時等於重新封裝影像）
     let final_path = paths.final_out.clone();
     if !mux_av(&paths.video, paths.audio.as_deref(), &final_path) {
-        // 合流失敗 → 退回只用影像
         let _ = std::fs::copy(&paths.video, &final_path);
     }
-    // 清理暫存
     let _ = std::fs::remove_file(&paths.video);
     if let Some(a) = &paths.audio {
         let _ = std::fs::remove_file(a);
@@ -593,8 +546,8 @@ pub async fn stop_recording(app: AppHandle) -> Result<String, String> {
             .unwrap_or("recording.mp4")
             .to_string();
 
-        let backend_uploads = find_backend_uploads_dir();
-        let backend_outputs = find_backend_outputs_dir();
+        let backend_uploads = find_backend_subdir("uploads");
+        let backend_outputs = find_backend_subdir("outputs");
         std::fs::create_dir_all(&backend_uploads)
             .map_err(|e| format!("建立 backend/uploads 失敗: {e}"))?;
         std::fs::create_dir_all(&backend_outputs)
@@ -643,16 +596,6 @@ pub async fn stop_recording(app: AppHandle) -> Result<String, String> {
             Err(format!("錄影後處理失敗: {e}"))
         }
     }
-}
-
-/// 推算 backend/uploads 目錄的絕對路徑
-fn find_backend_uploads_dir() -> PathBuf {
-    find_backend_subdir("uploads")
-}
-
-/// 推算 backend/outputs 目錄的絕對路徑
-fn find_backend_outputs_dir() -> PathBuf {
-    find_backend_subdir("outputs")
 }
 
 fn find_backend_subdir(sub: &str) -> PathBuf {
