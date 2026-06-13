@@ -238,30 +238,28 @@ pub async fn start_recording(
     let output_str = output.to_string_lossy().to_string();
 
     // 組裝 ffmpeg 命令
+    //
+    // 視訊用 ddagrab（Desktop Duplication API）取代舊的 gdigrab：
+    // gdigrab 在現代 Windows 上遇到 GPU 合成/全螢幕畫面常 "Failed to capture image (error 5)"
+    // 而中途掛掉，造成錄影只剩 1~2 幀。ddagrab 走 DXGI 桌面複製，穩定許多。
+    //
+    // 限制：ddagrab 以單一顯示器(output_idx)為單位，offset/size 相對於該顯示器。
+    // 此處以主顯示器(0)為準（主螢幕通常起點 0,0）；跨螢幕的選區目前未支援。
     let mut args = vec![
         "-y".to_string(),
         "-f".to_string(),
-        "gdigrab".to_string(),
-        "-thread_queue_size".to_string(),
-        "1024".to_string(),
-        "-framerate".to_string(),
-        fps.to_string(),
-        "-offset_x".to_string(),
-        x.to_string(),
-        "-offset_y".to_string(),
-        y.to_string(),
-        "-video_size".to_string(),
-        format!("{w}x{h}"),
+        "lavfi".to_string(),
         "-i".to_string(),
-        "desktop".to_string(),
+        format!(
+            "ddagrab=output_idx=0:framerate={fps}:offset_x={x}:offset_y={y}:video_size={w}x{h}:draw_mouse=true"
+        ),
     ];
 
-    // 音訊輸入：系統聲音 + 麥克風
+    // 音訊輸入：系統聲音 + 麥克風（dshow）
     let has_sys = rec_opts.sys_audio && !rec_opts.sys_audio_device.is_empty();
     let has_mic = rec_opts.mic && !rec_opts.mic_device.is_empty();
 
     if has_sys {
-        // 系統音頻（用戶選擇的 dshow 裝置）
         args.extend_from_slice(&[
             "-f".to_string(),
             "dshow".to_string(),
@@ -273,7 +271,6 @@ pub async fn start_recording(
     }
 
     if has_mic {
-        // 麥克風裝置
         args.extend_from_slice(&[
             "-f".to_string(),
             "dshow".to_string(),
@@ -284,54 +281,51 @@ pub async fn start_recording(
         ]);
     }
 
-    // 音訊 mapping + 音量調整
+    // ── filter_complex ──
+    // 視訊一定要 hwdownload：ddagrab 輸出在 GPU(d3d11)，要下載到 CPU 再轉 yuv420p 給 libx264。
+    // 音訊視來源組合（sys 為 input 1、mic 接著）。
     let sys_v = rec_opts.sys_vol;
     let mic_v = rec_opts.mic_vol;
+    let mut fc = "[0:v]hwdownload,format=bgra,format=yuv420p[v]".to_string();
 
-    if has_sys && has_mic {
-        // 同時有系統聲音和麥克風 → amerge（需要時加 volume）
-        let filter = if (sys_v - 1.0).abs() < 0.01 && (mic_v - 1.0).abs() < 0.01 {
-            // 音量都是 100%，簡單 amerge
+    // audio_map：要 -map 的音訊標籤（None = 無音訊）
+    let audio_map: Option<String> = if has_sys && has_mic {
+        let afc = if (sys_v - 1.0).abs() < 0.01 && (mic_v - 1.0).abs() < 0.01 {
             "[1:a][2:a]amerge=inputs=2[a]".to_string()
         } else {
-            format!(
-                "[1:a]volume={sys_v:.2}[sys];[2:a]volume={mic_v:.2}[mic];[sys][mic]amerge=inputs=2[a]"
-            )
+            format!("[1:a]volume={sys_v:.2}[s];[2:a]volume={mic_v:.2}[m];[s][m]amerge=inputs=2[a]")
         };
-        args.extend_from_slice(&[
-            "-filter_complex".to_string(),
-            filter,
-            "-map".to_string(),
-            "0:v".to_string(),
-            "-map".to_string(),
-            "[a]".to_string(),
-            "-ac".to_string(),
-            "2".to_string(),
-        ]);
+        fc.push(';');
+        fc.push_str(&afc);
+        Some("[a]".to_string())
     } else if has_sys || has_mic {
-        // 只有一個音訊來源
         let vol = if has_sys { sys_v } else { mic_v };
         if (vol - 1.0).abs() < 0.01 {
-            // 音量 100%，直接 map 不加濾鏡
-            args.extend_from_slice(&[
-                "-map".to_string(),
-                "0:v".to_string(),
-                "-map".to_string(),
-                "1:a".to_string(),
-            ]);
+            Some("1:a".to_string()) // 音量 100% → 直接 map 原始音訊
         } else {
-            // 用簡單的 -af 而非 filter_complex
-            args.extend_from_slice(&[
-                "-map".to_string(),
-                "0:v".to_string(),
-                "-map".to_string(),
-                "1:a".to_string(),
-                "-af".to_string(),
-                format!("volume={vol:.2}"),
-            ]);
+            fc.push_str(&format!(";[1:a]volume={vol:.2}[a]"));
+            Some("[a]".to_string())
+        }
+    } else {
+        None
+    };
+
+    args.push("-filter_complex".to_string());
+    args.push(fc);
+    args.push("-map".to_string());
+    args.push("[v]".to_string());
+    if let Some(label) = audio_map {
+        let both_audio = has_sys && has_mic;
+        args.push("-map".to_string());
+        args.push(label);
+        if both_audio {
+            // amerge 兩路 stereo = 4 聲道，downmix 回 stereo
+            args.push("-ac".to_string());
+            args.push("2".to_string());
         }
     }
 
+    // 編碼：錄影用 libx264 ultrafast（最終匯出燒字幕另走 NVENC，品質不受影響）
     args.extend_from_slice(&[
         "-c:v".to_string(),
         "libx264".to_string(),
@@ -345,7 +339,6 @@ pub async fn start_recording(
         "192k".to_string(),
         "-ar".to_string(),
         "48000".to_string(),
-        "-shortest".to_string(),
         output_str.clone(),
     ]);
 
