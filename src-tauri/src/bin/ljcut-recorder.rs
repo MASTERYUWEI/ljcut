@@ -41,7 +41,10 @@ struct Handler {
     top: u32,
     right: u32,
     bottom: u32,
-    scratch: Vec<u8>,
+    width: u32,
+    height: u32,
+    pack_buf: Vec<u8>, // as_nopadding_buffer 的暫存（top-down）
+    flip_buf: Vec<u8>, // 翻轉成 bottom-up 後送給編碼器
 }
 
 impl GraphicsCaptureApiHandler for Handler {
@@ -65,7 +68,10 @@ impl GraphicsCaptureApiHandler for Handler {
             top: f.top,
             right: f.right,
             bottom: f.bottom,
-            scratch: Vec::new(),
+            width: f.width,
+            height: f.height,
+            pack_buf: Vec::new(),
+            flip_buf: Vec::new(),
         })
     }
 
@@ -74,11 +80,37 @@ impl GraphicsCaptureApiHandler for Handler {
         frame: &mut Frame,
         _control: InternalCaptureControl,
     ) -> Result<(), Self::Error> {
+        if self.encoder.is_none() {
+            return Ok(());
+        }
+        let ts = frame.timestamp()?.Duration;
+        let fb = frame.buffer_crop(self.left, self.top, self.right, self.bottom)?;
+
+        // send_frame_buffer 要求 BGRA + bottom-to-top。as_nopadding_buffer 給的是
+        // top-down，這裡逐列翻轉成 bottom-up。
+        let row = (self.width * 4) as usize;
+        let hh = self.height as usize;
+        let mut packed = std::mem::take(&mut self.pack_buf);
+        {
+            let src = fb.as_nopadding_buffer(&mut packed);
+            if self.flip_buf.len() != src.len() {
+                self.flip_buf.resize(src.len(), 0);
+            }
+            if src.len() == row * hh {
+                for y in 0..hh {
+                    let s = &src[y * row..(y + 1) * row];
+                    let dy = hh - 1 - y;
+                    self.flip_buf[dy * row..(dy + 1) * row].copy_from_slice(s);
+                }
+            } else {
+                // 尺寸不符（理論上不會），退而求其次直接送（至少不崩）
+                self.flip_buf[..src.len()].copy_from_slice(src);
+            }
+        }
+        self.pack_buf = packed;
+
         if let Some(enc) = self.encoder.as_mut() {
-            let ts = frame.timestamp()?.Duration;
-            let fb = frame.buffer_crop(self.left, self.top, self.right, self.bottom)?;
-            let bytes = fb.as_nopadding_buffer(&mut self.scratch);
-            enc.send_frame_buffer(bytes, ts)?;
+            enc.send_frame_buffer(&self.flip_buf, ts)?;
         }
         Ok(())
     }
@@ -133,7 +165,7 @@ fn main() {
         SecondaryWindowSettings::Default,
         MinimumUpdateIntervalSettings::Default,
         DirtyRegionSettings::Default,
-        ColorFormat::Rgba8,
+        ColorFormat::Bgra8, // send_frame_buffer 要求 BGRA
         flags,
     );
 
