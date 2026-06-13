@@ -30,7 +30,7 @@ pub struct RecOptions {
     pub sys_vol: f32,
 }
 
-fn default_fps() -> u32 { 60 }
+fn default_fps() -> u32 { 30 }
 fn default_vol() -> f32 { 1.0 }
 
 // ── 列出 dshow 音訊裝置 ──
@@ -88,7 +88,7 @@ pub async fn set_rec_options(
 ) -> Result<(), String> {
     let mic_dev = mic_device.unwrap_or_default();
     let sys_dev = sys_audio_device.unwrap_or_default();
-    let fps_val = fps.unwrap_or(60);
+    let fps_val = fps.unwrap_or(30);
     let mic_v = mic_vol.unwrap_or(1.0);
     let sys_v = sys_vol.unwrap_or(1.0);
     *RECORDING_OPTIONS.lock().unwrap() = Some(RecOptions {
@@ -160,11 +160,11 @@ pub async fn start_recording(
         .unwrap_or(RecOptions {
             sys_audio: false, mic: false,
             mic_device: String::new(), sys_audio_device: String::new(),
-            fps: 60, mic_vol: 1.0, sys_vol: 1.0,
+            fps: 30, mic_vol: 1.0, sys_vol: 1.0,
         });
 
     // 優先使用全域設定的 fps，overlay 傳入的 fps 只是 fallback
-    let fps = if rec_opts.fps > 0 { rec_opts.fps } else { fps.unwrap_or(60) };
+    let fps = if rec_opts.fps > 0 { rec_opts.fps } else { fps.unwrap_or(30) };
 
     // 取得 overlay 視窗座標
     let overlay = app
