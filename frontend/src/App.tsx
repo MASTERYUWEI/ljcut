@@ -85,7 +85,7 @@ export default function App() {
     const [isPaused, setIsPaused] = useState(false);
     const [recSeconds, setRecSeconds] = useState(0);
     const [showRecSettings, setShowRecSettings] = useState(false);
-    const [recOpts, setRecOpts] = useState({ sysAudio: false, mic: false, quality: '1080p' as '720p' | '1080p' | '4k', fps: 30 as 24 | 30 | 60, micDevice: '', sysAudioDevice: '', micVol: 1.0, sysVol: 1.0 });
+    const [recOpts, setRecOpts] = useState({ sysAudio: false, mic: false, quality: '1080p' as '720p' | '1080p' | '4k', fps: 60 as 24 | 30 | 60, micDevice: '', sysAudioDevice: '', micVol: 1.0, sysVol: 1.0 });
     const [micDevices, setMicDevices] = useState<{ deviceId: string; label: string }[]>([]);
     const [micLevel, setMicLevel] = useState(0);
     const micStreamRef = useRef<MediaStream | null>(null);

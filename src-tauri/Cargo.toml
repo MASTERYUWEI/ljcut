@@ -27,3 +27,4 @@ tokio = { version = "1", features = ["full"] }
 uuid = { version = "1", features = ["v4"] }
 dotenvy = "0.15"
 chrono = "0.4"
+windows-capture = "2.0.0"

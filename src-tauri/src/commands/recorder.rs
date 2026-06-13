@@ -1,17 +1,47 @@
-//! 螢幕區域錄影 commands — 透明 overlay + FFmpeg gdigrab
+//! 螢幕區域錄影 — 原生 Windows.Graphics.Capture (WGC) + 硬體編碼
+//!
+//! 影像：windows-capture (WGC) 擷取主螢幕 → buffer_crop 裁成選區 → 硬體 H.264 編碼。
+//!       （取代舊的 ffmpeg gdigrab/ddagrab，後者在 WebView2 競爭下會崩到個位數 fps）
+//! 音訊：沿用 ffmpeg dshow 並行擷取到暫存檔，停止後與影像合流。
 
 use crate::services::ffmpeg_service;
 use serde::{Deserialize, Serialize};
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command as StdCommand, Stdio};
 use std::sync::Mutex;
+use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+use windows_capture::capture::{CaptureControl, Context, GraphicsCaptureApiHandler};
+use windows_capture::encoder::{
+    AudioSettingsBuilder, ContainerSettingsBuilder, VideoEncoder, VideoSettingsBuilder,
+    VideoSettingsSubType,
+};
+use windows_capture::frame::Frame;
+use windows_capture::graphics_capture_api::InternalCaptureControl;
+use windows_capture::monitor::Monitor;
+use windows_capture::settings::{
+    ColorFormat, CursorCaptureSettings, DirtyRegionSettings, DrawBorderSettings,
+    MinimumUpdateIntervalSettings, SecondaryWindowSettings, Settings,
+};
 
-/// 全域 ffmpeg 子程序（錄影中）
-static FFMPEG_PROCESS: Mutex<Option<Child>> = Mutex::new(None);
-/// 輸出檔路徑
-static OUTPUT_PATH: Mutex<Option<String>> = Mutex::new(None);
+type RecError = Box<dyn std::error::Error + Send + Sync>;
+
+/// 進行中的 WGC 影像擷取控制
+static VIDEO_CONTROL: Mutex<Option<CaptureControl<RecHandler, RecError>>> = Mutex::new(None);
+/// 進行中的音訊 ffmpeg 子程序
+static AUDIO_PROCESS: Mutex<Option<Child>> = Mutex::new(None);
+/// 本次錄影的暫存/輸出路徑
+static REC_PATHS: Mutex<Option<RecPaths>> = Mutex::new(None);
 /// 錄影選項（由主視窗設定，overlay 使用）
 static RECORDING_OPTIONS: Mutex<Option<RecOptions>> = Mutex::new(None);
+
+#[derive(Clone)]
+struct RecPaths {
+    video: PathBuf,
+    audio: Option<PathBuf>,
+    final_out: PathBuf,
+}
 
 /// 錄影選項
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -25,13 +55,89 @@ pub struct RecOptions {
     #[serde(default = "default_fps")]
     pub fps: u32,
     #[serde(default = "default_vol")]
-    pub mic_vol: f32,   // 0.0 ~ 2.0，1.0 = 100%
+    pub mic_vol: f32, // 0.0 ~ 2.0，1.0 = 100%
     #[serde(default = "default_vol")]
     pub sys_vol: f32,
 }
 
-fn default_fps() -> u32 { 30 }
-fn default_vol() -> f32 { 1.0 }
+fn default_fps() -> u32 {
+    60
+}
+fn default_vol() -> f32 {
+    1.0
+}
+
+// ── WGC 擷取 handler ──
+
+/// 傳給 handler 的設定：裁切區域 + 編碼參數 + 輸出路徑
+#[derive(Clone)]
+pub struct RecFlags {
+    left: u32,
+    top: u32,
+    right: u32,
+    bottom: u32,
+    width: u32,
+    height: u32,
+    fps: u32,
+    out: String,
+}
+
+pub struct RecHandler {
+    encoder: Option<VideoEncoder>,
+    left: u32,
+    top: u32,
+    right: u32,
+    bottom: u32,
+    scratch: Vec<u8>,
+}
+
+impl GraphicsCaptureApiHandler for RecHandler {
+    type Flags = RecFlags;
+    type Error = RecError;
+
+    fn new(ctx: Context<Self::Flags>) -> Result<Self, Self::Error> {
+        let f = ctx.flags;
+        let encoder = VideoEncoder::new(
+            VideoSettingsBuilder::new(f.width, f.height)
+                .frame_rate(f.fps)
+                .bitrate(12_000_000)
+                .sub_type(VideoSettingsSubType::H264),
+            AudioSettingsBuilder::default().disabled(true),
+            ContainerSettingsBuilder::default(),
+            &f.out,
+        )?;
+        Ok(Self {
+            encoder: Some(encoder),
+            left: f.left,
+            top: f.top,
+            right: f.right,
+            bottom: f.bottom,
+            scratch: Vec::new(),
+        })
+    }
+
+    fn on_frame_arrived(
+        &mut self,
+        frame: &mut Frame,
+        _control: InternalCaptureControl,
+    ) -> Result<(), Self::Error> {
+        if let Some(enc) = self.encoder.as_mut() {
+            let ts = frame.timestamp()?.Duration;
+            let fb = frame.buffer_crop(self.left, self.top, self.right, self.bottom)?;
+            let bytes = fb.as_nopadding_buffer(&mut self.scratch);
+            enc.send_frame_buffer(bytes, ts)?;
+        }
+        Ok(())
+    }
+
+    fn on_closed(&mut self) -> Result<(), Self::Error> {
+        // 若擷取項目意外關閉，盡量收尾 encoder（避免 mp4 不完整）
+        if let Some(enc) = self.encoder.take() {
+            let _ = enc.finish();
+        }
+        Ok(())
+    }
+}
 
 // ── 列出 dshow 音訊裝置 ──
 
@@ -44,12 +150,9 @@ pub fn list_audio_devices() -> Result<Vec<String>, String> {
         .output()
         .map_err(|e| format!("列舉裝置失敗: {e}"))?;
 
-    // FFmpeg 把 device list 寫在 stderr
     let stderr = String::from_utf8_lossy(&output.stderr);
     let mut devices = Vec::new();
-
     for line in stderr.lines() {
-        // 格式: [dshow @ ...] "裝置名" (audio)
         if line.contains("(audio)") {
             if let Some(start) = line.find('"') {
                 if let Some(end) = line[start + 1..].find('"') {
@@ -59,7 +162,6 @@ pub fn list_audio_devices() -> Result<Vec<String>, String> {
             }
         }
     }
-
     log::info!("🎤 dshow 音訊裝置: {:?}", devices);
     Ok(devices)
 }
@@ -74,7 +176,7 @@ pub struct RecordingResult {
     pub thumbnail_url: String,
 }
 
-// ── 0. 設定錄影選項（主視窗呼叫，overlay 使用）──
+// ── 0. 設定錄影選項 ──
 
 #[tauri::command]
 pub async fn set_rec_options(
@@ -86,21 +188,24 @@ pub async fn set_rec_options(
     mic_vol: Option<f32>,
     sys_vol: Option<f32>,
 ) -> Result<(), String> {
-    let mic_dev = mic_device.unwrap_or_default();
-    let sys_dev = sys_audio_device.unwrap_or_default();
-    let fps_val = fps.unwrap_or(30);
-    let mic_v = mic_vol.unwrap_or(1.0);
-    let sys_v = sys_vol.unwrap_or(1.0);
-    *RECORDING_OPTIONS.lock().unwrap() = Some(RecOptions {
+    let opts = RecOptions {
         sys_audio,
         mic,
-        mic_device: mic_dev.clone(),
-        sys_audio_device: sys_dev.clone(),
-        fps: fps_val,
-        mic_vol: mic_v,
-        sys_vol: sys_v,
-    });
-    log::info!("🎙️ 錄影選項: sys={sys_audio}({sys_v:.0}%), mic={mic}({mic_v:.0}%), fps={fps_val}");
+        mic_device: mic_device.unwrap_or_default(),
+        sys_audio_device: sys_audio_device.unwrap_or_default(),
+        fps: fps.unwrap_or(60),
+        mic_vol: mic_vol.unwrap_or(1.0),
+        sys_vol: sys_vol.unwrap_or(1.0),
+    };
+    log::info!(
+        "🎙️ 錄影選項: sys={}({:.0}%), mic={}({:.0}%), fps={}",
+        opts.sys_audio,
+        opts.sys_vol * 100.0,
+        opts.mic,
+        opts.mic_vol * 100.0,
+        opts.fps
+    );
+    *RECORDING_OPTIONS.lock().unwrap() = Some(opts);
     Ok(())
 }
 
@@ -108,18 +213,18 @@ pub async fn set_rec_options(
 
 #[tauri::command]
 pub async fn start_region_select(app: AppHandle) -> Result<(), String> {
-    // 如果已有 overlay 視窗，先關閉
     if let Some(w) = app.get_webview_window("overlay") {
         let _ = w.close();
     }
 
-    // 取得螢幕大小以置中
-    let (sw, sh) = app.primary_monitor()
-        .ok().flatten()
+    let (sw, sh) = app
+        .primary_monitor()
+        .ok()
+        .flatten()
         .map(|m| {
             let s = m.size();
             let scale = m.scale_factor();
-            ((s.width as f64 / scale) as f64, (s.height as f64 / scale) as f64)
+            ((s.width as f64 / scale), (s.height as f64 / scale))
         })
         .unwrap_or((1920.0, 1080.0));
 
@@ -128,50 +233,141 @@ pub async fn start_region_select(app: AppHandle) -> Result<(), String> {
     let ox = (sw - ow) / 2.0;
     let oy = (sh - oh) / 2.0;
 
-    // 建立透明、無邊框、置頂的 overlay
-    let _overlay = WebviewWindowBuilder::new(
-        &app,
-        "overlay",
-        WebviewUrl::App("overlay.html".into()),
-    )
-    .title("LJCUT 錄影選區")
-    .inner_size(ow, oh)
-    .position(ox, oy)
-    .resizable(true)
-    .decorations(false)
-    .transparent(true)
-    .always_on_top(true)
-    .skip_taskbar(true)
-    .build()
-    .map_err(|e| format!("建立 overlay 失敗: {e}"))?;
+    WebviewWindowBuilder::new(&app, "overlay", WebviewUrl::App("overlay.html".into()))
+        .title("LJCUT 錄影選區")
+        .inner_size(ow, oh)
+        .position(ox, oy)
+        .resizable(true)
+        .decorations(false)
+        .transparent(true)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .build()
+        .map_err(|e| format!("建立 overlay 失敗: {e}"))?;
 
     Ok(())
+}
+
+// ── 音訊擷取（ffmpeg dshow，可選）──
+
+fn start_audio_capture(
+    opts: &RecOptions,
+    outputs: &Path,
+    stamp: &str,
+) -> (Option<PathBuf>, Option<Child>) {
+    let has_sys = opts.sys_audio && !opts.sys_audio_device.is_empty();
+    let has_mic = opts.mic && !opts.mic_device.is_empty();
+    if !has_sys && !has_mic {
+        return (None, None);
+    }
+
+    let audio_path = outputs.join(format!("rec_audio_{stamp}.m4a"));
+    let mut args: Vec<String> = vec!["-y".into()];
+
+    if has_sys {
+        args.extend([
+            "-f".into(),
+            "dshow".into(),
+            "-thread_queue_size".into(),
+            "1024".into(),
+            "-i".into(),
+            format!("audio={}", opts.sys_audio_device),
+        ]);
+    }
+    if has_mic {
+        args.extend([
+            "-f".into(),
+            "dshow".into(),
+            "-thread_queue_size".into(),
+            "1024".into(),
+            "-i".into(),
+            format!("audio={}", opts.mic_device),
+        ]);
+    }
+
+    let sys_v = opts.sys_vol;
+    let mic_v = opts.mic_vol;
+    if has_sys && has_mic {
+        // sys=input0, mic=input1
+        let fc = if (sys_v - 1.0).abs() < 0.01 && (mic_v - 1.0).abs() < 0.01 {
+            "[0:a][1:a]amerge=inputs=2[a]".to_string()
+        } else {
+            format!("[0:a]volume={sys_v:.2}[s];[1:a]volume={mic_v:.2}[m];[s][m]amerge=inputs=2[a]")
+        };
+        args.extend([
+            "-filter_complex".into(),
+            fc,
+            "-map".into(),
+            "[a]".into(),
+            "-ac".into(),
+            "2".into(),
+        ]);
+    } else {
+        // 單一來源（input0），需要時調音量
+        let vol = if has_sys { sys_v } else { mic_v };
+        if (vol - 1.0).abs() >= 0.01 {
+            args.extend(["-af".into(), format!("volume={vol:.2}")]);
+        }
+    }
+
+    args.extend([
+        "-c:a".into(),
+        "aac".into(),
+        "-b:a".into(),
+        "192k".into(),
+        "-ar".into(),
+        "48000".into(),
+        audio_path.to_string_lossy().to_string(),
+    ]);
+
+    match StdCommand::new("ffmpeg")
+        .args(&args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(mut c) => {
+            if let Some(err) = c.stderr.take() {
+                std::thread::spawn(move || {
+                    use std::io::{BufRead, BufReader};
+                    for line in BufReader::new(err).lines().map_while(Result::ok) {
+                        log::debug!("[rec-audio] {line}");
+                    }
+                });
+            }
+            (Some(audio_path), Some(c))
+        }
+        Err(e) => {
+            log::error!("啟動音訊擷取失敗: {e}");
+            (None, None)
+        }
+    }
 }
 
 // ── 2. 開始錄影 ──
 
 #[tauri::command]
-pub async fn start_recording(
-    app: AppHandle,
-    fps: Option<u32>,
-) -> Result<String, String> {
-    // 從全域設定讀取音訊選項
-    let rec_opts = RECORDING_OPTIONS.lock().unwrap().clone()
-        .unwrap_or(RecOptions {
-            sys_audio: false, mic: false,
-            mic_device: String::new(), sys_audio_device: String::new(),
-            fps: 30, mic_vol: 1.0, sys_vol: 1.0,
-        });
+pub async fn start_recording(app: AppHandle, fps: Option<u32>) -> Result<String, String> {
+    let rec_opts = RECORDING_OPTIONS.lock().unwrap().clone().unwrap_or(RecOptions {
+        sys_audio: false,
+        mic: false,
+        mic_device: String::new(),
+        sys_audio_device: String::new(),
+        fps: 60,
+        mic_vol: 1.0,
+        sys_vol: 1.0,
+    });
+    let fps = if rec_opts.fps > 0 {
+        rec_opts.fps
+    } else {
+        fps.unwrap_or(60)
+    };
 
-    // 優先使用全域設定的 fps，overlay 傳入的 fps 只是 fallback
-    let fps = if rec_opts.fps > 0 { rec_opts.fps } else { fps.unwrap_or(30) };
-
-    // 取得 overlay 視窗座標
+    // 取得 overlay 視窗座標（物理像素）
     let overlay = app
         .get_webview_window("overlay")
         .ok_or("overlay 視窗不存在")?;
-
-    // 使用 inner_position/inner_size（不含 Windows DWM 不可見邊框）
     let position = overlay
         .inner_position()
         .map_err(|e| format!("取得位置失敗: {e}"))?;
@@ -179,50 +375,40 @@ pub async fn start_recording(
         .inner_size()
         .map_err(|e| format!("取得大小失敗: {e}"))?;
 
-    // 直接使用物理像素座標（gdigrab 使用實際螢幕像素）
-    let mut x = position.x;
-    let mut y = position.y;
+    // 主螢幕（WGC 以單一顯示器為單位；使用者為單螢幕，主螢幕通常起點 0,0）
+    let monitor = Monitor::primary().map_err(|e| format!("取得主螢幕失敗: {e}"))?;
+    let mon_w = monitor.width().map_err(|e| format!("取得螢幕寬失敗: {e}"))?;
+    let mon_h = monitor.height().map_err(|e| format!("取得螢幕高失敗: {e}"))?;
+
+    let mut x = position.x.max(0) as u32;
+    let mut y = position.y.max(0) as u32;
     let mut w = size.width;
     let mut h = size.height;
 
-    // 取得虛擬桌面總範圍（多螢幕合併）
-    let (screen_w, screen_h) = app.available_monitors()
-        .map(|monitors| {
-            let mut max_w: u32 = 0;
-            let mut max_h: u32 = 0;
-            for m in monitors {
-                let pos = m.position();
-                let sz = m.size();
-                let right = pos.x as u32 + sz.width;
-                let bottom = pos.y as u32 + sz.height;
-                if right > max_w { max_w = right; }
-                if bottom > max_h { max_h = bottom; }
-            }
-            (max_w, max_h)
-        })
-        .unwrap_or((4480, 1440));
-
-    // 座標不可為負
-    x = std::cmp::max(x, 0);
-    y = std::cmp::max(y, 0);
-
-    // Clamp 寬高不超出螢幕邊界
-    if (x as u32 + w) > screen_w {
-        w = screen_w - x as u32;
+    // clamp 到螢幕範圍內
+    if x >= mon_w {
+        x = mon_w.saturating_sub(2);
     }
-    if (y as u32 + h) > screen_h {
-        h = screen_h - y as u32;
+    if y >= mon_h {
+        y = mon_h.saturating_sub(2);
     }
+    if x + w > mon_w {
+        w = mon_w - x;
+    }
+    if y + h > mon_h {
+        h = mon_h - y;
+    }
+    // 寬高需為偶數（H.264 要求）且至少 4 像素
+    let w = (w - (w % 2)).max(4);
+    let h = (h - (h % 2)).max(4);
+    let left = x;
+    let top = y;
+    let right = left + w;
+    let bottom = top + h;
 
-    // 確保寬高為偶數（libx264 要求）且至少 4 像素
-    let w = std::cmp::max(w - (w % 2), 4);
-    let h = std::cmp::max(h - (h % 2), 4);
-
-    log::info!("📐 Overlay: pos=({x},{y}), size={w}x{h}, screen={screen_w}x{screen_h}");
-
-    // 關閉 overlay，等待視窗完全消失才開始錄影
+    // 關閉 overlay，等它完全消失才開始擷取
     let _ = overlay.close();
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    std::thread::sleep(Duration::from_millis(300));
 
     // 準備輸出路徑
     let data_dir = app
@@ -231,214 +417,163 @@ pub async fn start_recording(
         .map_err(|e| format!("取得 data dir 失敗: {e}"))?;
     let outputs = data_dir.join("outputs");
     std::fs::create_dir_all(&outputs).ok();
+    let stamp = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
+    let video_path = outputs.join(format!("rec_video_{stamp}.mp4"));
+    let final_path = outputs.join(format!("錄影_{stamp}.mp4"));
 
-    let now = chrono::Local::now();
-    let filename = format!("錄影_{}.mp4", now.format("%Y%m%d_%H%M%S"));
-    let output = outputs.join(&filename);
-    let output_str = output.to_string_lossy().to_string();
+    // 啟動音訊擷取（與影像並行）
+    let (audio_path, audio_child) = start_audio_capture(&rec_opts, &outputs, &stamp);
 
-    // 組裝 ffmpeg 命令
-    //
-    // 視訊用 ddagrab（Desktop Duplication API）取代舊的 gdigrab：
-    // gdigrab 在現代 Windows 上遇到 GPU 合成/全螢幕畫面常 "Failed to capture image (error 5)"
-    // 而中途掛掉，造成錄影只剩 1~2 幀。ddagrab 走 DXGI 桌面複製，穩定許多。
-    //
-    // 限制：ddagrab 以單一顯示器(output_idx)為單位，offset/size 相對於該顯示器。
-    // 此處以主顯示器(0)為準（主螢幕通常起點 0,0）；跨螢幕的選區目前未支援。
-    let mut args = vec![
-        "-y".to_string(),
-        "-f".to_string(),
-        "lavfi".to_string(),
-        "-i".to_string(),
-        format!(
-            "ddagrab=output_idx=0:framerate={fps}:offset_x={x}:offset_y={y}:video_size={w}x{h}:draw_mouse=true"
-        ),
-    ];
+    // 啟動 WGC 影像擷取
+    let flags = RecFlags {
+        left,
+        top,
+        right,
+        bottom,
+        width: w,
+        height: h,
+        fps,
+        out: video_path.to_string_lossy().to_string(),
+    };
+    let interval = Duration::from_nanos(1_000_000_000 / fps.max(1) as u64);
+    let settings = Settings::new(
+        monitor,
+        CursorCaptureSettings::Default,
+        DrawBorderSettings::Default,
+        SecondaryWindowSettings::Default,
+        MinimumUpdateIntervalSettings::Custom(interval),
+        DirtyRegionSettings::Default,
+        ColorFormat::Rgba8,
+        flags,
+    );
 
-    // 音訊輸入：系統聲音 + 麥克風（dshow）
-    let has_sys = rec_opts.sys_audio && !rec_opts.sys_audio_device.is_empty();
-    let has_mic = rec_opts.mic && !rec_opts.mic_device.is_empty();
-
-    if has_sys {
-        args.extend_from_slice(&[
-            "-f".to_string(),
-            "dshow".to_string(),
-            "-thread_queue_size".to_string(),
-            "1024".to_string(),
-            "-i".to_string(),
-            format!("audio={}", rec_opts.sys_audio_device),
-        ]);
-    }
-
-    if has_mic {
-        args.extend_from_slice(&[
-            "-f".to_string(),
-            "dshow".to_string(),
-            "-thread_queue_size".to_string(),
-            "1024".to_string(),
-            "-i".to_string(),
-            format!("audio={}", rec_opts.mic_device),
-        ]);
-    }
-
-    // ── filter_complex ──
-    // 視訊一定要 hwdownload：ddagrab 輸出在 GPU(d3d11)，要下載到 CPU 再轉 yuv420p 給 libx264。
-    // 音訊視來源組合（sys 為 input 1、mic 接著）。
-    let sys_v = rec_opts.sys_vol;
-    let mic_v = rec_opts.mic_vol;
-    let mut fc = "[0:v]hwdownload,format=bgra,format=yuv420p[v]".to_string();
-
-    // audio_map：要 -map 的音訊標籤（None = 無音訊）
-    let audio_map: Option<String> = if has_sys && has_mic {
-        let afc = if (sys_v - 1.0).abs() < 0.01 && (mic_v - 1.0).abs() < 0.01 {
-            "[1:a][2:a]amerge=inputs=2[a]".to_string()
-        } else {
-            format!("[1:a]volume={sys_v:.2}[s];[2:a]volume={mic_v:.2}[m];[s][m]amerge=inputs=2[a]")
-        };
-        fc.push(';');
-        fc.push_str(&afc);
-        Some("[a]".to_string())
-    } else if has_sys || has_mic {
-        let vol = if has_sys { sys_v } else { mic_v };
-        if (vol - 1.0).abs() < 0.01 {
-            Some("1:a".to_string()) // 音量 100% → 直接 map 原始音訊
-        } else {
-            fc.push_str(&format!(";[1:a]volume={vol:.2}[a]"));
-            Some("[a]".to_string())
+    let control = match RecHandler::start_free_threaded(settings) {
+        Ok(c) => c,
+        Err(e) => {
+            // 影像啟動失敗 → 收掉音訊
+            if let Some(mut child) = audio_child {
+                let _ = child.kill();
+            }
+            return Err(format!("啟動螢幕擷取失敗: {e}"));
         }
-    } else {
-        None
     };
 
-    args.push("-filter_complex".to_string());
-    args.push(fc);
-    args.push("-map".to_string());
-    args.push("[v]".to_string());
-    if let Some(label) = audio_map {
-        let both_audio = has_sys && has_mic;
-        args.push("-map".to_string());
-        args.push(label);
-        if both_audio {
-            // amerge 兩路 stereo = 4 聲道，downmix 回 stereo
-            args.push("-ac".to_string());
-            args.push("2".to_string());
+    *VIDEO_CONTROL.lock().unwrap() = Some(control);
+    *AUDIO_PROCESS.lock().unwrap() = audio_child;
+    *REC_PATHS.lock().unwrap() = Some(RecPaths {
+        video: video_path,
+        audio: audio_path,
+        final_out: final_path.clone(),
+    });
+
+    log::info!("🎬 開始 WGC 錄影: 區域 ({left},{top}) {w}x{h} @ {fps}fps");
+    let final_str = final_path.to_string_lossy().to_string();
+    let _ = app.emit("recording_started", &final_str);
+    Ok(final_str)
+}
+
+// ── 影音合流 ──
+
+fn mux_av(video: &Path, audio: Option<&Path>, out: &Path) -> bool {
+    let mut args: Vec<String> = vec!["-y".into(), "-i".into(), video.to_string_lossy().to_string()];
+    if let Some(a) = audio {
+        args.extend(["-i".into(), a.to_string_lossy().to_string()]);
+    }
+    args.extend(["-c".into(), "copy".into()]);
+    if audio.is_some() {
+        args.push("-shortest".into());
+    }
+    args.push(out.to_string_lossy().to_string());
+
+    match StdCommand::new("ffmpeg")
+        .args(&args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+    {
+        Ok(o) if o.status.success() => true,
+        Ok(o) => {
+            log::error!("合流失敗:\n{}", String::from_utf8_lossy(&o.stderr));
+            false
+        }
+        Err(e) => {
+            log::error!("合流執行失敗: {e}");
+            false
         }
     }
-
-    // 編碼：錄影用 libx264 ultrafast（最終匯出燒字幕另走 NVENC，品質不受影響）
-    args.extend_from_slice(&[
-        "-c:v".to_string(),
-        "libx264".to_string(),
-        "-preset".to_string(),
-        "ultrafast".to_string(),
-        "-pix_fmt".to_string(),
-        "yuv420p".to_string(),
-        "-c:a".to_string(),
-        "aac".to_string(),
-        "-b:a".to_string(),
-        "192k".to_string(),
-        "-ar".to_string(),
-        "48000".to_string(),
-        output_str.clone(),
-    ]);
-
-    log::info!("🎬 開始錄影: ffmpeg {}", args.join(" "));
-    log::info!("📍 區域: ({x}, {y}) {w}x{h}");
-
-    let mut child = StdCommand::new("ffmpeg")
-        .args(&args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())  // 捕獲 stderr 用於除錯
-        .spawn()
-        .map_err(|e| format!("啟動 ffmpeg 失敗: {e}"))?;
-
-    // 在背景執行緒讀取 stderr，避免管道滿時阻塞 FFmpeg
-    if let Some(stderr_pipe) = child.stderr.take() {
-        std::thread::spawn(move || {
-            use std::io::{BufRead, BufReader};
-            let reader = BufReader::new(stderr_pipe);
-            for line in reader.lines() {
-                match line {
-                    Ok(l) => log::debug!("[FFmpeg] {l}"),
-                    Err(_) => break,
-                }
-            }
-        });
-    }
-
-    // 儲存 process handle
-    *FFMPEG_PROCESS.lock().unwrap() = Some(child);
-    *OUTPUT_PATH.lock().unwrap() = Some(output_str.clone());
-
-    // 通知前端錄影已開始
-    let _ = app.emit("recording_started", &output_str);
-
-    Ok(output_str)
 }
 
 // ── 3. 停止錄影 ──
 
 #[tauri::command]
 pub async fn stop_recording(app: AppHandle) -> Result<String, String> {
-    let output_path = OUTPUT_PATH
+    let paths = REC_PATHS
         .lock()
         .unwrap()
         .take()
         .ok_or("沒有正在進行的錄影")?;
 
-    // 向 ffmpeg 發送 'q' 讓它正常結束
-    let mut child = FFMPEG_PROCESS
-        .lock()
-        .unwrap()
-        .take()
-        .ok_or("ffmpeg 程序不存在")?;
-
-    // 寫入 'q' 到 stdin 讓 ffmpeg 優雅結束
-    if let Some(ref mut stdin) = child.stdin {
-        use std::io::Write;
-        let _ = stdin.write_all(b"q");
-        let _ = stdin.flush();
-    }
-
-    // 等待 ffmpeg 結束
-    match child.wait() {
-        Ok(status) => {
-            log::info!("🛑 錄影結束: {status}");
-            if !status.success() {
-                log::warn!("⚠️ FFmpeg 非正常結束");
+    // 停止影像擷取並收尾 encoder
+    if let Some(control) = VIDEO_CONTROL.lock().unwrap().take() {
+        let cb = control.callback();
+        if let Err(e) = control.stop() {
+            log::warn!("停止擷取執行緒: {e:?}");
+        }
+        // windows-capture 使用 parking_lot::Mutex，.lock() 直接回傳 guard
+        let mut handler = cb.lock();
+        if let Some(enc) = handler.encoder.take() {
+            if let Err(e) = enc.finish() {
+                log::error!("encoder 收尾失敗: {e}");
             }
         }
-        Err(e) => {
-            log::warn!("等待 ffmpeg 結束失敗: {e}, 強制終止");
-            let _ = child.kill();
+    }
+
+    // 停止音訊 ffmpeg（送 'q' 優雅結束，逾時則強制）
+    if let Some(mut child) = AUDIO_PROCESS.lock().unwrap().take() {
+        if let Some(ref mut stdin) = child.stdin {
+            let _ = stdin.write_all(b"q");
+            let _ = stdin.flush();
+        }
+        std::thread::sleep(Duration::from_millis(200));
+        match child.try_wait() {
+            Ok(Some(_)) => {}
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
         }
     }
 
-    // 等待檔案系統同步
-    std::thread::sleep(std::time::Duration::from_millis(800));
+    std::thread::sleep(Duration::from_millis(300));
 
-    // 檢查錄影檔是否存在
-    let src = std::path::PathBuf::from(&output_path);
-    if !src.exists() {
-        log::error!("❌ 錄影檔案不存在: {output_path}");
-        let _ = app.emit("recording_stopped", serde_json::json!(null));
-        return Err(format!("錄影檔案不存在，FFmpeg 可能失敗"));
+    // 影音合流（無音訊時等於重新封裝影像）
+    let final_path = paths.final_out.clone();
+    if !mux_av(&paths.video, paths.audio.as_deref(), &final_path) {
+        // 合流失敗 → 退回只用影像
+        let _ = std::fs::copy(&paths.video, &final_path);
+    }
+    // 清理暫存
+    let _ = std::fs::remove_file(&paths.video);
+    if let Some(a) = &paths.audio {
+        let _ = std::fs::remove_file(a);
     }
 
-    let file_size = std::fs::metadata(&src).map(|m| m.len()).unwrap_or(0);
-    log::info!("📦 錄影檔案大小: {} bytes ({})", file_size, output_path);
-
+    if !final_path.exists() {
+        log::error!("❌ 錄影輸出不存在: {}", final_path.display());
+        let _ = app.emit("recording_stopped", serde_json::json!(null));
+        return Err("錄影輸出不存在，擷取可能失敗".into());
+    }
+    let file_size = std::fs::metadata(&final_path).map(|m| m.len()).unwrap_or(0);
+    log::info!("📦 錄影檔大小: {file_size} bytes ({})", final_path.display());
     if file_size == 0 {
-        log::error!("❌ 錄影檔案大小為 0");
         let _ = app.emit("recording_stopped", serde_json::json!(null));
-        return Err("錄影檔案大小為 0，FFmpeg 可能失敗".into());
+        return Err("錄影檔大小為 0，擷取可能失敗".into());
     }
 
-    // ── 後處理（不讓任何步驟阻止事件發送） ──
+    // ── 後處理：複製到 backend/uploads、取得資訊、產縮圖 ──
     let process_result = (|| -> Result<RecordingResult, String> {
         let file_id = uuid::Uuid::new_v4().to_string()[..12].to_string();
-        let filename = src
+        let filename = final_path
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("recording.mp4")
@@ -446,45 +581,39 @@ pub async fn stop_recording(app: AppHandle) -> Result<String, String> {
 
         let backend_uploads = find_backend_uploads_dir();
         let backend_outputs = find_backend_outputs_dir();
-
-        log::info!("📂 Backend uploads: {}", backend_uploads.display());
-        log::info!("📂 Backend outputs: {}", backend_outputs.display());
-
         std::fs::create_dir_all(&backend_uploads)
             .map_err(|e| format!("建立 backend/uploads 失敗: {e}"))?;
         std::fs::create_dir_all(&backend_outputs)
             .map_err(|e| format!("建立 backend/outputs 失敗: {e}"))?;
 
         let dest = backend_uploads.join(format!("{file_id}.mp4"));
-        std::fs::copy(&src, &dest)
-            .map_err(|e| format!("複製錄影檔失敗: {e}"))?;
+        std::fs::copy(&final_path, &dest).map_err(|e| format!("複製錄影檔失敗: {e}"))?;
         log::info!("✅ 錄影檔已複製到: {}", dest.display());
 
         let dest_str = dest.to_string_lossy().to_string();
-        let info = ffmpeg_service::get_media_info(&dest_str)
-            .unwrap_or_else(|e| {
-                log::warn!("取得 media info 失敗: {e}");
-                ffmpeg_service::MediaInfo {
-                    duration: 0.0,
-                    size_mb: 0.0,
-                    width: None,
-                    height: None,
-                    fps: None,
-                    video_codec: None,
-                    audio_codec: None,
-                    sample_rate: None,
-                }
-            });
+        let info = ffmpeg_service::get_media_info(&dest_str).unwrap_or_else(|e| {
+            log::warn!("取得 media info 失敗: {e}");
+            ffmpeg_service::MediaInfo {
+                duration: 0.0,
+                size_mb: 0.0,
+                width: None,
+                height: None,
+                fps: None,
+                video_codec: None,
+                audio_codec: None,
+                sample_rate: None,
+            }
+        });
 
         let thumb_path = backend_outputs.join(format!("{file_id}_thumb.jpg"));
         let _ = ffmpeg_service::generate_thumbnail(&dest_str, &thumb_path.to_string_lossy());
 
         Ok(RecordingResult {
-            file_id,
+            file_id: file_id.clone(),
             filename,
-            url: format!("/uploads/{}.mp4", &dest.file_stem().unwrap().to_string_lossy()),
+            url: format!("/uploads/{file_id}.mp4"),
             info,
-            thumbnail_url: format!("/api/thumbnail/{}", &dest.file_stem().unwrap().to_string_lossy().replace(".mp4", "")),
+            thumbnail_url: format!("/api/thumbnail/{file_id}"),
         })
     })();
 
@@ -496,7 +625,6 @@ pub async fn stop_recording(app: AppHandle) -> Result<String, String> {
         }
         Err(e) => {
             log::error!("❌ 錄影後處理失敗: {e}");
-            // 仍然嘗試 emit 基本資訊，讓前端至少知道錄影停了
             let _ = app.emit("recording_stopped", serde_json::json!(null));
             Err(format!("錄影後處理失敗: {e}"))
         }
@@ -504,60 +632,31 @@ pub async fn stop_recording(app: AppHandle) -> Result<String, String> {
 }
 
 /// 推算 backend/uploads 目錄的絕對路徑
-fn find_backend_uploads_dir() -> std::path::PathBuf {
-    // 優先從 exe 目錄向上找
-    if let Ok(exe) = std::env::current_exe() {
-        // Dev 模式: exe 在 src-tauri/target/debug/
-        // 專案根 = exe/../../../..
-        let mut dir = exe.parent().unwrap().to_path_buf();
-        for _ in 0..5 {
-            let candidate = dir.join("backend").join("uploads");
-            if candidate.exists() || dir.join("backend").exists() {
-                return candidate;
-            }
-            if let Some(parent) = dir.parent() {
-                dir = parent.to_path_buf();
-            } else {
-                break;
-            }
-        }
-    }
-
-    // 嘗試 cwd
-    if let Ok(cwd) = std::env::current_dir() {
-        let candidate = cwd.join("backend").join("uploads");
-        if cwd.join("backend").exists() {
-            return candidate;
-        }
-    }
-
-    // Fallback: 相對路徑
-    std::path::PathBuf::from("backend/uploads")
+fn find_backend_uploads_dir() -> PathBuf {
+    find_backend_subdir("uploads")
 }
 
 /// 推算 backend/outputs 目錄的絕對路徑
-fn find_backend_outputs_dir() -> std::path::PathBuf {
+fn find_backend_outputs_dir() -> PathBuf {
+    find_backend_subdir("outputs")
+}
+
+fn find_backend_subdir(sub: &str) -> PathBuf {
     if let Ok(exe) = std::env::current_exe() {
-        let mut dir = exe.parent().unwrap().to_path_buf();
-        for _ in 0..5 {
-            let candidate = dir.join("backend").join("outputs");
-            if candidate.exists() || dir.join("backend").exists() {
-                return candidate;
-            }
-            if let Some(parent) = dir.parent() {
-                dir = parent.to_path_buf();
-            } else {
-                break;
+        let mut dir = exe.parent().map(|p| p.to_path_buf());
+        for _ in 0..6 {
+            if let Some(d) = &dir {
+                if d.join("backend").exists() {
+                    return d.join("backend").join(sub);
+                }
+                dir = d.parent().map(|p| p.to_path_buf());
             }
         }
     }
-
     if let Ok(cwd) = std::env::current_dir() {
-        let candidate = cwd.join("backend").join("outputs");
         if cwd.join("backend").exists() {
-            return candidate;
+            return cwd.join("backend").join(sub);
         }
     }
-
-    std::path::PathBuf::from("backend/outputs")
+    PathBuf::from("backend").join(sub)
 }
