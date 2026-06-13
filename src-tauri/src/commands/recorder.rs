@@ -447,14 +447,28 @@ pub async fn start_recording(app: AppHandle, fps: Option<u32>) -> Result<String,
         flags,
     );
 
-    let control = match RecHandler::start_free_threaded(settings) {
-        Ok(c) => c,
-        Err(e) => {
-            // 影像啟動失敗 → 收掉音訊
+    // 重要：start_free_threaded 內部會建立 COM/WGC 並阻塞等待擷取執行緒就緒。
+    // 直接在 Tauri 的 async 指令（tokio 工作執行緒）上呼叫會卡死（tokio 執行緒的
+    // COM apartment 與 WGC 啟動衝突）。改在一條乾淨的 std::thread 上呼叫，再用
+    // channel 把 CaptureControl 傳回（等同已驗證可行的獨立執行情境）。
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let res = RecHandler::start_free_threaded(settings).map_err(|e| e.to_string());
+        let _ = tx.send(res);
+    });
+    let control = match rx.recv() {
+        Ok(Ok(c)) => c,
+        Ok(Err(e)) => {
             if let Some(mut child) = audio_child {
                 let _ = child.kill();
             }
             return Err(format!("啟動螢幕擷取失敗: {e}"));
+        }
+        Err(_) => {
+            if let Some(mut child) = audio_child {
+                let _ = child.kill();
+            }
+            return Err("擷取執行緒未回應".into());
         }
     };
 
