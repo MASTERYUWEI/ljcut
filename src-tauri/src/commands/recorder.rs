@@ -307,19 +307,31 @@ pub async fn start_recording(app: AppHandle, fps: Option<u32>) -> Result<String,
         .inner_size()
         .map_err(|e| format!("取得大小失敗: {e}"))?;
 
-    // 主螢幕實體尺寸（用於 clamp）
-    let (mon_w, mon_h) = app
-        .primary_monitor()
-        .ok()
-        .flatten()
-        .map(|m| {
-            let s = m.size();
-            (s.width, s.height)
+    // 找出選區所在的螢幕（以選區中心點判斷），支援多螢幕
+    let cx = position.x + size.width as i32 / 2;
+    let cy = position.y + size.height as i32 / 2;
+    let monitors = app.available_monitors().unwrap_or_default();
+    let target = monitors
+        .iter()
+        .find(|m| {
+            let mp = m.position();
+            let ms = m.size();
+            cx >= mp.x && cx < mp.x + ms.width as i32 && cy >= mp.y && cy < mp.y + ms.height as i32
         })
-        .unwrap_or((1920, 1080));
+        .or_else(|| monitors.first());
 
-    let mut x = position.x.max(0) as u32;
-    let mut y = position.y.max(0) as u32;
+    let (mon_x, mon_y, mon_w, mon_h, mon_name) = match target {
+        Some(m) => {
+            let p = m.position();
+            let s = m.size();
+            (p.x, p.y, s.width, s.height, m.name().map(|n| n.to_string()).unwrap_or_default())
+        }
+        None => (0, 0, 1920u32, 1080u32, String::new()),
+    };
+
+    // 轉成「該螢幕的本地座標」（相對於該螢幕左上角）+ clamp 到該螢幕範圍
+    let mut x = (position.x - mon_x).max(0) as u32;
+    let mut y = (position.y - mon_y).max(0) as u32;
     let mut w = size.width;
     let mut h = size.height;
     if x >= mon_w {
@@ -364,6 +376,7 @@ pub async fn start_recording(app: AppHandle, fps: Option<u32>) -> Result<String,
             h.to_string(),
             fps.to_string(),
             video_path.to_string_lossy().to_string(),
+            mon_name.clone(),
         ])
         .creation_flags(CREATE_NO_WINDOW)
         .stdin(Stdio::piped())
@@ -422,7 +435,7 @@ pub async fn start_recording(app: AppHandle, fps: Option<u32>) -> Result<String,
         final_out: final_path.clone(),
     });
 
-    log::info!("🎬 開始錄影: 區域 ({x},{y}) {w}x{h} @ {fps}fps");
+    log::info!("🎬 開始錄影: 螢幕[{mon_name}] 本地區域 ({x},{y}) {w}x{h} @ {fps}fps");
     let final_str = final_path.to_string_lossy().to_string();
     let _ = app.emit("recording_started", &final_str);
     Ok(final_str)

@@ -128,23 +128,38 @@ fn fail(msg: &str) -> ! {
     std::process::exit(1);
 }
 
+/// 依裝置名稱(\\.\DISPLAYn)選擇螢幕；空字串/"primary"或找不到時退回主螢幕
+fn pick_monitor(name: &str) -> Monitor {
+    if !name.is_empty() && name != "primary" {
+        if let Ok(monitors) = Monitor::enumerate() {
+            for m in &monitors {
+                if let Ok(dn) = m.device_name() {
+                    if dn == name {
+                        return *m;
+                    }
+                }
+            }
+        }
+    }
+    Monitor::primary().unwrap_or_else(|e| fail(&format!("取得主螢幕失敗: {e}")))
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    if args.len() < 7 {
-        fail("用法: ljcut-recorder <left> <top> <width> <height> <fps> <output.mp4> [自動停止秒數]");
+    if args.len() < 8 {
+        fail("用法: ljcut-recorder <left> <top> <width> <height> <fps> <output.mp4> <monitor> [自動停止秒數]");
     }
     let parse = |s: &str| -> u32 { s.parse().unwrap_or_else(|_| fail("參數需為整數")) };
+    // left/top 為「該螢幕的本地座標」（相對於該螢幕左上角）
     let left = parse(&args[1]);
     let top = parse(&args[2]);
     let width = parse(&args[3]);
     let height = parse(&args[4]);
     let fps = parse(&args[5]).max(1);
     let out = args[6].clone();
+    let monitor_name = args[7].clone(); // 螢幕裝置名稱 \\.\DISPLAYn（空/"primary"=主螢幕）
 
-    let monitor = match Monitor::primary() {
-        Ok(m) => m,
-        Err(e) => fail(&format!("取得主螢幕失敗: {e}")),
-    };
+    let monitor = pick_monitor(&monitor_name);
 
     let flags = Flags {
         left,
@@ -199,8 +214,8 @@ fn main() {
         });
     }
 
-    // 可選：自動停止秒數（第 7 個參數，測試用）
-    if let Some(secs) = args.get(7).and_then(|s| s.parse::<u64>().ok()) {
+    // 可選：自動停止秒數（第 8 個參數，測試用）
+    if let Some(secs) = args.get(8).and_then(|s| s.parse::<u64>().ok()) {
         let stop = stop.clone();
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_secs(secs));
