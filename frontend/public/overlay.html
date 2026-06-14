@@ -426,8 +426,10 @@
         document.getElementById('btnWindow').addEventListener('click', async () => {
             try {
                 await inv('enter_window_pick'); // overlay 撐滿整個虛擬桌面
-                const op = await inv('plugin:window|outer_position', { label: 'overlay' });
-                pickOrigin = { x: op.x, y: op.y };
+                // 用「內框(客戶區)」座標當原點：position:fixed 是相對客戶區，
+                // 用 outer_position 會差一圈隱形邊框造成偏移。
+                const ip = await inv('plugin:window|inner_position', { label: 'overlay' });
+                pickOrigin = { x: ip.x, y: ip.y };
                 document.body.classList.add('pick-mode');
                 document.getElementById('pickLayer').classList.remove('hidden');
 

@@ -439,6 +439,10 @@ fn begin_recording(
     let _ = app.global_shortcut().register("F10");
     // 置頂錄製指示視窗（主視窗最小化時仍看得到狀態）
     show_rec_indicator(app);
+    // 把主視窗最小化，讓使用者看到要錄的內容（停止時會自動還原）
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.minimize();
+    }
 
     log::info!("🎬 開始錄影: target={target} 區域({x},{y}) {w}x{h} @ {fps}fps");
     let final_str = final_path.to_string_lossy().to_string();
@@ -720,6 +724,11 @@ fn wait_or_kill(child: &mut Child, timeout: Duration) {
 pub async fn stop_recording(app: AppHandle) -> Result<String, String> {
     let _ = app.global_shortcut().unregister("F10");
     hide_rec_indicator(&app);
+    // 停止錄影後把主視窗叫回來（還原 + 聚焦），避免結束後找不到 UI
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+    }
     // 冪等：若已停止（例如 F10 與按鈕、或事件重複觸發），直接回 OK 不報錯
     let paths = match REC_PATHS.lock().unwrap().take() {
         Some(p) => p,
