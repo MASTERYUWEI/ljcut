@@ -284,6 +284,12 @@ body {
   box-shadow: 0 8px 40px rgba(0, 0, 0, 0.5);
 }
 
+/* 雙緩衝：兩個 video 疊放，opacity 由 JS imperative 控制（active=1, standby=0） */
+.video-container video.dbl-video {
+  position: absolute;
+  inset: 0;
+}
+
 /* 字幕即時預覽 overlay */
 .subtitle-preview-overlay {
   position: absolute;

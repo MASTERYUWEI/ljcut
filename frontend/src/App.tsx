@@ -51,7 +51,13 @@ function findSnapTime(time: number, segments: { start: number; end: number }[], 
 const LABEL_W = 72;
 
 export default function App() {
-    const videoRef = useRef<HTMLVideoElement>(null);
+    // 雙緩衝：兩個 <video> 疊在一起，永遠只有一個顯示(active)，另一個(standby)預載下一段。
+    // videoRef 永遠指向 active 元素（手動維護），既有邏輯一律透過它操作目前顯示中的影片。
+    const vid0Ref = useRef<HTMLVideoElement | null>(null);
+    const vid1Ref = useRef<HTMLVideoElement | null>(null);
+    const activeIdxRef = useRef(0); // 0 或 1：目前 active 的元素
+    const videoRef = useRef<HTMLVideoElement | null>(null);
+    const primedClipRef = useRef<string | null>(null); // standby 已預載好的 clip ID（null=未預載）
     const fileInputRef = useRef<HTMLInputElement>(null);
     const tracksRef = useRef<HTMLDivElement>(null);
     const rulerRef = useRef<HTMLDivElement>(null);
@@ -64,6 +70,8 @@ export default function App() {
     const playStartRef = useRef(0); // performance.now() when play started
     const playStartTlRef = useRef(0); // timeline position when play started
     const currentPlayingClipRef = useRef<string | null>(null); // 當前播放中的 clip ID
+    const clipReadyRef = useRef(false); // 當前 clip 的影片是否已載入+seek 完成（未就緒時時間軸改用牆鐘推算，避免載入空窗跳針）
+    const pendingLoadRef = useRef<(() => void) | null>(null); // 尚未觸發的 loadedmetadata 監聽（切換太快時用來移除舊的）
     const isDraggingRef = useRef(false); // 拖拉中旗標（ref 避免 stale closure）
     const mediaRecorderRef = useRef<MediaRecorder | null>(null);
     const recChunksRef = useRef<Blob[]>([]);
@@ -871,6 +879,146 @@ export default function App() {
         ) ?? null;
     }, [timelineClips]);
 
+    // ── 雙緩衝輔助 ──
+    const getActiveVideo = useCallback(() => (activeIdxRef.current === 0 ? vid0Ref.current : vid1Ref.current), []);
+    const getStandbyVideo = useCallback(() => (activeIdxRef.current === 0 ? vid1Ref.current : vid0Ref.current), []);
+
+    // 預載下一段到 standby 元素（換好 src + seek 到起點，保持暫停隱藏），到交界即可瞬間切換
+    const primeStandby = useCallback((clip: TimelineClip) => {
+        const s = getStandbyVideo();
+        if (!s) return;
+        const media = mediaItems.find(m => m.id === clip.mediaId);
+        if (!media) return;
+        if (s.src !== media.url && !s.src.endsWith(media.url)) {
+            s.src = media.url;
+            s.load();
+        }
+        const applySeek = () => {
+            try { s.currentTime = clip.trimStart; } catch { /* ignore */ }
+            s.preservesPitch = true;
+            s.muted = false;
+            s.playbackRate = clip.speed;
+        };
+        if (s.readyState >= 1) applySeek();
+        else {
+            const h = () => { s.removeEventListener('loadedmetadata', h); applySeek(); };
+            s.addEventListener('loadedmetadata', h);
+        }
+        s.pause();
+        primedClipRef.current = clip.id;
+    }, [getStandbyVideo, mediaItems]);
+
+    // 把已預載好的 standby 切成 active 並播放（無縫）。未預載/未就緒則回 false 讓呼叫端降級。
+    const swapToStandby = useCallback((clip: TimelineClip, autoplay: boolean): boolean => {
+        const standby = getStandbyVideo();
+        const old = getActiveVideo();
+        if (!standby || primedClipRef.current !== clip.id || standby.readyState < 1) return false;
+        if (old) { old.pause(); old.style.opacity = '0'; }
+        standby.style.opacity = '1';
+        standby.muted = false;
+        standby.preservesPitch = true;
+        standby.playbackRate = clip.speed;
+        activeIdxRef.current = 1 - activeIdxRef.current;
+        videoRef.current = standby;
+        currentPlayingClipRef.current = clip.id;
+        clipReadyRef.current = true;
+        primedClipRef.current = null;
+        if (autoplay) standby.play().then(() => { standby.playbackRate = clip.speed; standby.preservesPitch = true; }).catch(() => { });
+        return true;
+    }, [getStandbyVideo, getActiveVideo]);
+
+    // ── 把某個 clip 載入「目前 active」<video> 並定位到指定 media time ──
+    // 關鍵：換 src 是非同步的，直接設 currentTime 會因尚未載入而被丟掉、且 v.currentTime 在
+    // 載入空窗期是 0。所以「不同媒體」一律等 loadedmetadata 才 seek + 設速率 + 播放，期間
+    // clipReadyRef=false 讓播放迴圈改用牆鐘推算時間軸（不會跳針）。「同媒體」則直接套用。
+    // 注意：此函式會在 active 元素上換 src（會有黑閃），僅用於 seek/未預載的降級情況；
+    // 連續播放的交界由 swapToStandby 無縫處理。
+    const loadClipIntoVideo = useCallback((clip: TimelineClip, mediaTime: number, autoplay: boolean) => {
+        const v = videoRef.current;
+        if (!v) return;
+        const media = mediaItems.find(m => m.id === clip.mediaId);
+        currentPlayingClipRef.current = clip.id;
+        // 移除尚未觸發的舊 loadedmetadata 監聽，避免切換太快時舊的 seek 蓋掉新的
+        if (pendingLoadRef.current) {
+            v.removeEventListener('loadedmetadata', pendingLoadRef.current);
+            pendingLoadRef.current = null;
+        }
+        const applyAfterReady = () => {
+            try { v.currentTime = mediaTime; } catch { /* ignore */ }
+            v.preservesPitch = true;
+            v.muted = false;
+            v.playbackRate = clip.speed; // best-effort 先設一次
+            clipReadyRef.current = true;
+            if (autoplay) {
+                // 先起播，待音訊管線就緒後再「重新確認」倍速 — 在未就緒時設 rate 有時會讓音軌靜音
+                v.play().then(() => {
+                    v.playbackRate = clip.speed;
+                    v.preservesPitch = true;
+                }).catch(() => { });
+            }
+        };
+        if (media && v.src !== media.url && !v.src.endsWith(media.url)) {
+            clipReadyRef.current = false;
+            v.src = media.url;
+            v.load();
+            const onReady = () => {
+                v.removeEventListener('loadedmetadata', onReady);
+                pendingLoadRef.current = null;
+                // 確認仍是目前的 clip 才套用（避免過時的切換把 seek 設到錯位置）
+                if (currentPlayingClipRef.current === clip.id) applyAfterReady();
+            };
+            pendingLoadRef.current = onReady;
+            v.addEventListener('loadedmetadata', onReady);
+        } else {
+            applyAfterReady();
+        }
+    }, [mediaItems]);
+
+    // 切到某個 clip：standby 已預載則無縫切換，否則降級為在 active 換 src 載入。
+    const goToClip = useCallback((clip: TimelineClip, mediaTime: number, autoplay: boolean) => {
+        if (swapToStandby(clip, autoplay)) return;
+        loadClipIntoVideo(clip, mediaTime, autoplay);
+    }, [swapToStandby, loadClipIntoVideo]);
+
+    // 兩個 video 的 callback ref（穩定身分，避免每次 render detach）：掛載時設定初始顯示/隱藏，
+    // 並讓 videoRef 指向目前 active 元素。
+    const setVid0 = useCallback((el: HTMLVideoElement | null) => {
+        vid0Ref.current = el;
+        if (el) {
+            el.style.opacity = activeIdxRef.current === 0 ? '1' : '0';
+            if (activeIdxRef.current === 0) videoRef.current = el;
+        }
+    }, []);
+    const setVid1 = useCallback((el: HTMLVideoElement | null) => {
+        vid1Ref.current = el;
+        if (el) {
+            el.style.opacity = activeIdxRef.current === 1 ? '1' : '0';
+            if (activeIdxRef.current === 1) videoRef.current = el;
+        }
+    }, []);
+
+    // 影片自然播完：後面緊接片段→無縫切；有間隙→保持播放交給 tick；沒東西→停。
+    const handleVideoEnded = useCallback((e: React.SyntheticEvent<HTMLVideoElement>) => {
+        if (e.currentTarget !== getActiveVideo()) return; // 只處理 active 元素
+        if (!isPlaying) return;
+        if (!clipReadyRef.current) return; // tick 已搶先在 active 換 src 載入中，別重複前進（避免跳過片段/誤停）
+        const ordered = timelineClips.filter(c => c.trackIndex === 0).sort((a, b) => a.startTime - b.startTime);
+        const cur = ordered.find(c => c.id === currentPlayingClipRef.current);
+        if (cur) {
+            const curEnd = cur.startTime + cur.duration;
+            const next = ordered.find(c => c.id !== cur.id && c.startTime >= curEnd - 0.05);
+            if (next && Math.abs(next.startTime - curEnd) < 0.3) {
+                timelinePosRef.current = next.startTime;
+                playStartRef.current = performance.now();
+                playStartTlRef.current = next.startTime;
+                goToClip(next, next.trimStart, true);
+                return;
+            }
+            if (next) return; // 有間隙再接片段 → 保持播放，交給 tick 處理
+        }
+        setIsPlaying(false);
+    }, [getActiveVideo, isPlaying, timelineClips, goToClip, setIsPlaying]);
+
     const togglePlay = useCallback(() => {
         const v = videoRef.current;
         if (!v) return;
@@ -878,6 +1026,11 @@ export default function App() {
             v.pause();
             setIsPlaying(false);
         } else {
+            // 播放頭已在(或超過)結尾 → 從頭重播（否則 findClipAtTime(duration)=null，按 Play 沒反應/沒聲音）。
+            // 必須在擷取 wall-clock 基準「之前」歸零，讓 goToClip 與 tick 都從 0 起算。
+            if (duration > 0 && timelinePosRef.current >= duration - 0.001) {
+                timelinePosRef.current = 0;
+            }
             // 記錄開始播放的 wall-clock 和 timeline 位置
             playStartRef.current = performance.now();
             playStartTlRef.current = timelinePosRef.current;
@@ -886,21 +1039,12 @@ export default function App() {
             // 找到當前 clip 並開始播放
             const clip = findClipAtTime(timelinePosRef.current);
             if (clip) {
-                const media = mediaItems.find(m => m.id === clip.mediaId);
-                if (media && v.src !== media.url && !v.src.endsWith(media.url)) {
-                    v.src = media.url;
-                    v.load();
-                }
                 const mediaTime = clip.trimStart + (timelinePosRef.current - clip.startTime) * clip.speed;
-                v.currentTime = mediaTime;
-                v.playbackRate = clip.speed;
-                v.preservesPitch = true;
-                currentPlayingClipRef.current = clip.id;
-                v.play();
+                goToClip(clip, mediaTime, true);
             }
             // 如果在 gap，tick 會處理
         }
-    }, [isPlaying, setIsPlaying, findClipAtTime, mediaItems]);
+    }, [isPlaying, setIsPlaying, findClipAtTime, goToClip, duration]);
 
     // ── Seek（直接設定時間軸位置） ──
     const seekTo = useCallback((tlPos: number) => {
@@ -911,28 +1055,22 @@ export default function App() {
             playStartRef.current = performance.now();
             playStartTlRef.current = tlPos;
         }
+        // seek 後作廢 standby 預載，避免之後在交界用到過時的 standby（trimStart/速率可能已變）
+        primedClipRef.current = null;
         // 找到對應的 clip
         const clip = findClipAtTime(tlPos);
         if (clip && v) {
-            const media = mediaItems.find(m => m.id === clip.mediaId);
-            if (media && v.src !== media.url && !v.src.endsWith(media.url)) {
-                v.src = media.url;
-                v.load();
-            }
             const mediaTime = clip.trimStart + (tlPos - clip.startTime) * clip.speed;
-            v.currentTime = mediaTime;
-            v.playbackRate = clip.speed;
-            v.preservesPitch = true;
-            currentPlayingClipRef.current = clip.id;
             currentTimeRef.current = mediaTime;
             // 拖拉中不要呼叫 play，避免 seek/play race condition
-            if (isPlaying && !isDraggingRef.current) v.play();
+            loadClipIntoVideo(clip, mediaTime, isPlaying && !isDraggingRef.current);
         } else if (v) {
             v.pause();
             currentPlayingClipRef.current = null;
+            clipReadyRef.current = false;
         }
         setCurrentTime(tlPos); // store timeline pos for React
-    }, [setCurrentTime, findClipAtTime, mediaItems, isPlaying]);
+    }, [setCurrentTime, findClipAtTime, loadClipIntoVideo, isPlaying]);
 
     // ── 拖放 ──
     const handleDrop = useCallback((e: React.DragEvent) => {
@@ -972,6 +1110,7 @@ export default function App() {
         e.stopPropagation();
         setIsDraggingPlayhead(true);
         isDraggingRef.current = true;
+        primedClipRef.current = null; // 拖拉開始即作廢預載
         const v = videoRef.current;
         const wasPlaying = v ? !v.paused : false;
         if (v && wasPlaying) { v.pause(); setIsPlaying(false); }
@@ -998,12 +1137,16 @@ export default function App() {
             isDraggingRef.current = false;
             setIsDraggingPlayhead(false);
             setSnapTime(null);
-            // 拖拉結束後恢復播放
+            // 拖拉結束後恢復播放 — 經 loadClipIntoVideo 套用 src/seek/速率/preservesPitch
+            // （bare v.play() 會漏設速率與 seek，跨速率/跨媒體 resume 會錯）
             if (wasPlaying && v) {
-                // 先確保 video 已 ready
                 playStartRef.current = performance.now();
                 playStartTlRef.current = timelinePosRef.current;
-                v.play().catch(() => { });
+                const clip = findClipAtTime(timelinePosRef.current);
+                if (clip) {
+                    const mt = clip.trimStart + (timelinePosRef.current - clip.startTime) * clip.speed;
+                    loadClipIntoVideo(clip, mt, true);
+                }
                 setIsPlaying(true);
             }
             window.removeEventListener('mousemove', onMove);
@@ -1011,7 +1154,7 @@ export default function App() {
         };
         window.addEventListener('mousemove', onMove);
         window.addEventListener('mouseup', onUp);
-    }, [xToTime, setIsPlaying, findClipAtTime, mediaItems, setCurrentTime]);
+    }, [xToTime, setIsPlaying, findClipAtTime, mediaItems, setCurrentTime, loadClipIntoVideo]);
 
     // ── 滾輪縮放（只在時間軸區域攔截） ──
     const handleTimelineWheel = useCallback((e: React.WheelEvent) => {
@@ -1263,10 +1406,9 @@ export default function App() {
         if (!isPlaying) return;
         let raf: number;
         const clips = timelineClips.filter(c => c.trackIndex === 0).sort((a, b) => a.startTime - b.startTime);
-        const items = mediaItems; // closure snapshot
 
         const tick = () => {
-            const v = videoRef.current;
+            let v = videoRef.current;
             const ph = playheadRef.current;
             const el = tracksRef.current;
 
@@ -1278,34 +1420,40 @@ export default function App() {
             const clip = clips.find(c => tl >= c.startTime && tl < c.startTime + c.duration) ?? null;
 
             if (clip && v) {
-                // 在 clip 內
-                const media = items.find(m => m.id === clip.mediaId);
-
-                // 需要切換 src？
+                // 需要切換 clip？standby 已預載則瞬間切換(無黑閃)，否則降級在 active 換 src
                 if (currentPlayingClipRef.current !== clip.id) {
                     const mediaTime = clip.trimStart + (tl - clip.startTime) * clip.speed;
-                    if (media && v.src !== media.url && !v.src.endsWith(media.url)) {
-                        v.src = media.url;
-                        v.load();
-                    }
-                    v.playbackRate = clip.speed;
-                    v.preservesPitch = true;
-                    v.currentTime = mediaTime;
-                    currentPlayingClipRef.current = clip.id;
-                    v.play();
+                    goToClip(clip, mediaTime, true);
+                    v = videoRef.current; // swap 後 active 元素可能已改變
+                    if (!v) { raf = requestAnimationFrame(tick); return; }
                 }
 
-                // 保持 video 播放
-                if (v.paused) v.play();
+                // 已就緒時保持 video 播放（已 ended 的片段不要 v.play()，否則會從頭重播）
+                if (clipReadyRef.current && v.paused && !v.ended) v.play().catch(() => { });
 
-                // ── 核心修正：用 v.currentTime（實際播放位置）推算 timeline position ──
-                // 避免 wall-clock 與瀏覽器影片解碼器時鐘的漂移
-                if (!v.paused && currentPlayingClipRef.current === clip.id) {
+                // ── 接近交界時，預載下一段到 standby，讓交界可無縫切換、不黑閃 ──
+                const nextClip = clips[clips.indexOf(clip) + 1] ?? null;
+                if (nextClip) {
+                    const remaining = (clip.startTime + clip.duration) - tl;
+                    if (remaining > 0 && remaining <= 1.0 && primedClipRef.current !== nextClip.id) {
+                        primeStandby(nextClip);
+                    }
+                }
+
+                // ── 用 v.currentTime（實際播放位置）推算 timeline，避免與解碼器時鐘漂移 ──
+                // 僅在「影片真的就緒、seek 完成、且位置落在此 clip 範圍內」才採用；否則維持迴圈
+                // 開頭的牆鐘推算值，避免載入空窗期 v.currentTime=0 造成播放頭跳針（速率≠1 會放大）。
+                const ready = clipReadyRef.current && !v.paused && v.readyState >= 2 && !v.seeking;
+                if (ready && currentPlayingClipRef.current === clip.id) {
                     const actualMediaTime = v.currentTime;
-                    tl = clip.startTime + (actualMediaTime - clip.trimStart) / clip.speed;
-                    // 同步 wall-clock 基準，讓離開 clip 後的 gap 計算正確
-                    playStartRef.current = performance.now();
-                    playStartTlRef.current = tl;
+                    if (actualMediaTime >= clip.trimStart - 0.1 && actualMediaTime <= clip.trimEnd + 0.1) {
+                        // 用 Math.max 只允許前進：交界剛 swap 進來時 standby 仍 ≈trimStart，
+                        // 直接採用會把 tl 拉回（向後跳針）；mid-clip 時 v.currentTime 較大會正常接管。
+                        tl = Math.max(tl, clip.startTime + (actualMediaTime - clip.trimStart) / clip.speed);
+                        // 同步 wall-clock 基準，讓離開 clip 後的 gap 計算正確
+                        playStartRef.current = performance.now();
+                        playStartTlRef.current = tl;
+                    }
                 }
 
                 const mediaTime = clip.trimStart + (tl - clip.startTime) * clip.speed;
@@ -1341,6 +1489,7 @@ export default function App() {
                 // 在 gap 內 — 暫停 video，播放器黑畫面
                 if (!v.paused) v.pause();
                 currentPlayingClipRef.current = null;
+                clipReadyRef.current = false;
                 timelinePosRef.current = tl;
                 // 隱藏字幕
                 const overlay = subtitleOverlayRef.current;
@@ -1379,7 +1528,34 @@ export default function App() {
             cancelAnimationFrame(raf);
             setCurrentTime(timelinePosRef.current);
         };
-    }, [isPlaying, pixelsPerSecond, duration, timelineClips, mediaItems, syncRulerScroll, setCurrentTime, setIsPlaying, setActiveSegment]);
+    }, [isPlaying, pixelsPerSecond, duration, timelineClips, goToClip, primeStandby, syncRulerScroll, setCurrentTime, setIsPlaying, setActiveSegment]);
+
+    // ── 閒置（未播放）時在 active 元素顯示目前播放頭所在片段的畫面 ──
+    // （雙緩衝後 video 不再有宣告式 src，需在此補上靜止預覽幀；播放中由 tick/swap 管理，不介入）
+    useEffect(() => {
+        if (isPlaying) return;
+        const v = getActiveVideo();
+        if (!v) return;
+        const pos = timelinePosRef.current;
+        // 找不到（在結尾）時退回「最後一段」而非第一段，避免在結尾停住時重載第一段媒體造成黑閃/錯幀
+        const clip = findClipAtTime(pos)
+            ?? timelineClips.filter(c => c.trackIndex === 0).sort((a, b) => a.startTime - b.startTime).pop()
+            ?? null;
+        const media = clip ? mediaItems.find(m => m.id === clip.mediaId) : primaryMedia;
+        if (!media) return;
+        let h: (() => void) | null = null;
+        if (v.src !== media.url && !v.src.endsWith(media.url)) {
+            v.src = media.url;
+            v.load();
+            const mt = clip
+                ? Math.min(clip.trimEnd, clip.trimStart + Math.max(0, pos - clip.startTime) * clip.speed)
+                : 0;
+            // 必須清掉監聽：若在載入完成前又換了媒體（拖拉/seek），舊監聽會把錯誤的 seek 套到現在的元素
+            h = () => { if (h) v.removeEventListener('loadedmetadata', h); h = null; try { v.currentTime = mt; } catch { /* ignore */ } };
+            v.addEventListener('loadedmetadata', h);
+        }
+        return () => { if (h) v.removeEventListener('loadedmetadata', h); };
+    }, [isPlaying, primaryMedia, timelineClips, mediaItems, findClipAtTime, getActiveVideo, currentTime]);
 
     // ── Per-clip 波形繪製 ──
     const drawClipWaveform = useCallback((canvas: HTMLCanvasElement, peaks: number[], clipWidthPx: number) => {
@@ -1810,18 +1986,29 @@ export default function App() {
                 <main className="panel-center">
                     <div className="video-container" onDrop={handleDrop} onDragOver={(e) => e.preventDefault()}>
                         {primaryMedia ? (
-                            <video ref={videoRef} src={primaryMedia.url}
-                                onTimeUpdate={() => {
-                                    // 播放中由 tick loop 處理字幕同步，避免 React re-render 覆蓋正確的 overlay
-                                    if (isPlaying) return;
-                                    const v = videoRef.current;
-                                    if (v && !v.paused) {
+                            <>
+                                {/* 雙緩衝：兩個 video 疊放，imperative 控制 opacity（不走 React style 以免被覆蓋） */}
+                                <video ref={setVid0} className="dbl-video"
+                                    onTimeUpdate={(e) => {
+                                        if (isPlaying) return; // 播放中由 tick loop 處理字幕
+                                        const v = e.currentTarget;
+                                        if (v !== getActiveVideo() || v.paused) return;
                                         const active = segments.find((s) => v.currentTime >= s.start && v.currentTime <= s.end);
                                         if (active && active.id !== activeSegmentId) setActiveSegment(active.id);
-                                    }
-                                }}
-                                onEnded={() => setIsPlaying(false)}
-                                onClick={togglePlay} style={{ cursor: 'pointer' }} />
+                                    }}
+                                    onEnded={handleVideoEnded}
+                                    onClick={togglePlay} style={{ cursor: 'pointer' }} />
+                                <video ref={setVid1} className="dbl-video"
+                                    onTimeUpdate={(e) => {
+                                        if (isPlaying) return;
+                                        const v = e.currentTarget;
+                                        if (v !== getActiveVideo() || v.paused) return;
+                                        const active = segments.find((s) => v.currentTime >= s.start && v.currentTime <= s.end);
+                                        if (active && active.id !== activeSegmentId) setActiveSegment(active.id);
+                                    }}
+                                    onEnded={handleVideoEnded}
+                                    onClick={togglePlay} style={{ cursor: 'pointer' }} />
+                            </>
                         ) : (
                             <div className="video-placeholder">
                                 <div className="icon">🎬</div><p>請上傳影片或音頻</p>

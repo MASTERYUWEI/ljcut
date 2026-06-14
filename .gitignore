@@ -25,3 +25,7 @@ backend/outputs/
 # ── OS ──
 Thumbs.db
 .DS_Store
+
+# ── dev 執行階段擷取的 log（非產物，不入庫） ──
+dev-stdout.log
+dev-stderr.log
