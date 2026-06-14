@@ -276,6 +276,63 @@ fn find_recorder_exe() -> Option<PathBuf> {
     }
 }
 
+// ── 錄製中的置頂指示小視窗（最小化主視窗時仍可見；排除於錄影擷取）──
+
+fn show_rec_indicator(app: &AppHandle) {
+    if app.get_webview_window("rec-indicator").is_some() {
+        return;
+    }
+    let (mon_w, scale) = app
+        .primary_monitor()
+        .ok()
+        .flatten()
+        .map(|m| (m.size().width as f64, m.scale_factor()))
+        .unwrap_or((1920.0, 1.0));
+    let logical_w = mon_w / scale;
+    let iw = 240.0;
+    let ih = 44.0;
+    let x = ((logical_w - iw) / 2.0).max(0.0);
+
+    match WebviewWindowBuilder::new(
+        app,
+        "rec-indicator",
+        WebviewUrl::App("rec-indicator.html".into()),
+    )
+    .title("LJCUT 錄製中")
+    .inner_size(iw, ih)
+    .position(x, 10.0)
+    .resizable(false)
+    .decorations(false)
+    .transparent(true)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .focused(false)
+    .build()
+    {
+        Ok(win) => {
+            // 排除於螢幕擷取：使用者看得到，但不會被錄進影片裡
+            // 注意：Tauri 的 hwnd() 來自 windows 0.61，本 crate 的 Win32 呼叫用 0.62，
+            // 兩者 HWND 型別不同，用內部指標 .0 橋接。
+            if let Ok(hwnd) = win.hwnd() {
+                use windows::Win32::Foundation::HWND;
+                use windows::Win32::UI::WindowsAndMessaging::{
+                    SetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE,
+                };
+                unsafe {
+                    let _ = SetWindowDisplayAffinity(HWND(hwnd.0), WDA_EXCLUDEFROMCAPTURE);
+                }
+            }
+        }
+        Err(e) => log::warn!("建立錄製指示視窗失敗: {e}"),
+    }
+}
+
+fn hide_rec_indicator(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window("rec-indicator") {
+        let _ = w.close();
+    }
+}
+
 // ── 2. 開始錄影 ──
 
 fn current_rec_opts() -> RecOptions {
@@ -380,6 +437,8 @@ fn begin_recording(
 
     // 註冊 F10 全域快捷鍵以停止錄影（錄影期間才註冊，避免平時佔用）
     let _ = app.global_shortcut().register("F10");
+    // 置頂錄製指示視窗（主視窗最小化時仍看得到狀態）
+    show_rec_indicator(app);
 
     log::info!("🎬 開始錄影: target={target} 區域({x},{y}) {w}x{h} @ {fps}fps");
     let final_str = final_path.to_string_lossy().to_string();
@@ -464,17 +523,69 @@ fn cursor_pos() -> Option<(i32, i32)> {
     }
 }
 
-/// 找游標正下方、非 overlay 的最上層視窗範圍（螢幕座標 x,y,w,h）。
-/// 用 windows-capture 的視窗列舉（已過濾工具/隱形視窗，且為 Z-order 由上到下）。
+/// 找游標正下方、非 overlay 的最上層視窗的「可視範圍」（螢幕座標 x,y,w,h）。
+/// 用 EnumWindows(Z-order 由上到下) + DWMWA_EXTENDED_FRAME_BOUNDS，
+/// 後者排除 Win10/11 視窗的隱形調整邊框/陰影，框才會貼合肉眼可見範圍。
 fn window_rect_under_cursor() -> Option<(i32, i32, i32, i32)> {
+    use windows::core::BOOL;
+    use windows::Win32::Foundation::{HWND, LPARAM, RECT};
+    use windows::Win32::Graphics::Dwm::{
+        DwmGetWindowAttribute, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, IsIconic,
+        IsWindowVisible, GWL_EXSTYLE, WS_EX_TOOLWINDOW,
+    };
+
     let (cx, cy) = cursor_pos()?;
-    let wins = windows_capture::window::Window::enumerate().ok()?;
-    for w in wins {
-        let title = w.title().unwrap_or_default();
-        if title.is_empty() || title == "LJCUT 錄影選區" {
-            continue;
-        }
-        if let Ok(r) = w.rect() {
+
+    let mut hwnds: Vec<HWND> = Vec::new();
+    unsafe extern "system" fn collect(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let v = &mut *(lparam.0 as *mut Vec<HWND>);
+        v.push(hwnd);
+        BOOL(1)
+    }
+    unsafe {
+        let _ = EnumWindows(Some(collect), LPARAM(&mut hwnds as *mut _ as isize));
+    }
+
+    for hwnd in hwnds {
+        unsafe {
+            if !IsWindowVisible(hwnd).as_bool() || IsIconic(hwnd).as_bool() {
+                continue;
+            }
+            let exstyle = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
+            if exstyle & WS_EX_TOOLWINDOW.0 != 0 {
+                continue;
+            }
+            // 跳過 cloaked（UWP 背景視窗）
+            let mut cloaked: u32 = 0;
+            let _ = DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, (&mut cloaked as *mut u32).cast(), 4);
+            if cloaked != 0 {
+                continue;
+            }
+            if GetWindowTextLengthW(hwnd) == 0 {
+                continue;
+            }
+            // 跳過 overlay 自己
+            let mut buf = [0u16; 128];
+            let n = GetWindowTextW(hwnd, &mut buf);
+            let title = String::from_utf16_lossy(&buf[..n.max(0) as usize]);
+            if title == "LJCUT 錄影選區" {
+                continue;
+            }
+            // DWM 可視邊界（排除隱形邊框/陰影）
+            let mut r = RECT::default();
+            if DwmGetWindowAttribute(
+                hwnd,
+                DWMWA_EXTENDED_FRAME_BOUNDS,
+                (&mut r as *mut RECT).cast(),
+                std::mem::size_of::<RECT>() as u32,
+            )
+            .is_err()
+            {
+                continue;
+            }
             if cx >= r.left && cx < r.right && cy >= r.top && cy < r.bottom {
                 return Some((r.left, r.top, r.right - r.left, r.bottom - r.top));
             }
@@ -608,11 +719,12 @@ fn wait_or_kill(child: &mut Child, timeout: Duration) {
 #[tauri::command]
 pub async fn stop_recording(app: AppHandle) -> Result<String, String> {
     let _ = app.global_shortcut().unregister("F10");
-    let paths = REC_PATHS
-        .lock()
-        .unwrap()
-        .take()
-        .ok_or("沒有正在進行的錄影")?;
+    hide_rec_indicator(&app);
+    // 冪等：若已停止（例如 F10 與按鈕、或事件重複觸發），直接回 OK 不報錯
+    let paths = match REC_PATHS.lock().unwrap().take() {
+        Some(p) => p,
+        None => return Ok(String::new()),
+    };
 
     // 停止影像子程序：送 'q' + 關閉 stdin(EOF)，等它收尾 mp4 後結束
     if let Some(mut child) = RECORDER_PROC.lock().unwrap().take() {

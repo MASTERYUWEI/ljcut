@@ -517,12 +517,15 @@ export default function App() {
     // ── F10 全域快捷鍵停止錄影（Rust 端發 hotkey_stop 事件）──
     useEffect(() => {
         if (!IS_TAURI) return;
-        let unlisten = () => { };
+        let unlisten: (() => void) | null = null;
+        let cancelled = false;
         (async () => {
             const { listen } = await import('@tauri-apps/api/event');
-            unlisten = await listen('hotkey_stop', () => { handleStopRec(); });
+            const u = await listen('hotkey_stop', () => { handleStopRec(); });
+            // 處理 StrictMode 下 cleanup 早於 listen 解析的競態，避免重複訂閱
+            if (cancelled) { u(); } else { unlisten = u; }
         })();
-        return () => { unlisten(); };
+        return () => { cancelled = true; if (unlisten) unlisten(); };
     }, [handleStopRec]);
 
     // ── 從媒體庫拖放到時間軸：建立 clip ──
