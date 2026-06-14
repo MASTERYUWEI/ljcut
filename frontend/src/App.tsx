@@ -226,13 +226,20 @@ export default function App() {
                 const tick = () => {
                     if (cancelled) { audioCtx.close(); return; }
                     analyser.getByteTimeDomainData(dataArray);
+                    // 先求實際平均值(DC offset)再扣除：某些麥克風/驅動的波形中心不在 128，
+                    // 若固定用 128 當基準，靜音時 RMS 也會殘留非零 → 音量計降不下來。
+                    let mean = 0;
+                    for (let i = 0; i < dataArray.length; i++) mean += dataArray[i];
+                    mean /= dataArray.length;
                     let sum = 0;
                     for (let i = 0; i < dataArray.length; i++) {
-                        const val = (dataArray[i] - 128) / 128;
+                        const val = (dataArray[i] - mean) / 128;
                         sum += val * val;
                     }
                     const rms = Math.sqrt(sum / dataArray.length);
-                    setMicLevel(Math.min(rms * 3.5, 1));
+                    let level = Math.min(rms * 3.5, 1);
+                    if (level < 0.02) level = 0; // 雜訊門檻：靜音時歸零
+                    setMicLevel(level);
                     micAnimRef.current = requestAnimationFrame(tick);
                 };
                 tick();
