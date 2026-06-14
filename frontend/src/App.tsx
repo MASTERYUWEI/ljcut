@@ -136,7 +136,7 @@ export default function App() {
                 micStreamRef.current.getTracks().forEach(t => t.stop());
                 micStreamRef.current = null;
             }
-            if (micMeterFillRef.current) micMeterFillRef.current.style.width = '0%';
+            if (micMeterFillRef.current) micMeterFillRef.current.style.width = '100%';
             if (micMeterValRef.current) micMeterValRef.current.textContent = '0%';
         };
 
@@ -247,7 +247,8 @@ export default function App() {
                     let level = Math.min(rms * 3.5, 1);
                     if (level < 0.02) level = 0; // 雜訊門檻：靜音時歸零
                     // 直接更新 DOM（不走 React state，避免每秒 60 次重繪整個 App 造成凍結）
-                    if (micMeterFillRef.current) micMeterFillRef.current.style.width = `${level * 100}%`;
+                    // micMeterFillRef 是「未滿遮罩」：寬度 = 未滿百分比，蓋住右側未達到的漸層
+                    if (micMeterFillRef.current) micMeterFillRef.current.style.width = `${(1 - level) * 100}%`;
                     if (micMeterValRef.current) micMeterValRef.current.textContent = `${Math.round(level * 100)}%`;
                     micAnimRef.current = requestAnimationFrame(tick);
                 };
@@ -1499,8 +1500,8 @@ export default function App() {
                                     <div className="mic-meter">
                                         <div
                                             ref={micMeterFillRef}
-                                            className="mic-meter-fill"
-                                            style={{ width: '0%' }}
+                                            className="mic-meter-empty"
+                                            style={{ width: '100%' }}
                                         />
                                     </div>
                                     <span ref={micMeterValRef} className="mic-level-val">0%</span>

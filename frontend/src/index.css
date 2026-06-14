@@ -1764,19 +1764,32 @@ body {
 
 .mic-meter {
   flex: 1;
-  height: 8px;
-  background: var(--bg-crust);
-  border-radius: 4px;
+  height: 10px;
+  border-radius: 3px;
   overflow: hidden;
   position: relative;
+  /* 固定的紅→綠漸層刻度（左低紅、右高綠）；半滿時顏色才有意義，不會被拉伸 */
+  background: linear-gradient(90deg, #ef4444 0%, #f59e0b 50%, #22c55e 100%);
 }
 
-.mic-meter-fill {
+/* 未滿遮罩：從右側蓋住尚未達到的漸層（width 由 JS 控制 = 未滿百分比） */
+.mic-meter-empty {
+  position: absolute;
+  top: 0;
+  right: 0;
   height: 100%;
-  border-radius: 4px;
-  background: linear-gradient(90deg, #22c55e, #86efac);
+  width: 100%;
+  background: var(--bg-crust);
   transition: width 60ms ease-out;
-  box-shadow: 0 0 8px rgba(34, 197, 94, 0.3);
+}
+
+/* 數位格子：重複細縫切出 LED 段（疊在最上層） */
+.mic-meter::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(90deg, transparent 0 6px, var(--bg-base) 6px 8px);
+  pointer-events: none;
 }
 
 .mic-level-val {
