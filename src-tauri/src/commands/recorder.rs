@@ -466,18 +466,33 @@ pub async fn start_recording(app: AppHandle, fps: Option<u32>) -> Result<String,
         .inner_size()
         .map_err(|e| format!("取得大小失敗: {e}"))?;
 
-    // 找出選區所在的螢幕（以選區中心點判斷），支援多螢幕
-    let cx = position.x + size.width as i32 / 2;
-    let cy = position.y + size.height as i32 / 2;
+    // 找出選區所在的螢幕：用「與選區重疊面積最大」的螢幕（比中心點判斷穩，避免選區
+    // 落在多螢幕排列的空隙時誤判）；若與任何螢幕都不重疊，退回中心最近的螢幕（而非主螢幕）。
+    let sel_l = position.x;
+    let sel_t = position.y;
+    let sel_r = position.x + size.width as i32;
+    let sel_b = position.y + size.height as i32;
+    let sel_cx = position.x + size.width as i32 / 2;
+    let sel_cy = position.y + size.height as i32 / 2;
     let monitors = app.available_monitors().unwrap_or_default();
-    let target = monitors
-        .iter()
-        .find(|m| {
+    let overlap = |m: &tauri::Monitor| -> i64 {
+        let mp = m.position();
+        let ms = m.size();
+        let iw = (sel_r.min(mp.x + ms.width as i32) - sel_l.max(mp.x)).max(0) as i64;
+        let ih = (sel_b.min(mp.y + ms.height as i32) - sel_t.max(mp.y)).max(0) as i64;
+        iw * ih
+    };
+    let best = monitors.iter().max_by_key(|m| overlap(m));
+    let target = match best {
+        Some(m) if overlap(m) > 0 => Some(m),
+        _ => monitors.iter().min_by_key(|m| {
             let mp = m.position();
             let ms = m.size();
-            cx >= mp.x && cx < mp.x + ms.width as i32 && cy >= mp.y && cy < mp.y + ms.height as i32
-        })
-        .or_else(|| monitors.first());
+            let dx = (sel_cx - (mp.x + ms.width as i32 / 2)) as i64;
+            let dy = (sel_cy - (mp.y + ms.height as i32 / 2)) as i64;
+            dx * dx + dy * dy
+        }),
+    };
 
     let (mon_x, mon_y, mon_w, mon_h, mon_name) = match target {
         Some(m) => {
