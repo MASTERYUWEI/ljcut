@@ -1768,8 +1768,8 @@ body {
   border-radius: 3px;
   overflow: hidden;
   position: relative;
-  /* 固定的紅→綠漸層刻度（左低紅、右高綠）；半滿時顏色才有意義，不會被拉伸 */
-  background: linear-gradient(90deg, #ef4444 0%, #f59e0b 50%, #22c55e 100%);
+  /* 固定漸層刻度：低/中=綠、偏高=黃、大聲=紅（標準音量錶慣例）*/
+  background: linear-gradient(90deg, #22c55e 0%, #22c55e 55%, #f59e0b 80%, #ef4444 100%);
 }
 
 /* 未滿遮罩：從右側蓋住尚未達到的漸層（width 由 JS 控制 = 未滿百分比） */
