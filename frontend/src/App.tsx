@@ -87,9 +87,10 @@ export default function App() {
     const [showRecSettings, setShowRecSettings] = useState(false);
     const [recOpts, setRecOpts] = useState({ sysAudio: false, mic: false, quality: '1080p' as '720p' | '1080p' | '4k', fps: 60 as 24 | 30 | 60, micDevice: '', sysAudioDevice: '', micVol: 1.0, sysVol: 1.0 });
     const [micDevices, setMicDevices] = useState<{ deviceId: string; label: string }[]>([]);
-    const [micLevel, setMicLevel] = useState(0);
     const micStreamRef = useRef<MediaStream | null>(null);
     const micAnimRef = useRef<number>(0);
+    const micMeterFillRef = useRef<HTMLDivElement>(null);
+    const micMeterValRef = useRef<HTMLSpanElement>(null);
     // ── 倍速右鍵選單 ──
     const [speedMenu, setSpeedMenu] = useState<{ clipId: string; x: number; y: number } | null>(null);
 
@@ -135,7 +136,8 @@ export default function App() {
                 micStreamRef.current.getTracks().forEach(t => t.stop());
                 micStreamRef.current = null;
             }
-            setMicLevel(0);
+            if (micMeterFillRef.current) micMeterFillRef.current.style.width = '0%';
+            if (micMeterValRef.current) micMeterValRef.current.textContent = '0%';
         };
 
         if (!recOpts.mic || !showRecSettings) { cleanup(); return; }
@@ -217,6 +219,9 @@ export default function App() {
 
                 // Web Audio API 音量分析
                 const audioCtx = new AudioContext();
+                // WebView2/Chromium 的 autoplay 政策可能讓 AudioContext 處於 suspended，
+                // 導致分析資料凍結 → 音量計卡住。明確 resume。
+                await audioCtx.resume().catch(() => { });
                 const source = audioCtx.createMediaStreamSource(stream);
                 const analyser = audioCtx.createAnalyser();
                 analyser.fftSize = 256;
@@ -225,9 +230,11 @@ export default function App() {
 
                 const tick = () => {
                     if (cancelled) { audioCtx.close(); return; }
+                    // 若被瀏覽器暫停就嘗試恢復（避免凍結）
+                    if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => { });
                     analyser.getByteTimeDomainData(dataArray);
-                    // 先求實際平均值(DC offset)再扣除：某些麥克風/驅動的波形中心不在 128，
-                    // 若固定用 128 當基準，靜音時 RMS 也會殘留非零 → 音量計降不下來。
+                    // 先求實際平均值(DC offset)再扣除：某些麥克風波形中心不在 128，
+                    // 固定用 128 當基準會讓靜音時 RMS 殘留非零。
                     let mean = 0;
                     for (let i = 0; i < dataArray.length; i++) mean += dataArray[i];
                     mean /= dataArray.length;
@@ -239,7 +246,9 @@ export default function App() {
                     const rms = Math.sqrt(sum / dataArray.length);
                     let level = Math.min(rms * 3.5, 1);
                     if (level < 0.02) level = 0; // 雜訊門檻：靜音時歸零
-                    setMicLevel(level);
+                    // 直接更新 DOM（不走 React state，避免每秒 60 次重繪整個 App 造成凍結）
+                    if (micMeterFillRef.current) micMeterFillRef.current.style.width = `${level * 100}%`;
+                    if (micMeterValRef.current) micMeterValRef.current.textContent = `${Math.round(level * 100)}%`;
                     micAnimRef.current = requestAnimationFrame(tick);
                 };
                 tick();
@@ -1489,11 +1498,12 @@ export default function App() {
                                     <label>音量</label>
                                     <div className="mic-meter">
                                         <div
+                                            ref={micMeterFillRef}
                                             className="mic-meter-fill"
-                                            style={{ width: `${micLevel * 100}%` }}
+                                            style={{ width: '0%' }}
                                         />
                                     </div>
-                                    <span className="mic-level-val">{Math.round(micLevel * 100)}%</span>
+                                    <span ref={micMeterValRef} className="mic-level-val">0%</span>
                                 </div>
                             </div>
                         )}
