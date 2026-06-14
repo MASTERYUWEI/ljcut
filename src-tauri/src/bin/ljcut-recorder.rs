@@ -260,7 +260,7 @@ fn main() {
         let settings = Settings::new(
             window,
             CursorCaptureSettings::Default,
-            DrawBorderSettings::WithoutBorder,
+            DrawBorderSettings::Default,
             SecondaryWindowSettings::Default,
             MinimumUpdateIntervalSettings::Default,
             DirtyRegionSettings::Default,
@@ -285,7 +285,7 @@ fn main() {
         let settings = Settings::new(
             monitor,
             CursorCaptureSettings::Default,
-            DrawBorderSettings::WithoutBorder,
+            DrawBorderSettings::Default,
             SecondaryWindowSettings::Default,
             MinimumUpdateIntervalSettings::Default,
             DirtyRegionSettings::Default,

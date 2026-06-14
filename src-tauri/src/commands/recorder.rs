@@ -644,20 +644,22 @@ pub async fn snap_overlay_to_window(app: AppHandle) -> Result<(), String> {
     let (rx, ry, rw, rh) = window_rect_under_cursor().ok_or("游標下找不到視窗")?;
     let overlay = app.get_webview_window("overlay").ok_or("overlay 不存在")?;
 
-    // 邊框補償，讓 overlay 內框（=錄影範圍）對齊視窗範圍
-    let op = overlay.outer_position().map_err(|e| e.to_string())?;
-    let ip = overlay.inner_position().map_err(|e| e.to_string())?;
-    let os = overlay.outer_size().map_err(|e| e.to_string())?;
-    let is = overlay.inner_size().map_err(|e| e.to_string())?;
-    let bl = ip.x - op.x;
-    let bt = ip.y - op.y;
-    let br = os.width as i32 - is.width as i32 - bl;
-    let bb = os.height as i32 - is.height as i32 - bt;
+    // 先直接設成視窗範圍（此時 overlay 不再是滿桌面，邊框值才正常）
+    let _ = overlay.set_position(tauri::PhysicalPosition::new(rx, ry));
+    let _ = overlay.set_size(tauri::PhysicalSize::new(rw.max(4) as u32, rh.max(4) as u32));
+    std::thread::sleep(Duration::from_millis(40));
 
-    let _ = overlay.set_position(tauri::PhysicalPosition::new(rx - bl, ry - bt));
+    // 量測實際內框與目標的誤差（=隱形邊框），再校正一次讓「內框 = 視窗範圍」
+    let ip = overlay.inner_position().map_err(|e| e.to_string())?;
+    let is = overlay.inner_size().map_err(|e| e.to_string())?;
+    let dx = rx - ip.x;
+    let dy = ry - ip.y;
+    let dw = rw - is.width as i32;
+    let dh = rh - is.height as i32;
+    let _ = overlay.set_position(tauri::PhysicalPosition::new(rx + dx, ry + dy));
     let _ = overlay.set_size(tauri::PhysicalSize::new(
-        (rw + bl + br).max(4) as u32,
-        (rh + bt + bb).max(4) as u32,
+        (rw + dw).max(4) as u32,
+        (rh + dh).max(4) as u32,
     ));
     Ok(())
 }
