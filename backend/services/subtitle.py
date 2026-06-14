@@ -79,7 +79,9 @@ class SubtitleService:
         # libass FontSize 用 ascender+descender 度量，≠ CSS em-square
         # CJK 字體（微軟正黑體等）需要 ×1.25 來匹配 CSS font-size
         ass_font_size = int(font_size * 1.25)
-        ass_outline_w = int(outline_w * 1.25)
+        # 預覽用 CSS WebkitTextStroke(置中描邊)+paint-order:stroke fill，內側半條被字身蓋住，
+        # 實際可見外框 ≈ outlineWidth/2；ASS Outline 是「外框」(全在字外)，故 ÷2 才與預覽一致。
+        ass_outline_w = round(outline_w / 2, 1)
 
         # ASS 顏色格式: &HAABBGGRR
         primary_colour = "&H00FFFFFF"  # 白色
@@ -160,7 +162,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         pos_y = int(style.get("posY", 90))
 
         ass_font_size = int(font_size * 1.25)
-        ass_outline_w = int(outline_w * 1.25)
+        # 預覽用 CSS WebkitTextStroke(置中描邊)+paint-order:stroke fill，內側半條被字身蓋住，
+        # 實際可見外框 ≈ outlineWidth/2；ASS Outline 是「外框」(全在字外)，故 ÷2 才與預覽一致。
+        ass_outline_w = round(outline_w / 2, 1)
 
         primary_colour = "&H00FFFFFF"
         outline_colour = "&H00000000"
