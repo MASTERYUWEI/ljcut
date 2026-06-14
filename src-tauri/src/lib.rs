@@ -21,6 +21,8 @@ pub fn run() {
             commands::recorder::start_region_select,
             commands::recorder::start_recording,
             commands::recorder::stop_recording,
+            commands::recorder::enter_window_pick,
+            commands::recorder::start_window_recording,
         ])
         .setup(|app| {
             // 確保 uploads 和 outputs 目錄存在

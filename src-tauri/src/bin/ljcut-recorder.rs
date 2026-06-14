@@ -1,10 +1,13 @@
-//! LJCUT 錄影 sidecar — 獨立程式，用 Windows.Graphics.Capture 擷取螢幕區域並硬體編碼。
+//! LJCUT 錄影 sidecar — 獨立程式，用 Windows.Graphics.Capture 擷取並硬體編碼。
 //!
 //! 之所以獨立成一支 exe：在 Tauri 主程式內（有 WebView2）直接呼叫 WGC 會卡死，
 //! 但在乾淨的獨立 process 內完全正常。由 Tauri 以子程序方式啟動。
 //!
-//! 用法：ljcut-recorder <left> <top> <width> <height> <fps> <output.mp4>
-//! 控制：啟動成功後印出 "READY" 到 stdout；從 stdin 收到一行 "q"（或 stdin 關閉）即停止收尾並結束。
+//! 兩種模式（由第 7 參數決定）：
+//!   - 螢幕區域：<monitor> = 裝置名(\\.\DISPLAYn) 或 "primary"；裁切 left/top/width/height
+//!   - 整個視窗：<monitor> = "window:<視窗標題>"；錄整個視窗（忽略 left/top/w/h）
+//! 用法：ljcut-recorder <left> <top> <width> <height> <fps> <output.mp4> <monitor|window:title> [自動停止秒數]
+//! 控制：啟動成功印 "READY"；stdin 收到 "q"（或 EOF）即停止收尾。
 
 use std::io::{BufRead, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -22,6 +25,7 @@ use windows_capture::settings::{
     ColorFormat, CursorCaptureSettings, DirtyRegionSettings, DrawBorderSettings,
     MinimumUpdateIntervalSettings, SecondaryWindowSettings, Settings,
 };
+use windows_capture::window::Window;
 
 #[derive(Clone)]
 struct Flags {
@@ -33,6 +37,7 @@ struct Flags {
     height: u32,
     fps: u32,
     out: String,
+    window_mode: bool,
 }
 
 struct Handler {
@@ -43,8 +48,9 @@ struct Handler {
     bottom: u32,
     width: u32,
     height: u32,
-    pack_buf: Vec<u8>, // as_nopadding_buffer 的暫存（top-down）
-    flip_buf: Vec<u8>, // 翻轉成 bottom-up 後送給編碼器
+    window_mode: bool,
+    pack_buf: Vec<u8>,
+    flip_buf: Vec<u8>,
 }
 
 impl GraphicsCaptureApiHandler for Handler {
@@ -70,6 +76,7 @@ impl GraphicsCaptureApiHandler for Handler {
             bottom: f.bottom,
             width: f.width,
             height: f.height,
+            window_mode: f.window_mode,
             pack_buf: Vec::new(),
             flip_buf: Vec::new(),
         })
@@ -83,11 +90,18 @@ impl GraphicsCaptureApiHandler for Handler {
         if self.encoder.is_none() {
             return Ok(());
         }
+
+        // 視窗模式：整窗直送（texture path，自動處理色彩/方向，且容忍視窗縮放）
+        if self.window_mode {
+            if let Some(enc) = self.encoder.as_mut() {
+                enc.send_frame(&*frame)?;
+            }
+            return Ok(());
+        }
+
+        // 螢幕區域模式：裁切 → BGRA + bottom-to-top → send_frame_buffer
         let ts = frame.timestamp()?.Duration;
         let fb = frame.buffer_crop(self.left, self.top, self.right, self.bottom)?;
-
-        // send_frame_buffer 要求 BGRA + bottom-to-top。as_nopadding_buffer 給的是
-        // top-down，這裡逐列翻轉成 bottom-up。
         let row = (self.width * 4) as usize;
         let hh = self.height as usize;
         let mut packed = std::mem::take(&mut self.pack_buf);
@@ -103,7 +117,6 @@ impl GraphicsCaptureApiHandler for Handler {
                     self.flip_buf[dy * row..(dy + 1) * row].copy_from_slice(s);
                 }
             } else {
-                // 尺寸不符（理論上不會），退而求其次直接送（至少不崩）
                 self.flip_buf[..src.len()].copy_from_slice(src);
             }
         }
@@ -144,58 +157,27 @@ fn pick_monitor(name: &str) -> Monitor {
     Monitor::primary().unwrap_or_else(|e| fail(&format!("取得主螢幕失敗: {e}")))
 }
 
-fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    if args.len() < 8 {
-        fail("用法: ljcut-recorder <left> <top> <width> <height> <fps> <output.mp4> <monitor> [自動停止秒數]");
+/// 依標題尋找視窗（先精確、再包含）
+fn pick_window(title: &str) -> Window {
+    if let Ok(w) = Window::from_name(title) {
+        return w;
     }
-    let parse = |s: &str| -> u32 { s.parse().unwrap_or_else(|_| fail("參數需為整數")) };
-    // left/top 為「該螢幕的本地座標」（相對於該螢幕左上角）
-    let left = parse(&args[1]);
-    let top = parse(&args[2]);
-    let width = parse(&args[3]);
-    let height = parse(&args[4]);
-    let fps = parse(&args[5]).max(1);
-    let out = args[6].clone();
-    let monitor_name = args[7].clone(); // 螢幕裝置名稱 \\.\DISPLAYn（空/"primary"=主螢幕）
+    if let Ok(w) = Window::from_contains_name(title) {
+        return w;
+    }
+    fail(&format!("找不到視窗: {title}"));
+}
 
-    let monitor = pick_monitor(&monitor_name);
-
-    let flags = Flags {
-        left,
-        top,
-        right: left + width,
-        bottom: top + height,
-        width,
-        height,
-        fps,
-        out,
-    };
-    // 注意：MinimumUpdateIntervalSettings::Custom 在部分 Windows 10 版本不支援
-    // （會回「Setting a minimum update interval is not supported」），用 Default（~60fps）。
-    let settings = Settings::new(
-        monitor,
-        CursorCaptureSettings::Default,
-        DrawBorderSettings::Default,
-        SecondaryWindowSettings::Default,
-        MinimumUpdateIntervalSettings::Default,
-        DirtyRegionSettings::Default,
-        ColorFormat::Bgra8, // send_frame_buffer 要求 BGRA
-        flags,
-    );
-
-    let control = match Handler::start_free_threaded(settings) {
-        Ok(c) => c,
-        Err(e) => fail(&format!("啟動擷取失敗: {e}")),
-    };
-
-    // 通知父程序：已開始擷取
+fn run_stop_loop(
+    control: windows_capture::capture::CaptureControl<Handler, Box<dyn std::error::Error + Send + Sync>>,
+    auto_stop_secs: Option<u64>,
+) {
     println!("READY");
     let _ = std::io::stdout().flush();
 
     let stop = Arc::new(AtomicBool::new(false));
 
-    // stdin watcher：收到 "q" 或 stdin 關閉(EOF) → 設定停止旗標
+    // stdin watcher：收到 "q" 或 EOF → 停止
     {
         let stop = stop.clone();
         std::thread::spawn(move || {
@@ -214,8 +196,8 @@ fn main() {
         });
     }
 
-    // 可選：自動停止秒數（第 8 個參數，測試用）
-    if let Some(secs) = args.get(8).and_then(|s| s.parse::<u64>().ok()) {
+    // 可選自動停止（測試用）
+    if let Some(secs) = auto_stop_secs {
         let stop = stop.clone();
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_secs(secs));
@@ -223,12 +205,10 @@ fn main() {
         });
     }
 
-    // 主執行緒輪詢停止旗標
     while !stop.load(Ordering::Relaxed) {
         std::thread::sleep(Duration::from_millis(100));
     }
 
-    // 收尾：停止擷取 + 完成 encoder
     let cb = control.callback();
     let _ = control.stop();
     {
@@ -241,4 +221,79 @@ fn main() {
     }
     println!("DONE");
     let _ = std::io::stdout().flush();
+}
+
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() < 8 {
+        fail("用法: ljcut-recorder <left> <top> <width> <height> <fps> <output.mp4> <monitor|window:title> [自動停止秒數]");
+    }
+    let parse = |s: &str| -> u32 { s.parse().unwrap_or_else(|_| fail("參數需為整數")) };
+    let left = parse(&args[1]);
+    let top = parse(&args[2]);
+    let width = parse(&args[3]);
+    let height = parse(&args[4]);
+    let fps = parse(&args[5]).max(1);
+    let out = args[6].clone();
+    let target = args[7].clone();
+    let auto_stop = args.get(8).and_then(|s| s.parse::<u64>().ok());
+
+    // start_free_threaded 對 Window/Monitor 回傳的 CaptureControl<Handler,_> 型別相同
+    let control = if let Some(title) = target.strip_prefix("window:") {
+        // ── 視窗模式 ──
+        let window = pick_window(title);
+        let ww = window.width().unwrap_or(width as i32).max(2) as u32;
+        let wh = window.height().unwrap_or(height as i32).max(2) as u32;
+        let ww = (ww - (ww % 2)).max(2);
+        let wh = (wh - (wh % 2)).max(2);
+        let flags = Flags {
+            left: 0,
+            top: 0,
+            right: ww,
+            bottom: wh,
+            width: ww,
+            height: wh,
+            fps,
+            out,
+            window_mode: true,
+        };
+        let settings = Settings::new(
+            window,
+            CursorCaptureSettings::Default,
+            DrawBorderSettings::Default,
+            SecondaryWindowSettings::Default,
+            MinimumUpdateIntervalSettings::Default,
+            DirtyRegionSettings::Default,
+            ColorFormat::Bgra8,
+            flags,
+        );
+        Handler::start_free_threaded(settings).unwrap_or_else(|e| fail(&format!("啟動視窗擷取失敗: {e}")))
+    } else {
+        // ── 螢幕區域模式 ──
+        let monitor = pick_monitor(&target);
+        let flags = Flags {
+            left,
+            top,
+            right: left + width,
+            bottom: top + height,
+            width,
+            height,
+            fps,
+            out,
+            window_mode: false,
+        };
+        let settings = Settings::new(
+            monitor,
+            CursorCaptureSettings::Default,
+            DrawBorderSettings::Default,
+            SecondaryWindowSettings::Default,
+            MinimumUpdateIntervalSettings::Default,
+            DirtyRegionSettings::Default,
+            ColorFormat::Bgra8,
+            flags,
+        );
+        Handler::start_free_threaded(settings).unwrap_or_else(|e| fail(&format!("啟動螢幕擷取失敗: {e}")))
+    };
+
+    run_stop_loop(control, auto_stop);
 }

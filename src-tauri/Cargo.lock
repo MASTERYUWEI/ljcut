@@ -1863,6 +1863,7 @@ dependencies = [
  "tauri-plugin-shell",
  "tokio",
  "uuid",
+ "windows 0.62.2",
  "windows-capture",
 ]
 

@@ -277,9 +277,8 @@ fn find_recorder_exe() -> Option<PathBuf> {
 
 // ── 2. 開始錄影 ──
 
-#[tauri::command]
-pub async fn start_recording(app: AppHandle, fps: Option<u32>) -> Result<String, String> {
-    let rec_opts = RECORDING_OPTIONS.lock().unwrap().clone().unwrap_or(RecOptions {
+fn current_rec_opts() -> RecOptions {
+    RECORDING_OPTIONS.lock().unwrap().clone().unwrap_or(RecOptions {
         sys_audio: false,
         mic: false,
         mic_device: String::new(),
@@ -287,14 +286,107 @@ pub async fn start_recording(app: AppHandle, fps: Option<u32>) -> Result<String,
         fps: 60,
         mic_vol: 1.0,
         sys_vol: 1.0,
-    });
-    let fps = if rec_opts.fps > 0 {
-        rec_opts.fps
-    } else {
-        fps.unwrap_or(60)
+    })
+}
+
+/// 共用：啟動音訊 + 影像 sidecar、等待就緒、存狀態、發事件。
+/// target = 螢幕裝置名(\\.\DISPLAYn)/"primary"，或 "window:<標題>"。
+fn begin_recording(
+    app: &AppHandle,
+    rec_opts: &RecOptions,
+    x: u32,
+    y: u32,
+    w: u32,
+    h: u32,
+    fps: u32,
+    target: String,
+) -> Result<String, String> {
+    let recorder_exe = find_recorder_exe().ok_or("找不到 ljcut-recorder.exe")?;
+
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("取得 data dir 失敗: {e}"))?;
+    let outputs = data_dir.join("outputs");
+    std::fs::create_dir_all(&outputs).ok();
+    let stamp = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
+    let video_path = outputs.join(format!("rec_video_{stamp}.mp4"));
+    let final_path = outputs.join(format!("錄影_{stamp}.mp4"));
+
+    let (audio_path, audio_child) = start_audio_capture(rec_opts, &outputs, &stamp);
+
+    let mut child = match StdCommand::new(&recorder_exe)
+        .args([
+            x.to_string(),
+            y.to_string(),
+            w.to_string(),
+            h.to_string(),
+            fps.to_string(),
+            video_path.to_string_lossy().to_string(),
+            target.clone(),
+        ])
+        .creation_flags(CREATE_NO_WINDOW)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            if let Some(mut a) = audio_child {
+                let _ = a.kill();
+            }
+            return Err(format!("啟動錄影程式失敗: {e}"));
+        }
     };
 
-    let recorder_exe = find_recorder_exe().ok_or("找不到 ljcut-recorder.exe")?;
+    if let Some(err) = child.stderr.take() {
+        std::thread::spawn(move || {
+            for line in BufReader::new(err).lines().map_while(Result::ok) {
+                log::warn!("[recorder] {line}");
+            }
+        });
+    }
+
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    if let Some(out) = child.stdout.take() {
+        std::thread::spawn(move || {
+            for line in BufReader::new(out).lines().map_while(Result::ok) {
+                if line.trim() == "READY" {
+                    let _ = ready_tx.send(());
+                } else {
+                    log::info!("[recorder] {line}");
+                }
+            }
+        });
+    }
+
+    if ready_rx.recv_timeout(Duration::from_secs(8)).is_err() {
+        let _ = child.kill();
+        if let Some(mut a) = audio_child {
+            let _ = a.kill();
+        }
+        return Err("錄影程式未就緒（逾時），請查看日誌".into());
+    }
+
+    *RECORDER_PROC.lock().unwrap() = Some(child);
+    *AUDIO_PROCESS.lock().unwrap() = audio_child;
+    *REC_PATHS.lock().unwrap() = Some(RecPaths {
+        video: video_path,
+        audio: audio_path,
+        final_out: final_path.clone(),
+    });
+
+    log::info!("🎬 開始錄影: target={target} 區域({x},{y}) {w}x{h} @ {fps}fps");
+    let final_str = final_path.to_string_lossy().to_string();
+    let _ = app.emit("recording_started", &final_str);
+    Ok(final_str)
+}
+
+#[tauri::command]
+pub async fn start_recording(app: AppHandle, fps: Option<u32>) -> Result<String, String> {
+    let rec_opts = current_rec_opts();
+    let fps = if rec_opts.fps > 0 { rec_opts.fps } else { fps.unwrap_or(60) };
 
     // overlay 座標（物理像素）
     let overlay = app
@@ -329,7 +421,7 @@ pub async fn start_recording(app: AppHandle, fps: Option<u32>) -> Result<String,
         None => (0, 0, 1920u32, 1080u32, String::new()),
     };
 
-    // 轉成「該螢幕的本地座標」（相對於該螢幕左上角）+ clamp 到該螢幕範圍
+    // 轉成該螢幕的本地座標 + clamp
     let mut x = (position.x - mon_x).max(0) as u32;
     let mut y = (position.y - mon_y).max(0) as u32;
     let mut w = size.width;
@@ -349,96 +441,103 @@ pub async fn start_recording(app: AppHandle, fps: Option<u32>) -> Result<String,
     let w = (w - (w % 2)).max(4);
     let h = (h - (h % 2)).max(4);
 
-    // 關閉 overlay，等它完全消失才開始擷取
     let _ = overlay.close();
     std::thread::sleep(Duration::from_millis(300));
 
-    // 輸出路徑
-    let data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("取得 data dir 失敗: {e}"))?;
-    let outputs = data_dir.join("outputs");
-    std::fs::create_dir_all(&outputs).ok();
-    let stamp = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
-    let video_path = outputs.join(format!("rec_video_{stamp}.mp4"));
-    let final_path = outputs.join(format!("錄影_{stamp}.mp4"));
+    begin_recording(&app, &rec_opts, x, y, w, h, fps, mon_name)
+}
 
-    // 音訊（並行）
-    let (audio_path, audio_child) = start_audio_capture(&rec_opts, &outputs, &stamp);
-
-    // 影像擷取子程序
-    let mut child = match StdCommand::new(&recorder_exe)
-        .args([
-            x.to_string(),
-            y.to_string(),
-            w.to_string(),
-            h.to_string(),
-            fps.to_string(),
-            video_path.to_string_lossy().to_string(),
-            mon_name.clone(),
-        ])
-        .creation_flags(CREATE_NO_WINDOW)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-    {
-        Ok(c) => c,
-        Err(e) => {
-            if let Some(mut a) = audio_child {
-                let _ = a.kill();
-            }
-            return Err(format!("啟動錄影程式失敗: {e}"));
-        }
+/// 取得游標正下方視窗的標題（用於「點選視窗錄製」）
+fn window_title_under_cursor() -> Option<String> {
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetAncestor, GetCursorPos, GetWindowTextLengthW, GetWindowTextW, WindowFromPoint, GA_ROOT,
     };
-
-    // 排空 stderr 到 log
-    if let Some(err) = child.stderr.take() {
-        std::thread::spawn(move || {
-            for line in BufReader::new(err).lines().map_while(Result::ok) {
-                log::warn!("[recorder] {line}");
-            }
-        });
+    unsafe {
+        let mut pt = POINT::default();
+        if GetCursorPos(&mut pt).is_err() {
+            return None;
+        }
+        let hwnd = WindowFromPoint(pt);
+        if hwnd.0.is_null() {
+            return None;
+        }
+        let root = GetAncestor(hwnd, GA_ROOT);
+        let h = if root.0.is_null() { hwnd } else { root };
+        let len = GetWindowTextLengthW(h);
+        if len <= 0 {
+            return Some(String::new());
+        }
+        let mut buf = vec![0u16; (len + 1) as usize];
+        let n = GetWindowTextW(h, &mut buf);
+        if n <= 0 {
+            return Some(String::new());
+        }
+        Some(String::from_utf16_lossy(&buf[..n as usize]))
     }
+}
 
-    // 讀 stdout：等待 "READY"（並持續排空避免 pipe 阻塞）
-    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
-    if let Some(out) = child.stdout.take() {
-        std::thread::spawn(move || {
-            for line in BufReader::new(out).lines().map_while(Result::ok) {
-                if line.trim() == "READY" {
-                    let _ = ready_tx.send(());
-                } else {
-                    log::info!("[recorder] {line}");
-                }
-            }
-        });
-    }
-
-    match ready_rx.recv_timeout(Duration::from_secs(8)) {
-        Ok(()) => {}
-        Err(_) => {
-            let _ = child.kill();
-            if let Some(mut a) = audio_child {
-                let _ = a.kill();
-            }
-            return Err("錄影程式未就緒（逾時），請查看日誌".into());
+/// 進入「點選視窗」模式：把 overlay 撐滿整個虛擬桌面，讓任一螢幕的視窗都能點選
+#[tauri::command]
+pub async fn enter_window_pick(app: AppHandle) -> Result<(), String> {
+    let monitors = app.available_monitors().unwrap_or_default();
+    let (mut min_x, mut min_y, mut max_r, mut max_b) = (i32::MAX, i32::MAX, i32::MIN, i32::MIN);
+    for m in &monitors {
+        let p = m.position();
+        let s = m.size();
+        if p.x < min_x {
+            min_x = p.x;
+        }
+        if p.y < min_y {
+            min_y = p.y;
+        }
+        if p.x + s.width as i32 > max_r {
+            max_r = p.x + s.width as i32;
+        }
+        if p.y + s.height as i32 > max_b {
+            max_b = p.y + s.height as i32;
         }
     }
+    if min_x == i32::MAX {
+        return Err("找不到螢幕".into());
+    }
+    if let Some(ov) = app.get_webview_window("overlay") {
+        let _ = ov.set_position(tauri::PhysicalPosition::new(min_x, min_y));
+        let _ = ov.set_size(tauri::PhysicalSize::new(
+            (max_r - min_x) as u32,
+            (max_b - min_y) as u32,
+        ));
+    }
+    Ok(())
+}
 
-    *RECORDER_PROC.lock().unwrap() = Some(child);
-    *AUDIO_PROCESS.lock().unwrap() = audio_child;
-    *REC_PATHS.lock().unwrap() = Some(RecPaths {
-        video: video_path,
-        audio: audio_path,
-        final_out: final_path.clone(),
-    });
+/// 點選視窗後錄製：隱藏 overlay → 取游標下視窗 → 錄該視窗
+#[tauri::command]
+pub async fn start_window_recording(app: AppHandle) -> Result<String, String> {
+    let rec_opts = current_rec_opts();
+    let fps = if rec_opts.fps > 0 { rec_opts.fps } else { 60 };
 
-    log::info!("🎬 開始錄影: 螢幕[{mon_name}] 本地區域 ({x},{y}) {w}x{h} @ {fps}fps");
-    let final_str = final_path.to_string_lossy().to_string();
-    let _ = app.emit("recording_started", &final_str);
-    Ok(final_str)
+    // 先隱藏 overlay，否則 WindowFromPoint 會抓到 overlay 自己
+    if let Some(ov) = app.get_webview_window("overlay") {
+        let _ = ov.hide();
+    }
+    std::thread::sleep(Duration::from_millis(150));
+
+    match window_title_under_cursor() {
+        Some(t) if !t.is_empty() => {
+            if let Some(ov) = app.get_webview_window("overlay") {
+                let _ = ov.close();
+            }
+            begin_recording(&app, &rec_opts, 0, 0, 0, 0, fps, format!("window:{t}"))
+        }
+        _ => {
+            // 沒抓到視窗 → 還原 overlay 讓使用者重選
+            if let Some(ov) = app.get_webview_window("overlay") {
+                let _ = ov.show();
+            }
+            Err("游標下找不到可錄製的視窗".into())
+        }
+    }
 }
 
 // ── 影音合流 ──

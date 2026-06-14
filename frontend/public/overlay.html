@@ -212,6 +212,53 @@
         .btn-cancel:hover {
             background: rgba(255, 255, 255, 0.2);
         }
+
+        .btn-window {
+            background: rgba(108, 204, 192, 0.18);
+            color: #aef0e6;
+            width: 100%;
+        }
+
+        .btn-window:hover {
+            background: rgba(108, 204, 192, 0.3);
+        }
+
+        /* ── 點選視窗模式 ── */
+        body.pick-mode .handle,
+        body.pick-mode .overlay-border,
+        body.pick-mode .control-panel,
+        body.pick-mode .drag-area {
+            display: none !important;
+        }
+
+        .pick-layer {
+            position: fixed;
+            inset: 0;
+            z-index: 50;
+            background: rgba(40, 60, 90, 0.10);
+            cursor: crosshair;
+            -webkit-app-region: no-drag;
+            display: flex;
+            align-items: flex-start;
+            justify-content: center;
+        }
+
+        .pick-layer.hidden {
+            display: none;
+        }
+
+        .pick-hint {
+            margin-top: 48px;
+            background: rgba(0, 0, 0, 0.82);
+            color: #fff;
+            padding: 14px 28px;
+            border-radius: 999px;
+            font-family: 'Microsoft JhengHei', sans-serif;
+            font-size: 16px;
+            font-weight: 600;
+            pointer-events: none;
+            box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
+        }
     </style>
 </head>
 
@@ -236,11 +283,17 @@
     <div class="control-panel" id="controlPanel">
         <div class="size-display" id="sizeDisplay">800 × 600</div>
         <div class="size-label">錄影區域</div>
-        <div class="hint">↔ 拖拉邊緣或控制點調整範圍<br>✥ 拖拉中央移動位置</div>
+        <div class="hint">↔ 拖拉邊緣或控制點調整範圍<br>✥ 拖拉中央移動位置　·　空白鍵 = 滿鋪當前螢幕</div>
         <div class="btn-row">
             <button class="btn btn-cancel" id="btnCancel">取消</button>
             <button class="btn btn-record" id="btnRecord">⏺ 開始錄製</button>
         </div>
+        <button class="btn btn-window" id="btnWindow">🪟 改為錄製單一視窗</button>
+    </div>
+
+    <!-- 點選視窗模式的全螢幕點擊層 -->
+    <div class="pick-layer hidden" id="pickLayer">
+        <div class="pick-hint">點選要錄製的視窗　·　Esc 取消</div>
     </div>
 
     <script>
@@ -348,6 +401,38 @@
                 await window.__TAURI_INTERNALS__.invoke('plugin:window|close', { label: 'overlay' });
             } catch (e) {
                 window.close();
+            }
+        });
+
+        // ── 選視窗錄製 ──
+        const inv = (cmd, args) => window.__TAURI_INTERNALS__.invoke(cmd, args);
+
+        document.getElementById('btnWindow').addEventListener('click', async () => {
+            try {
+                await inv('enter_window_pick'); // overlay 撐滿整個虛擬桌面
+                document.body.classList.add('pick-mode');
+                document.getElementById('pickLayer').classList.remove('hidden');
+            } catch (e) {
+                alert('進入選視窗模式失敗: ' + e);
+            }
+        });
+
+        document.getElementById('pickLayer').addEventListener('click', async () => {
+            const layer = document.getElementById('pickLayer');
+            try {
+                layer.style.opacity = '0'; // 點下瞬間隱藏視覺，避免錄到提示
+                await inv('start_window_recording');
+            } catch (e) {
+                layer.style.opacity = '1';
+                alert('視窗錄製失敗: ' + e);
+            }
+        });
+
+        // ── Esc 取消（含選視窗模式）──
+        document.addEventListener('keydown', async (e) => {
+            if (e.key === 'Escape') {
+                try { await inv('plugin:window|close', { label: 'overlay' }); }
+                catch { window.close(); }
             }
         });
     </script>
