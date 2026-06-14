@@ -258,6 +258,18 @@
             font-weight: 600;
             pointer-events: none;
             box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
+            z-index: 2;
+        }
+
+        /* 懸停預覽框（跟著游標下的視窗）*/
+        .pick-box {
+            position: fixed;
+            display: none;
+            border: 3px dashed #7cb342;
+            background: rgba(124, 179, 66, 0.12);
+            pointer-events: none;
+            z-index: 1;
+            box-sizing: border-box;
         }
     </style>
 </head>
@@ -293,7 +305,8 @@
 
     <!-- 點選視窗模式的全螢幕點擊層 -->
     <div class="pick-layer hidden" id="pickLayer">
-        <div class="pick-hint">點選要錄製的視窗　·　Esc 取消</div>
+        <div class="pick-box" id="pickBox"></div>
+        <div class="pick-hint">移到視窗上預覽　·　點一下選取（之後可微調）　·　Esc 取消</div>
     </div>
 
     <script>
@@ -407,24 +420,49 @@
         // ── 選視窗錄製 ──
         const inv = (cmd, args) => window.__TAURI_INTERNALS__.invoke(cmd, args);
 
+        let pickPoll = null;
+        let pickOrigin = { x: 0, y: 0 };
+
         document.getElementById('btnWindow').addEventListener('click', async () => {
             try {
                 await inv('enter_window_pick'); // overlay 撐滿整個虛擬桌面
+                const op = await inv('plugin:window|outer_position', { label: 'overlay' });
+                pickOrigin = { x: op.x, y: op.y };
                 document.body.classList.add('pick-mode');
                 document.getElementById('pickLayer').classList.remove('hidden');
+
+                const box = document.getElementById('pickBox');
+                const dpr = window.devicePixelRatio || 1;
+                pickPoll = setInterval(async () => {
+                    try {
+                        const r = await inv('hover_window_rect'); // [x,y,w,h]（物理像素）或 null
+                        if (r) {
+                            box.style.display = 'block';
+                            box.style.left = ((r[0] - pickOrigin.x) / dpr) + 'px';
+                            box.style.top = ((r[1] - pickOrigin.y) / dpr) + 'px';
+                            box.style.width = (r[2] / dpr) + 'px';
+                            box.style.height = (r[3] / dpr) + 'px';
+                        } else {
+                            box.style.display = 'none';
+                        }
+                    } catch (_) { }
+                }, 80);
             } catch (e) {
                 alert('進入選視窗模式失敗: ' + e);
             }
         });
 
         document.getElementById('pickLayer').addEventListener('click', async () => {
-            const layer = document.getElementById('pickLayer');
             try {
-                layer.style.opacity = '0'; // 點下瞬間隱藏視覺，避免錄到提示
-                await inv('start_window_recording');
+                if (pickPoll) { clearInterval(pickPoll); pickPoll = null; }
+                await inv('snap_overlay_to_window'); // 把 overlay 對齊到游標下的視窗
+                // 退出 pick 模式 → 回到一般選區（可微調後再開始錄製）
+                document.body.classList.remove('pick-mode');
+                document.getElementById('pickLayer').classList.add('hidden');
+                document.getElementById('pickBox').style.display = 'none';
+                updateSize();
             } catch (e) {
-                layer.style.opacity = '1';
-                alert('視窗錄製失敗: ' + e);
+                alert('選取視窗失敗: ' + e);
             }
         });
 

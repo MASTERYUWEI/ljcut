@@ -1,7 +1,7 @@
 mod commands;
 mod services;
 
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -13,6 +13,16 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, _shortcut, event| {
+                    // F10（錄影時才會註冊）→ 通知前端停止錄影
+                    if event.state() == tauri_plugin_global_shortcut::ShortcutState::Pressed {
+                        let _ = app.emit("hotkey_stop", ());
+                    }
+                })
+                .build(),
+        )
         .manage(commands::sidecar::SidecarState::default())
         .invoke_handler(tauri::generate_handler![
             commands::sidecar::get_backend_port,
@@ -22,7 +32,8 @@ pub fn run() {
             commands::recorder::start_recording,
             commands::recorder::stop_recording,
             commands::recorder::enter_window_pick,
-            commands::recorder::start_window_recording,
+            commands::recorder::hover_window_rect,
+            commands::recorder::snap_overlay_to_window,
         ])
         .setup(|app| {
             // 確保 uploads 和 outputs 目錄存在

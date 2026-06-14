@@ -1828,6 +1828,13 @@ body {
   min-width: 56px;
 }
 
+.rec-hotkey-hint {
+  font-size: 11px;
+  color: var(--fg-subtext0, rgba(255, 255, 255, 0.55));
+  margin-left: 4px;
+  white-space: nowrap;
+}
+
 .rec-ctrl-btn {
   width: 32px;
   height: 32px;

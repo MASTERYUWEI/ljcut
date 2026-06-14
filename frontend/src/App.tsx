@@ -514,6 +514,17 @@ export default function App() {
         }
     }, []);
 
+    // ── F10 全域快捷鍵停止錄影（Rust 端發 hotkey_stop 事件）──
+    useEffect(() => {
+        if (!IS_TAURI) return;
+        let unlisten = () => { };
+        (async () => {
+            const { listen } = await import('@tauri-apps/api/event');
+            unlisten = await listen('hotkey_stop', () => { handleStopRec(); });
+        })();
+        return () => { unlisten(); };
+    }, [handleStopRec]);
+
     // ── 從媒體庫拖放到時間軸：建立 clip ──
     const handleDropToTimeline = useCallback((e: React.DragEvent) => {
         e.preventDefault();
@@ -1553,7 +1564,8 @@ export default function App() {
                     <button className="rec-ctrl-btn" onClick={handlePauseRec} title={isPaused ? '繼續' : '暫停'}>
                         {isPaused ? '▶' : '⏸'}
                     </button>
-                    <button className="rec-ctrl-btn rec-stop" onClick={handleStopRec} title="停止">⏹</button>
+                    <button className="rec-ctrl-btn rec-stop" onClick={handleStopRec} title="停止 (F10)">⏹</button>
+                    <span className="rec-hotkey-hint">按 F10 結束</span>
                 </div>
             )}
 

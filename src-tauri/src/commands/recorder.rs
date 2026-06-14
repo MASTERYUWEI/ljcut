@@ -14,6 +14,7 @@ use std::process::{Child, Command as StdCommand, Stdio};
 use std::sync::Mutex;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
 /// Windows：不要為子程序彈出 console 視窗
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -377,6 +378,9 @@ fn begin_recording(
         final_out: final_path.clone(),
     });
 
+    // 註冊 F10 全域快捷鍵以停止錄影（錄影期間才註冊，避免平時佔用）
+    let _ = app.global_shortcut().register("F10");
+
     log::info!("🎬 開始錄影: target={target} 區域({x},{y}) {w}x{h} @ {fps}fps");
     let final_str = final_path.to_string_lossy().to_string();
     let _ = app.emit("recording_started", &final_str);
@@ -447,34 +451,42 @@ pub async fn start_recording(app: AppHandle, fps: Option<u32>) -> Result<String,
     begin_recording(&app, &rec_opts, x, y, w, h, fps, mon_name)
 }
 
-/// 取得游標正下方視窗的標題（用於「點選視窗錄製」）
-fn window_title_under_cursor() -> Option<String> {
+fn cursor_pos() -> Option<(i32, i32)> {
     use windows::Win32::Foundation::POINT;
-    use windows::Win32::UI::WindowsAndMessaging::{
-        GetAncestor, GetCursorPos, GetWindowTextLengthW, GetWindowTextW, WindowFromPoint, GA_ROOT,
-    };
+    use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
     unsafe {
-        let mut pt = POINT::default();
-        if GetCursorPos(&mut pt).is_err() {
-            return None;
+        let mut p = POINT::default();
+        if GetCursorPos(&mut p).is_ok() {
+            Some((p.x, p.y))
+        } else {
+            None
         }
-        let hwnd = WindowFromPoint(pt);
-        if hwnd.0.is_null() {
-            return None;
-        }
-        let root = GetAncestor(hwnd, GA_ROOT);
-        let h = if root.0.is_null() { hwnd } else { root };
-        let len = GetWindowTextLengthW(h);
-        if len <= 0 {
-            return Some(String::new());
-        }
-        let mut buf = vec![0u16; (len + 1) as usize];
-        let n = GetWindowTextW(h, &mut buf);
-        if n <= 0 {
-            return Some(String::new());
-        }
-        Some(String::from_utf16_lossy(&buf[..n as usize]))
     }
+}
+
+/// 找游標正下方、非 overlay 的最上層視窗範圍（螢幕座標 x,y,w,h）。
+/// 用 windows-capture 的視窗列舉（已過濾工具/隱形視窗，且為 Z-order 由上到下）。
+fn window_rect_under_cursor() -> Option<(i32, i32, i32, i32)> {
+    let (cx, cy) = cursor_pos()?;
+    let wins = windows_capture::window::Window::enumerate().ok()?;
+    for w in wins {
+        let title = w.title().unwrap_or_default();
+        if title.is_empty() || title == "LJCUT 錄影選區" {
+            continue;
+        }
+        if let Ok(r) = w.rect() {
+            if cx >= r.left && cx < r.right && cy >= r.top && cy < r.bottom {
+                return Some((r.left, r.top, r.right - r.left, r.bottom - r.top));
+            }
+        }
+    }
+    None
+}
+
+/// 懸停預覽：回傳游標下視窗的螢幕座標範圍（x,y,w,h），給前端畫綠框
+#[tauri::command]
+pub fn hover_window_rect() -> Option<(i32, i32, i32, i32)> {
+    window_rect_under_cursor()
 }
 
 /// 進入「點選視窗」模式：把 overlay 撐滿整個虛擬桌面，讓任一螢幕的視窗都能點選
@@ -511,33 +523,28 @@ pub async fn enter_window_pick(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// 點選視窗後錄製：隱藏 overlay → 取游標下視窗 → 錄該視窗
+/// 點選視窗後：把 overlay 內框對齊到游標下視窗（之後使用者可微調再錄）
 #[tauri::command]
-pub async fn start_window_recording(app: AppHandle) -> Result<String, String> {
-    let rec_opts = current_rec_opts();
-    let fps = if rec_opts.fps > 0 { rec_opts.fps } else { 60 };
+pub async fn snap_overlay_to_window(app: AppHandle) -> Result<(), String> {
+    let (rx, ry, rw, rh) = window_rect_under_cursor().ok_or("游標下找不到視窗")?;
+    let overlay = app.get_webview_window("overlay").ok_or("overlay 不存在")?;
 
-    // 先隱藏 overlay，否則 WindowFromPoint 會抓到 overlay 自己
-    if let Some(ov) = app.get_webview_window("overlay") {
-        let _ = ov.hide();
-    }
-    std::thread::sleep(Duration::from_millis(150));
+    // 邊框補償，讓 overlay 內框（=錄影範圍）對齊視窗範圍
+    let op = overlay.outer_position().map_err(|e| e.to_string())?;
+    let ip = overlay.inner_position().map_err(|e| e.to_string())?;
+    let os = overlay.outer_size().map_err(|e| e.to_string())?;
+    let is = overlay.inner_size().map_err(|e| e.to_string())?;
+    let bl = ip.x - op.x;
+    let bt = ip.y - op.y;
+    let br = os.width as i32 - is.width as i32 - bl;
+    let bb = os.height as i32 - is.height as i32 - bt;
 
-    match window_title_under_cursor() {
-        Some(t) if !t.is_empty() => {
-            if let Some(ov) = app.get_webview_window("overlay") {
-                let _ = ov.close();
-            }
-            begin_recording(&app, &rec_opts, 0, 0, 0, 0, fps, format!("window:{t}"))
-        }
-        _ => {
-            // 沒抓到視窗 → 還原 overlay 讓使用者重選
-            if let Some(ov) = app.get_webview_window("overlay") {
-                let _ = ov.show();
-            }
-            Err("游標下找不到可錄製的視窗".into())
-        }
-    }
+    let _ = overlay.set_position(tauri::PhysicalPosition::new(rx - bl, ry - bt));
+    let _ = overlay.set_size(tauri::PhysicalSize::new(
+        (rw + bl + br).max(4) as u32,
+        (rh + bt + bb).max(4) as u32,
+    ));
+    Ok(())
 }
 
 // ── 影音合流 ──
@@ -600,6 +607,7 @@ fn wait_or_kill(child: &mut Child, timeout: Duration) {
 
 #[tauri::command]
 pub async fn stop_recording(app: AppHandle) -> Result<String, String> {
+    let _ = app.global_shortcut().unregister("F10");
     let paths = REC_PATHS
         .lock()
         .unwrap()
