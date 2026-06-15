@@ -48,6 +48,21 @@ fn fail(msg: &str) -> ! {
     std::process::exit(1);
 }
 
+/// 把 "#RRGGBB" / "RRGGBB" 轉成 BGR（給 blend 用）；解析失敗回傳 default。
+fn parse_hex_bgr(s: &str, default: (u8, u8, u8)) -> (u8, u8, u8) {
+    let s = s.trim().trim_start_matches('#');
+    if s.len() == 6 {
+        if let (Ok(r), Ok(g), Ok(b)) = (
+            u8::from_str_radix(&s[0..2], 16),
+            u8::from_str_radix(&s[2..4], 16),
+            u8::from_str_radix(&s[4..6], 16),
+        ) {
+            return (b, g, r);
+        }
+    }
+    default
+}
+
 enum GrabErr {
     /// 桌面切換（解析度變更、進入全螢幕、UAC 安全桌面）→ 需重建複製器
     AccessLost,
@@ -80,6 +95,8 @@ struct Capturer {
     // 滑鼠光暈 / 點擊特效
     glow: bool,
     click_fx: bool,
+    glow_bgr: (u8, u8, u8),  // 光暈顏色（BGR）
+    click_bgr: (u8, u8, u8), // 點擊漣漪顏色（BGR）
     prev_lbtn: bool,
     prev_rbtn: bool,
     ripples: Vec<(i32, i32, Instant)>, // 點擊漣漪：輸出座標 x,y + 起始時間
@@ -259,7 +276,8 @@ impl Capturer {
                     continue;
                 }
                 let a = (max_a * (1.0 - d2.sqrt() / rf)) as u16;
-                self.blend_px(out_buf, cx + dx, cy + dy, 40, 210, 255, a); // BGR 暖黃
+                let (b, g, r) = self.glow_bgr;
+                self.blend_px(out_buf, cx + dx, cy + dy, b, g, r, a);
             }
         }
     }
@@ -282,7 +300,8 @@ impl Capturer {
                 for dx in -ri..=ri {
                     let d = ((dx * dx + dy * dy) as f32).sqrt();
                     if (d - radius).abs() <= 1.5 {
-                        self.blend_px(out_buf, cx + dx, cy + dy, 90, 230, 255, alpha); // BGR 亮黃白
+                        let (b, g, r) = self.click_bgr;
+                        self.blend_px(out_buf, cx + dx, cy + dy, b, g, r, alpha);
                     }
                 }
             }
@@ -524,7 +543,7 @@ fn create_staging(device: &ID3D11Device, w: u32, h: u32) -> windows::core::Resul
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 8 {
-        fail("用法: ljcut-recorder <left> <top> <width> <height> <fps> <output.mp4> <monitor> [光暈0/1] [點擊0/1] [自動停止秒數]");
+        fail("用法: ljcut-recorder <left> <top> <width> <height> <fps> <output.mp4> <monitor> [光暈0/1] [點擊0/1] [光暈色#RRGGBB] [點擊色#RRGGBB] [自動停止秒數]");
     }
     let parse = |s: &str| -> u32 { s.parse().unwrap_or_else(|_| fail("參數需為整數")) };
     let mut x = parse(&args[1]);
@@ -536,7 +555,10 @@ fn main() {
     let target = args[7].clone();
     let glow = args.get(8).map(|s| s == "1").unwrap_or(false);
     let click_fx = args.get(9).map(|s| s == "1").unwrap_or(false);
-    let auto_stop = args.get(10).and_then(|s| s.parse::<u64>().ok());
+    // 顏色（#RRGGBB）；預設 光暈=暖黃、點擊=亮黃白
+    let glow_bgr = parse_hex_bgr(args.get(10).map(|s| s.as_str()).unwrap_or(""), (40, 210, 255));
+    let click_bgr = parse_hex_bgr(args.get(11).map(|s| s.as_str()).unwrap_or(""), (90, 230, 255));
+    let auto_stop = args.get(12).and_then(|s| s.parse::<u64>().ok());
 
     // WinRT（VideoEncoder）需要 MTA；建立程序級 MTA 後，編碼器內部的 transcode thread 也能隱式參與
     unsafe {
@@ -603,6 +625,8 @@ fn main() {
         cursor_hotspot_y: 0,
         glow,
         click_fx,
+        glow_bgr,
+        click_bgr,
         prev_lbtn: false,
         prev_rbtn: false,
         ripples: Vec::new(),

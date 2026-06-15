@@ -106,6 +106,12 @@ export function RecordingSettingsModal({
                 </div>
                 <div className="rec-setting-row">
                     <label>🖱️ 滑鼠光暈</label>
+                    {recOpts.cursorGlow && (
+                        <input type="color" value={recOpts.glowColor}
+                            onChange={e => setRecOpts(o => ({ ...o, glowColor: e.target.value }))}
+                            title="光暈顏色"
+                            style={{ width: 34, height: 24, marginLeft: 'auto', marginRight: 8, padding: 0, border: 'none', background: 'none', cursor: 'pointer' }} />
+                    )}
                     <label className="toggle-switch">
                         <input type="checkbox" checked={recOpts.cursorGlow}
                             onChange={e => setRecOpts(o => ({ ...o, cursorGlow: e.target.checked }))} />
@@ -114,6 +120,12 @@ export function RecordingSettingsModal({
                 </div>
                 <div className="rec-setting-row">
                     <label>✨ 點擊特效</label>
+                    {recOpts.clickEffect && (
+                        <input type="color" value={recOpts.clickColor}
+                            onChange={e => setRecOpts(o => ({ ...o, clickColor: e.target.value }))}
+                            title="點擊漣漪顏色"
+                            style={{ width: 34, height: 24, marginLeft: 'auto', marginRight: 8, padding: 0, border: 'none', background: 'none', cursor: 'pointer' }} />
+                    )}
                     <label className="toggle-switch">
                         <input type="checkbox" checked={recOpts.clickEffect}
                             onChange={e => setRecOpts(o => ({ ...o, clickEffect: e.target.checked }))} />

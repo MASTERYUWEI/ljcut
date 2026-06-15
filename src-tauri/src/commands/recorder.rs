@@ -54,6 +54,17 @@ pub struct RecOptions {
     pub cursor_glow: bool,
     #[serde(default)]
     pub click_effect: bool,
+    #[serde(default = "default_glow_color")]
+    pub glow_color: String,
+    #[serde(default = "default_click_color")]
+    pub click_color: String,
+}
+
+fn default_glow_color() -> String {
+    "#ffd228".into()
+}
+fn default_click_color() -> String {
+    "#ffe65a".into()
 }
 
 fn default_fps() -> u32 {
@@ -114,6 +125,8 @@ pub async fn set_rec_options(
     sys_vol: Option<f32>,
     cursor_glow: Option<bool>,
     click_effect: Option<bool>,
+    glow_color: Option<String>,
+    click_color: Option<String>,
 ) -> Result<(), String> {
     let opts = RecOptions {
         sys_audio,
@@ -125,6 +138,8 @@ pub async fn set_rec_options(
         sys_vol: sys_vol.unwrap_or(1.0),
         cursor_glow: cursor_glow.unwrap_or(false),
         click_effect: click_effect.unwrap_or(false),
+        glow_color: glow_color.unwrap_or_else(default_glow_color),
+        click_color: click_color.unwrap_or_else(default_click_color),
     };
     log::info!(
         "🎙️ 錄影選項: sys={}({:.0}%), mic={}({:.0}%), fps={}",
@@ -354,6 +369,8 @@ fn current_rec_opts() -> RecOptions {
         sys_vol: 1.0,
         cursor_glow: false,
         click_effect: false,
+        glow_color: default_glow_color(),
+        click_color: default_click_color(),
     })
 }
 
@@ -394,6 +411,8 @@ fn begin_recording(
             target.clone(),
             if rec_opts.cursor_glow { "1".into() } else { "0".into() },
             if rec_opts.click_effect { "1".into() } else { "0".into() },
+            rec_opts.glow_color.clone(),
+            rec_opts.click_color.clone(),
         ])
         .creation_flags(CREATE_NO_WINDOW)
         .stdin(Stdio::piped())

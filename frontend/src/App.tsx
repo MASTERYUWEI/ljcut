@@ -54,7 +54,7 @@ export default function App() {
     const [isPaused, setIsPaused] = useState(false);
     const [recSeconds, setRecSeconds] = useState(0);
     const [showRecSettings, setShowRecSettings] = useState(false);
-    const [recOpts, setRecOpts] = useState<RecOpts>({ sysAudio: false, mic: false, quality: '1080p', fps: 60, micDevice: '', sysAudioDevice: '', micVol: 1.0, sysVol: 1.0, cursorGlow: false, clickEffect: false });
+    const [recOpts, setRecOpts] = useState<RecOpts>({ sysAudio: false, mic: false, quality: '1080p', fps: 60, micDevice: '', sysAudioDevice: '', micVol: 1.0, sysVol: 1.0, cursorGlow: false, clickEffect: false, glowColor: '#ffd228', clickColor: '#ffe65a' });
     const [micDevices, setMicDevices] = useState<MicDevice[]>([]);
     const micStreamRef = useRef<MediaStream | null>(null);
     const micAnimRef = useRef<number>(0);
@@ -360,6 +360,8 @@ export default function App() {
                     sysVol: recOpts.sysVol,
                     cursorGlow: recOpts.cursorGlow,
                     clickEffect: recOpts.clickEffect,
+                    glowColor: recOpts.glowColor,
+                    clickColor: recOpts.clickColor,
                 });
 
                 // 開啟 overlay 選區窗
