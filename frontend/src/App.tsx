@@ -1557,6 +1557,29 @@ export default function App() {
         return () => { if (h) v.removeEventListener('loadedmetadata', h); };
     }, [isPlaying, primaryMedia, timelineClips, mediaItems, findClipAtTime, getActiveVideo, currentTime]);
 
+    // ── 暫停時驅動字幕 overlay（播放中由 tick 驅動）──
+    // overlay 的文字與顯示/隱藏只由「單一來源」寫入：播放中 tick、暫停時此 effect。
+    // JSX 不再用 React state 設 display/textContent，根除兩邊搶寫造成的閃爍。
+    useEffect(() => {
+        if (isPlaying) return;
+        const overlay = subtitleOverlayRef.current;
+        if (!overlay) return;
+        const overlayClip = timelineClips.find(c =>
+            c.trackIndex === 0 && currentTime >= c.startTime && currentTime < c.startTime + c.duration
+        );
+        const mediaTimeForOverlay = overlayClip
+            ? overlayClip.trimStart + (currentTime - overlayClip.startTime) * overlayClip.speed
+            : currentTime;
+        const overlaySegs = overlayClip?.segments ?? segments;
+        const activeSeg = overlaySegs.find(s => mediaTimeForOverlay >= s.start && mediaTimeForOverlay <= s.end);
+        if (activeSeg) {
+            overlay.textContent = activeSeg.text;
+            overlay.style.display = '';
+        } else {
+            overlay.style.display = 'none';
+        }
+    }, [isPlaying, currentTime, timelineClips, segments]);
+
     // ── Per-clip 波形繪製 ──
     const drawClipWaveform = useCallback((canvas: HTMLCanvasElement, peaks: number[], clipWidthPx: number) => {
         if (peaks.length === 0 || clipWidthPx <= 0) return;
@@ -2017,15 +2040,8 @@ export default function App() {
 
                         {/* 字幕即時預覽 overlay */}
                         {primaryMedia && segments.length > 0 && (() => {
-                            // currentTime 是 timeline position，需轉換為 media time 再比對字幕區間
-                            const overlayClip = timelineClips.find(c =>
-                                c.trackIndex === 0 && currentTime >= c.startTime && currentTime < c.startTime + c.duration
-                            );
-                            const mediaTimeForOverlay = overlayClip
-                                ? overlayClip.trimStart + (currentTime - overlayClip.startTime) * overlayClip.speed
-                                : currentTime;
-                            const overlaySegs = overlayClip?.segments ?? segments;
-                            const activeSeg = overlaySegs.find(s => mediaTimeForOverlay >= s.start && mediaTimeForOverlay <= s.end);
+                            // 字幕文字與顯示/隱藏改由 tick(播放中) 與 paused-overlay effect(暫停時)
+                            // 以 imperative 方式驅動；這裡不再用 React state 設定，避免與 tick 兩邊搶寫造成閃爍。
                             const bgAlpha = subtitleStyle.bgEnabled ? subtitleStyle.bgOpacity / 100 : 0;
 
                             // 計算影片實際顯示範圍（object-fit: contain 的 letterbox）
@@ -2070,7 +2086,6 @@ export default function App() {
                                         WebkitTextStroke: `${scaledOutline}px #000`,
                                         paintOrder: 'stroke fill',
                                         backgroundColor: bgAlpha > 0 ? `rgba(0,0,0,${bgAlpha})` : 'transparent',
-                                        display: activeSeg ? '' : 'none',
                                         maxWidth: `${frameW * 0.9}px`,
                                     }}
                                     onMouseDown={(e) => {
@@ -2096,9 +2111,7 @@ export default function App() {
                                         window.addEventListener('mouseup', onUp);
                                     }}
                                     title="拖拉調整字幕位置"
-                                >
-                                    {activeSeg?.text ?? ''}
-                                </div>
+                                />
                             );
                         })()}
                     </div>
