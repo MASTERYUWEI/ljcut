@@ -86,6 +86,8 @@ export interface RecOpts {
     clickEffect: boolean;
     glowColor: string;
     clickColor: string;
+    cursorScale: number;
+    cursorHidden: boolean;
 }
 
 export interface MicDevice {

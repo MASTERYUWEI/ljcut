@@ -58,6 +58,10 @@ pub struct RecOptions {
     pub glow_color: String,
     #[serde(default = "default_click_color")]
     pub click_color: String,
+    #[serde(default = "default_scale")]
+    pub cursor_scale: f32,
+    #[serde(default)]
+    pub cursor_hidden: bool,
 }
 
 fn default_glow_color() -> String {
@@ -65,6 +69,9 @@ fn default_glow_color() -> String {
 }
 fn default_click_color() -> String {
     "#ffe65a".into()
+}
+fn default_scale() -> f32 {
+    1.0
 }
 
 fn default_fps() -> u32 {
@@ -127,6 +134,8 @@ pub async fn set_rec_options(
     click_effect: Option<bool>,
     glow_color: Option<String>,
     click_color: Option<String>,
+    cursor_scale: Option<f32>,
+    cursor_hidden: Option<bool>,
 ) -> Result<(), String> {
     let opts = RecOptions {
         sys_audio,
@@ -140,6 +149,8 @@ pub async fn set_rec_options(
         click_effect: click_effect.unwrap_or(false),
         glow_color: glow_color.unwrap_or_else(default_glow_color),
         click_color: click_color.unwrap_or_else(default_click_color),
+        cursor_scale: cursor_scale.unwrap_or(1.0),
+        cursor_hidden: cursor_hidden.unwrap_or(false),
     };
     log::info!(
         "🎙️ 錄影選項: sys={}({:.0}%), mic={}({:.0}%), fps={}",
@@ -371,6 +382,8 @@ fn current_rec_opts() -> RecOptions {
         click_effect: false,
         glow_color: default_glow_color(),
         click_color: default_click_color(),
+        cursor_scale: 1.0,
+        cursor_hidden: false,
     })
 }
 
@@ -413,6 +426,8 @@ fn begin_recording(
             if rec_opts.click_effect { "1".into() } else { "0".into() },
             rec_opts.glow_color.clone(),
             rec_opts.click_color.clone(),
+            format!("{:.2}", rec_opts.cursor_scale),
+            if rec_opts.cursor_hidden { "1".into() } else { "0".into() },
         ])
         .creation_flags(CREATE_NO_WINDOW)
         .stdin(Stdio::piped())

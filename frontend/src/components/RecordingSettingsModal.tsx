@@ -105,6 +105,25 @@ export function RecordingSettingsModal({
                     </div>
                 </div>
                 <div className="rec-setting-row">
+                    <label>🔍 游標大小</label>
+                    <div style={{ display: 'flex', gap: 6, marginLeft: 'auto' }}>
+                        {[1, 1.5, 2].map(s => (
+                            <button key={s}
+                                className={`btn rec-quality-btn ${recOpts.cursorScale === s ? 'active' : ''}`}
+                                disabled={recOpts.cursorHidden}
+                                onClick={() => setRecOpts(o => ({ ...o, cursorScale: s }))}>{s}x</button>
+                        ))}
+                    </div>
+                </div>
+                <div className="rec-setting-row">
+                    <label>🚫 隱藏游標</label>
+                    <label className="toggle-switch">
+                        <input type="checkbox" checked={recOpts.cursorHidden}
+                            onChange={e => setRecOpts(o => ({ ...o, cursorHidden: e.target.checked }))} />
+                        <span className="toggle-slider" />
+                    </label>
+                </div>
+                <div className="rec-setting-row">
                     <label>🖱️ 滑鼠光暈</label>
                     {recOpts.cursorGlow && (
                         <input type="color" value={recOpts.glowColor}

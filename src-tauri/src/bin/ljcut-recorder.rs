@@ -92,6 +92,8 @@ struct Capturer {
     cursor_visible: bool,
     cursor_hotspot_x: i32,
     cursor_hotspot_y: i32,
+    cursor_scale: f32, // 游標放大倍率（1.0 = 原尺寸）
+    cursor_hidden: bool, // 隱藏游標（仍可單獨開光暈/點擊）
     // 滑鼠光暈 / 點擊特效
     glow: bool,
     click_fx: bool,
@@ -234,7 +236,7 @@ impl Capturer {
             if self.click_fx {
                 self.draw_ripples(out_buf);
             }
-            if self.cursor_visible {
+            if self.cursor_visible && !self.cursor_hidden {
                 self.draw_cursor(out_buf);
             }
             Ok(true)
@@ -317,12 +319,14 @@ impl Capturer {
         let w = self.w as i32;
         let h = self.h as i32;
         let row = (self.w * 4) as usize;
-        let ox = self.cursor_x - self.x as i32; // 游標左上在裁切區內的位置
-        let oy = self.cursor_y - self.y as i32;
         let pitch = self.cursor_pitch as usize;
         let shape = &self.cursor_shape;
+        let sc = self.cursor_scale.max(1.0);
 
-        // 在 (px,py)（裁切區座標）以 alpha 混合寫入；含 bottom-to-top 翻轉
+        // 縮放後仍讓 hotspot(游標尖端)錨定在原螢幕點
+        let base_x = self.cursor_x - self.x as i32 - (self.cursor_hotspot_x as f32 * (sc - 1.0)) as i32;
+        let base_y = self.cursor_y - self.y as i32 - (self.cursor_hotspot_y as f32 * (sc - 1.0)) as i32;
+
         let blend = |buf: &mut [u8], px: i32, py: i32, b: u8, g: u8, r: u8, a: u16| {
             if px < 0 || py < 0 || px >= w || py >= h || a == 0 {
                 return;
@@ -349,56 +353,62 @@ impl Capturer {
             buf[idx + 2] ^= r;
         };
 
-        match self.cursor_type {
-            2 => {
-                // COLOR：32bpp BGRA，依 alpha 混合
-                let (cw, ch) = (self.cursor_w as i32, self.cursor_h as i32);
-                for cy in 0..ch {
-                    for cx in 0..cw {
-                        let p = cy as usize * pitch + cx as usize * 4;
+        let src_w = self.cursor_w as i32;
+        // 單色游標實際高度為 Height/2（上半 AND、下半 XOR）
+        let src_h = if self.cursor_type == 2 || self.cursor_type == 4 {
+            self.cursor_h as i32
+        } else {
+            (self.cursor_h / 2) as i32
+        };
+        let dw = (src_w as f32 * sc).round() as i32;
+        let dh = (src_h as f32 * sc).round() as i32;
+
+        // 以「目的像素」迭代、最近鄰取樣來源，支援任意倍率縮放
+        for dyp in 0..dh {
+            let sy = ((dyp as f32) / sc) as i32;
+            if sy >= src_h {
+                continue;
+            }
+            for dxp in 0..dw {
+                let sx = ((dxp as f32) / sc) as i32;
+                if sx >= src_w {
+                    continue;
+                }
+                let px = base_x + dxp;
+                let py = base_y + dyp;
+                match self.cursor_type {
+                    2 => {
+                        let p = sy as usize * pitch + sx as usize * 4;
                         if p + 3 >= shape.len() {
                             continue;
                         }
-                        blend(out_buf, ox + cx, oy + cy, shape[p], shape[p + 1], shape[p + 2], shape[p + 3] as u16);
+                        blend(out_buf, px, py, shape[p], shape[p + 1], shape[p + 2], shape[p + 3] as u16);
                     }
-                }
-            }
-            4 => {
-                // MASKED_COLOR：32bpp，A=0→不透明複製；A≠0→與背景 XOR
-                let (cw, ch) = (self.cursor_w as i32, self.cursor_h as i32);
-                for cy in 0..ch {
-                    for cx in 0..cw {
-                        let p = cy as usize * pitch + cx as usize * 4;
+                    4 => {
+                        let p = sy as usize * pitch + sx as usize * 4;
                         if p + 3 >= shape.len() {
                             continue;
                         }
                         if shape[p + 3] == 0 {
-                            blend(out_buf, ox + cx, oy + cy, shape[p], shape[p + 1], shape[p + 2], 255);
+                            blend(out_buf, px, py, shape[p], shape[p + 1], shape[p + 2], 255);
                         } else {
-                            xor_px(out_buf, ox + cx, oy + cy, shape[p], shape[p + 1], shape[p + 2]);
+                            xor_px(out_buf, px, py, shape[p], shape[p + 1], shape[p + 2]);
                         }
                     }
-                }
-            }
-            _ => {
-                // MONOCHROME：1bpp，上半 AND 遮罩、下半 XOR 遮罩，實際高度為 Height/2
-                let cw = self.cursor_w as i32;
-                let ch = (self.cursor_h / 2) as i32;
-                for cy in 0..ch {
-                    for cx in 0..cw {
-                        let and_byte = cy as usize * pitch + cx as usize / 8;
-                        let xor_byte = (cy as usize + ch as usize) * pitch + cx as usize / 8;
+                    _ => {
+                        let and_byte = sy as usize * pitch + sx as usize / 8;
+                        let xor_byte = (sy as usize + src_h as usize) * pitch + sx as usize / 8;
                         if xor_byte >= shape.len() {
                             continue;
                         }
-                        let bit = 7 - (cx as usize % 8);
+                        let bit = 7 - (sx as usize % 8);
                         let a = (shape[and_byte] >> bit) & 1;
                         let x = (shape[xor_byte] >> bit) & 1;
                         match (a, x) {
-                            (0, 0) => blend(out_buf, ox + cx, oy + cy, 0, 0, 0, 255), // 黑
-                            (0, _) => blend(out_buf, ox + cx, oy + cy, 255, 255, 255, 255), // 白
-                            (_, 0) => {} // 透明
-                            _ => xor_px(out_buf, ox + cx, oy + cy, 255, 255, 255), // 反相
+                            (0, 0) => blend(out_buf, px, py, 0, 0, 0, 255),
+                            (0, _) => blend(out_buf, px, py, 255, 255, 255, 255),
+                            (_, 0) => {}
+                            _ => xor_px(out_buf, px, py, 255, 255, 255),
                         }
                     }
                 }
@@ -543,7 +553,7 @@ fn create_staging(device: &ID3D11Device, w: u32, h: u32) -> windows::core::Resul
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 8 {
-        fail("用法: ljcut-recorder <left> <top> <width> <height> <fps> <output.mp4> <monitor> [光暈0/1] [點擊0/1] [光暈色#RRGGBB] [點擊色#RRGGBB] [自動停止秒數]");
+        fail("用法: ljcut-recorder <left> <top> <width> <height> <fps> <output.mp4> <monitor> [光暈0/1] [點擊0/1] [光暈色#RRGGBB] [點擊色#RRGGBB] [游標倍率] [隱藏游標0/1] [自動停止秒數]");
     }
     let parse = |s: &str| -> u32 { s.parse().unwrap_or_else(|_| fail("參數需為整數")) };
     let mut x = parse(&args[1]);
@@ -558,7 +568,9 @@ fn main() {
     // 顏色（#RRGGBB）；預設 光暈=暖黃、點擊=亮黃白
     let glow_bgr = parse_hex_bgr(args.get(10).map(|s| s.as_str()).unwrap_or(""), (40, 210, 255));
     let click_bgr = parse_hex_bgr(args.get(11).map(|s| s.as_str()).unwrap_or(""), (90, 230, 255));
-    let auto_stop = args.get(12).and_then(|s| s.parse::<u64>().ok());
+    let cursor_scale = args.get(12).and_then(|s| s.parse::<f32>().ok()).unwrap_or(1.0).clamp(1.0, 4.0);
+    let cursor_hidden = args.get(13).map(|s| s == "1").unwrap_or(false);
+    let auto_stop = args.get(14).and_then(|s| s.parse::<u64>().ok());
 
     // WinRT（VideoEncoder）需要 MTA；建立程序級 MTA 後，編碼器內部的 transcode thread 也能隱式參與
     unsafe {
@@ -623,6 +635,8 @@ fn main() {
         cursor_visible: false,
         cursor_hotspot_x: 0,
         cursor_hotspot_y: 0,
+        cursor_scale,
+        cursor_hidden,
         glow,
         click_fx,
         glow_bgr,
