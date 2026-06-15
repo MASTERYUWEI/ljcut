@@ -15,6 +15,10 @@ use tauri::{AppHandle, Manager, State};
 pub struct SidecarState {
     child: Mutex<Option<Child>>,
     port: Mutex<Option<u16>>,
+    /// Windows Job Object handle（以 isize 保存以符合 Send）；存活於 app 生命週期，
+    /// app 結束/當機/被強制 kill 時 handle 隨之關閉 → KILL_ON_JOB_CLOSE 終止 sidecar。
+    #[allow(dead_code)]
+    job: Mutex<Option<isize>>,
 }
 
 /// 前端查詢後端 port（啟動後即可取得）
@@ -69,6 +73,56 @@ fn venv_python(backend_dir: &PathBuf) -> PathBuf {
     }
 }
 
+/// Windows：把子進程放進「父進程一死就連帶終止」的 Job Object。
+///
+/// 回傳 job handle（以 isize 保存）。**故意不關閉**這個 handle：它會一直開著直到本 app
+/// 進程結束（不論正常關閉、當機、或被強制 kill）；屆時 OS 關閉該 handle → 因設了
+/// JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE，job 內的 sidecar 連同其子進程會被 OS 一併終止，
+/// 不會留下孤兒吃 VRAM。比輪詢父 PID 的看門狗可靠（無 PID 重用問題、無延遲）。
+#[cfg(windows)]
+fn assign_kill_on_close_job(pid: u32) -> Option<isize> {
+    use std::ffi::c_void;
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+    use windows::Win32::System::Threading::{OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE};
+
+    unsafe {
+        let job = CreateJobObjectW(None, PCWSTR::null()).ok()?;
+        let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            &info as *const _ as *const c_void,
+            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        )
+        .is_err()
+        {
+            let _ = CloseHandle(job);
+            return None;
+        }
+        let proc = match OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, false, pid) {
+            Ok(h) => h,
+            Err(_) => {
+                let _ = CloseHandle(job);
+                return None;
+            }
+        };
+        let assigned = AssignProcessToJobObject(job, proc);
+        let _ = CloseHandle(proc);
+        if assigned.is_err() {
+            let _ = CloseHandle(job);
+            return None;
+        }
+        Some(job.0 as isize) // 故意保持開啟到 app 結束
+    }
+}
+
 /// 啟動 sidecar（在 setup 階段呼叫）
 pub fn start_sidecar(app: &AppHandle) {
     let state = app.state::<SidecarState>();
@@ -120,6 +174,20 @@ pub fn start_sidecar(app: &AppHandle) {
 
     match cmd.spawn() {
         Ok(mut child) => {
+            // 綁定 kill-on-close Job Object：app 一旦消失（含當機/強制 kill），OS 連帶終止 sidecar，
+            // 不再依賴會被 PID 重用騙過的輪詢看門狗（Python 端看門狗仍保留作為備援）。
+            #[cfg(windows)]
+            {
+                let pid = child.id();
+                match assign_kill_on_close_job(pid) {
+                    Some(h) => {
+                        *state.job.lock().unwrap() = Some(h);
+                        log::info!("🛡️ sidecar 已綁定 kill-on-close job (pid={pid})");
+                    }
+                    None => log::warn!("⚠️ sidecar job 綁定失敗，改靠 Python 父進程看門狗"),
+                }
+            }
+
             // 背景排空 stdout/stderr，避免 pipe 滿造成阻塞，同時把日誌轉到 log
             if let Some(out) = child.stdout.take() {
                 std::thread::spawn(move || {
