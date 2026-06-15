@@ -63,3 +63,28 @@ export interface TranscribeResult {
     duration: number;
     segments: Segment[];
 }
+
+// ── 設定 / 錄影選項 ──
+export interface AppSettings {
+    outputDir: string;
+    srtDir: string;
+}
+
+export type RecQuality = '720p' | '1080p' | '4k';
+export type RecFps = 24 | 30 | 60;
+
+export interface RecOpts {
+    sysAudio: boolean;
+    mic: boolean;
+    quality: RecQuality;
+    fps: RecFps;
+    micDevice: string;
+    sysAudioDevice: string;
+    micVol: number;
+    sysVol: number;
+}
+
+export interface MicDevice {
+    deviceId: string;
+    label: string;
+}

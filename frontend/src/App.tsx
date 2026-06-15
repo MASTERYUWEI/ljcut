@@ -3,8 +3,10 @@
 import { useRef, useCallback, useState, useEffect, useMemo } from 'react';
 import { useStore } from './store';
 import { api } from './api';
-import type { MediaItem, TimelineClip, Segment } from './types';
+import type { MediaItem, TimelineClip, Segment, AppSettings, RecOpts, MicDevice } from './types';
 import { formatTime, formatTimestamp, generateRulerTicks, findSnapTime, LABEL_W } from './utils';
+import { SettingsModal } from './components/SettingsModal';
+import { RecordingSettingsModal } from './components/RecordingSettingsModal';
 
 export default function App() {
     // 雙緩衝：兩個 <video> 疊在一起，永遠只有一個顯示(active)，另一個(standby)預載下一段。
@@ -44,13 +46,13 @@ export default function App() {
     const [isDraggingCue, setIsDraggingCue] = useState(false);
     const [selectedSegIds, setSelectedSegIds] = useState<Set<number>>(new Set());
     const [showSettings, setShowSettings] = useState(false);
-    const [settings, setSettings] = useState({ outputDir: '', srtDir: '' });
+    const [settings, setSettings] = useState<AppSettings>({ outputDir: '', srtDir: '' });
     const [isRecording, setIsRecording] = useState(false);
     const [isPaused, setIsPaused] = useState(false);
     const [recSeconds, setRecSeconds] = useState(0);
     const [showRecSettings, setShowRecSettings] = useState(false);
-    const [recOpts, setRecOpts] = useState({ sysAudio: false, mic: false, quality: '1080p' as '720p' | '1080p' | '4k', fps: 60 as 24 | 30 | 60, micDevice: '', sysAudioDevice: '', micVol: 1.0, sysVol: 1.0 });
-    const [micDevices, setMicDevices] = useState<{ deviceId: string; label: string }[]>([]);
+    const [recOpts, setRecOpts] = useState<RecOpts>({ sysAudio: false, mic: false, quality: '1080p', fps: 60, micDevice: '', sysAudioDevice: '', micVol: 1.0, sysVol: 1.0 });
+    const [micDevices, setMicDevices] = useState<MicDevice[]>([]);
     const micStreamRef = useRef<MediaStream | null>(null);
     const micAnimRef = useRef<number>(0);
     const micMeterFillRef = useRef<HTMLDivElement>(null);
@@ -1614,104 +1616,16 @@ export default function App() {
 
             {/* 錄影設定 Modal */}
             {showRecSettings && (
-                <div className="modal-overlay" onClick={() => setShowRecSettings(false)}>
-                    <div className="modal-box" onClick={e => e.stopPropagation()}>
-                        <div className="modal-header">
-                            <h3>螢幕錄影設定</h3>
-                            <button className="btn" onClick={() => setShowRecSettings(false)} style={{ padding: '2px 8px' }}>✕</button>
-                        </div>
-                        <div className="rec-setting-row">
-                            <label>🔊 系統聲音</label>
-                            <label className="toggle-switch" title={IS_TAURI ? '需安裝 loopback 音訊裝置（如 VB-Cable）' : ''}>
-                                <input type="checkbox" checked={recOpts.sysAudio}
-                                    disabled={IS_TAURI && !recOpts.sysAudioDevice}
-                                    onChange={e => setRecOpts(o => ({ ...o, sysAudio: e.target.checked }))} />
-                                <span className="toggle-slider" />
-                            </label>
-                            {IS_TAURI && !recOpts.sysAudioDevice && (
-                                <span style={{ fontSize: 11, color: '#f59e0b', marginLeft: 8 }}>需安裝 loopback 裝置</span>
-                            )}
-                        </div>
-                        {recOpts.sysAudio && recOpts.sysAudioDevice && (
-                            <div className="rec-setting-row" style={{ borderBottom: 'none', paddingTop: 0 }}>
-                                <label style={{ fontSize: 12 }}>音量</label>
-                                <input type="range" min="0" max="200" value={Math.round(recOpts.sysVol * 100)}
-                                    onChange={e => setRecOpts(o => ({ ...o, sysVol: parseInt(e.target.value) / 100 }))}
-                                    style={{ flex: 1, margin: '0 8px' }} />
-                                <span style={{ fontSize: 12, minWidth: 36, textAlign: 'right' }}>{Math.round(recOpts.sysVol * 100)}%</span>
-                            </div>
-                        )}
-                        <div className="rec-setting-row">
-                            <label>🎤 麥克風</label>
-                            <label className="toggle-switch">
-                                <input type="checkbox" checked={recOpts.mic}
-                                    onChange={e => setRecOpts(o => ({ ...o, mic: e.target.checked }))} />
-                                <span className="toggle-slider" />
-                            </label>
-                        </div>
-                        {recOpts.mic && (
-                            <div className="mic-detail-panel">
-                                <div className="rec-setting-row" style={{ borderBottom: 'none', paddingTop: 4 }}>
-                                    <label>裝置</label>
-                                    <select
-                                        className="mic-select"
-                                        value={recOpts.micDevice}
-                                        onChange={e => setRecOpts(o => ({ ...o, micDevice: e.target.value }))}
-                                    >
-                                        {micDevices.length === 0 && <option value="">偵測中…</option>}
-                                        {micDevices.map(d => (
-                                            <option key={d.deviceId} value={d.label}>{d.label}</option>
-                                        ))}
-                                    </select>
-                                </div>
-                                <div className="mic-level-row">
-                                    <label>音量</label>
-                                    <div className="mic-meter">
-                                        <div
-                                            ref={micMeterFillRef}
-                                            className="mic-meter-empty"
-                                            style={{ width: '100%' }}
-                                        />
-                                    </div>
-                                    <span ref={micMeterValRef} className="mic-level-val">0%</span>
-                                </div>
-                            </div>
-                        )}
-                        {recOpts.mic && (
-                            <div className="rec-setting-row" style={{ borderBottom: 'none', paddingTop: 0 }}>
-                                <label style={{ fontSize: 12 }}>錄音音量</label>
-                                <input type="range" min="0" max="200" value={Math.round(recOpts.micVol * 100)}
-                                    onChange={e => setRecOpts(o => ({ ...o, micVol: parseInt(e.target.value) / 100 }))}
-                                    style={{ flex: 1, margin: '0 8px' }} />
-                                <span style={{ fontSize: 12, minWidth: 36, textAlign: 'right' }}>{Math.round(recOpts.micVol * 100)}%</span>
-                            </div>
-                        )}
-                        <div className="rec-setting-row">
-                            <label>🎬 畫質</label>
-                            <div style={{ display: 'flex', gap: 6 }}>
-                                {(['720p', '1080p', '4k'] as const).map(q => (
-                                    <button key={q}
-                                        className={`btn rec-quality-btn ${recOpts.quality === q ? 'active' : ''}`}
-                                        onClick={() => setRecOpts(o => ({ ...o, quality: q }))}>{q.toUpperCase()}</button>
-                                ))}
-                            </div>
-                        </div>
-                        <div className="rec-setting-row">
-                            <label>🎞️ FPS</label>
-                            <div style={{ display: 'flex', gap: 6 }}>
-                                {([24, 30, 60] as const).map(f => (
-                                    <button key={f}
-                                        className={`btn rec-quality-btn ${recOpts.fps === f ? 'active' : ''}`}
-                                        onClick={() => setRecOpts(o => ({ ...o, fps: f }))}>{f}</button>
-                                ))}
-                            </div>
-                        </div>
-                        <button className="btn btn-accent" onClick={handleStartRec}
-                            style={{ width: '100%', justifyContent: 'center', marginTop: 16, padding: '10px 0', fontSize: 14 }}>
-                            ⏺ 開始錄影
-                        </button>
-                    </div>
-                </div>
+                <RecordingSettingsModal
+                    recOpts={recOpts}
+                    setRecOpts={setRecOpts}
+                    micDevices={micDevices}
+                    isTauri={IS_TAURI}
+                    micMeterFillRef={micMeterFillRef}
+                    micMeterValRef={micMeterValRef}
+                    onClose={() => setShowRecSettings(false)}
+                    onStartRec={handleStartRec}
+                />
             )}
 
             {/* 懸浮錄影控制列 */}
@@ -1729,52 +1643,11 @@ export default function App() {
 
             {/* 設定 Modal */}
             {showSettings && (
-                <div className="modal-overlay" onClick={() => setShowSettings(false)}>
-                    <div className="modal-box" onClick={e => e.stopPropagation()}>
-                        <div className="modal-header">
-                            <h3>設定</h3>
-                            <button className="btn" onClick={() => setShowSettings(false)} style={{ padding: '2px 8px' }}>✕</button>
-                        </div>
-                        <div className="style-row">
-                            <label>輸出目錄</label>
-                            <button className="folder-pick-btn" onClick={async () => {
-                                try {
-                                    const IS_TAURI = !!(window as any).__TAURI_INTERNALS__;
-                                    if (IS_TAURI) {
-                                        const { open } = await import('@tauri-apps/plugin-dialog');
-                                        const selected = await open({ directory: true, title: '選擇輸出目錄' });
-                                        if (selected) setSettings(s => ({ ...s, outputDir: String(selected) }));
-                                    } else {
-                                        const handle = await (window as any).showDirectoryPicker({ mode: 'readwrite' });
-                                        setSettings(s => ({ ...s, outputDir: handle.name }));
-                                    }
-                                } catch { /* 使用者取消 */ }
-                            }}>
-                                <span>{settings.outputDir || '點擊選擇資料夾...'}</span>
-                                <span className="folder-icon">📁</span>
-                            </button>
-                        </div>
-                        <div className="style-row">
-                            <label>SRT 存放目錄</label>
-                            <button className="folder-pick-btn" onClick={async () => {
-                                try {
-                                    const IS_TAURI = !!(window as any).__TAURI_INTERNALS__;
-                                    if (IS_TAURI) {
-                                        const { open } = await import('@tauri-apps/plugin-dialog');
-                                        const selected = await open({ directory: true, title: '選擇 SRT 存放目錄' });
-                                        if (selected) setSettings(s => ({ ...s, srtDir: String(selected) }));
-                                    } else {
-                                        const handle = await (window as any).showDirectoryPicker({ mode: 'readwrite' });
-                                        setSettings(s => ({ ...s, srtDir: handle.name }));
-                                    }
-                                } catch { /* 使用者取消 */ }
-                            }}>
-                                <span>{settings.srtDir || '預設：與輸出相同'}</span>
-                                <span className="folder-icon">📁</span>
-                            </button>
-                        </div>
-                    </div>
-                </div>
+                <SettingsModal
+                    settings={settings}
+                    setSettings={setSettings}
+                    onClose={() => setShowSettings(false)}
+                />
             )}
 
             <div className={`app-body ${isResizing ? 'resizing' : ''}`}>
