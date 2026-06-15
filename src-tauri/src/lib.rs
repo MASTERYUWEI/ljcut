@@ -45,6 +45,13 @@ pub fn run() {
             let handle = app.handle().clone();
             commands::sidecar::start_sidecar(&handle);
 
+            // 自動清理逾期暫存/工作檔（>14 天），背景執行不阻塞啟動。
+            // 只清暫存目錄；使用者匯出的成品在自選資料夾，不會被碰到。
+            let cleanup_handle = handle.clone();
+            std::thread::spawn(move || {
+                commands::recorder::cleanup_old_files(&cleanup_handle, 14);
+            });
+
             log::info!("✅ LJCUT 已啟動 — data dir: {}", data_dir.display());
             Ok(())
         })

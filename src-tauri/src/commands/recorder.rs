@@ -12,7 +12,7 @@ use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command as StdCommand, Stdio};
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
@@ -874,4 +874,60 @@ fn find_backend_subdir(sub: &str) -> PathBuf {
         }
     }
     PathBuf::from("backend").join(sub)
+}
+
+// ── 自動清理逾期暫存/工作檔 ──
+//
+// 掃描三個目錄、刪除「最後修改超過 max_age_days 天」的檔案：
+//   - app_data/outputs   原始錄影(錄影_*.mp4) + 錄影暫存(rec_*) + 音訊(.m4a)
+//   - backend/uploads    匯入/錄影的工作副本({id}.mp4) + 辨識用音檔({id}.wav)
+//   - backend/outputs    縮圖(.jpg)、字幕中間檔(.ass/.srt)
+// 注意：使用者匯出的成品在「自己選的輸出資料夾」，不在這些目錄，永遠不會被碰到。
+pub fn cleanup_old_files(app: &AppHandle, max_age_days: u64) {
+    let cutoff = match SystemTime::now().checked_sub(Duration::from_secs(max_age_days * 86_400)) {
+        Some(t) => t,
+        None => return,
+    };
+
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if let Ok(data_dir) = app.path().app_data_dir() {
+        dirs.push(data_dir.join("outputs"));
+    }
+    dirs.push(find_backend_subdir("uploads"));
+    dirs.push(find_backend_subdir("outputs"));
+
+    let mut removed = 0u32;
+    let mut freed: u64 = 0;
+    for dir in dirs {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let meta = match entry.metadata() {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            if !meta.is_file() {
+                continue;
+            }
+            let too_old = meta.modified().map(|m| m < cutoff).unwrap_or(false);
+            if too_old {
+                let sz = meta.len();
+                if std::fs::remove_file(entry.path()).is_ok() {
+                    removed += 1;
+                    freed += sz;
+                }
+            }
+        }
+    }
+
+    if removed > 0 {
+        log::info!(
+            "🧹 自動清理：刪除 {removed} 個逾期暫存檔（>{max_age_days} 天），釋放 {:.1} MB",
+            freed as f64 / 1_048_576.0
+        );
+    } else {
+        log::info!("🧹 自動清理：無逾期暫存檔");
+    }
 }
