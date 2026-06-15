@@ -1604,13 +1604,15 @@ export default function App() {
             <header className="app-header">
                 <h1>LJCUT</h1>
                 <div style={{ display: 'flex', gap: 8 }}>
+                    {/* 匯出 SRT：有字幕才出現 */}
                     {segments.length > 0 && (
-                        <>
-                            <button className="btn" onClick={handleExportSrt}>📄 匯出 SRT</button>
-                            <button className="btn btn-accent" onClick={handleExportVideo} disabled={isBurning}>
-                                {isBurning ? `⏳ 匯出中 ${exportProgress >= 0 ? exportProgress + '%' : '...'}` : '🎬 匯出影片'}
-                            </button>
-                        </>
+                        <button className="btn" onClick={handleExportSrt}>📄 匯出 SRT</button>
+                    )}
+                    {/* 匯出影片：只要時間軸上有片段就能匯出（純剪輯、無字幕也可） */}
+                    {hasTimeline && (
+                        <button className="btn btn-accent" onClick={handleExportVideo} disabled={isBurning}>
+                            {isBurning ? `⏳ 匯出中 ${exportProgress >= 0 ? exportProgress + '%' : '...'}` : '🎬 匯出影片'}
+                        </button>
                     )}
                     <button className="btn" onClick={() => setShowRecSettings(true)}>⏺ 螢幕錄影</button>
                     <button className="btn" onClick={() => setShowSettings(true)} title="設定" style={{ padding: '6px 10px' }}>⚙</button>
