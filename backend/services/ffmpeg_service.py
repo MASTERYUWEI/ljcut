@@ -96,11 +96,17 @@ class FFmpegService:
         srt_path 可以是 .srt 或 .ass 檔
         """
 
-        srt_abs = str(Path(srt_path).resolve())
-        srt_escaped = srt_abs.replace("\\", "/").replace(":", "\\:")
-
-        # ASS 檔案已包含完整樣式，不需要 force_style
-        vf = f"subtitles='{srt_escaped}'"
+        # 沒有字幕檔（例：使用者未辨識字幕，純剪輯匯出）→ 不套字幕濾鏡，否則 ffmpeg 會因
+        # 開不了不存在的 .ass 而失敗。
+        sub_path = Path(srt_path) if srt_path else None
+        has_subs = sub_path is not None and sub_path.exists() and sub_path.stat().st_size > 0
+        if has_subs:
+            srt_abs = str(sub_path.resolve())
+            srt_escaped = srt_abs.replace("\\", "/").replace(":", "\\:")
+            # ASS 檔案已包含完整樣式，不需要 force_style
+            sub_vf = f"subtitles='{srt_escaped}'"
+        else:
+            sub_vf = None
 
         codec_args = []
         if use_nvenc:
@@ -129,7 +135,8 @@ class FFmpegService:
         ]
 
         if speed != 1.0:
-            vf_speed = f"[0:v]setpts=PTS/{speed},{vf}[v]"
+            v_filters = f"setpts=PTS/{speed}" + (f",{sub_vf}" if sub_vf else "")
+            vf_speed = f"[0:v]{v_filters}[v]"
             atempo_parts = []
             remaining = speed
             while remaining > 2.0:
@@ -140,8 +147,9 @@ class FFmpegService:
             atempo_parts.append(f"atempo={remaining:.4f}")
             af = ",".join(atempo_parts)
             cmd += ["-filter_complex", f"{vf_speed};[0:a]{af}[a]", "-map", "[v]", "-map", "[a]"]
-        else:
-            cmd += ["-vf", vf]
+        elif sub_vf:
+            cmd += ["-vf", sub_vf]
+        # 無字幕且無變速 → 不加任何 -vf（純剪輯/重編碼）
 
         cmd += [
             *codec_args,
@@ -313,6 +321,18 @@ class FFmpegService:
                 raise subprocess.CalledProcessError(result.returncode, cmd_concat, stderr=result.stderr)
 
             yield {"progress": 70, "stage": "片段已串接"}
+
+            # 無字幕（所有 clip 都沒辨識字幕）→ 直接輸出串接結果，跳過燒字幕步驟
+            import shutil as _sh
+            ass_p = Path(ass_path)
+            has_subs = ass_p.exists() and "Dialogue:" in ass_p.read_text(encoding="utf-8-sig", errors="ignore")
+            if not has_subs:
+                if Path(output_path).exists():
+                    Path(output_path).unlink()
+                _sh.move(concat_out, output_path)
+                yield {"progress": 100}
+                print(f"✅ 多 clip 匯出完成（無字幕）: {output_path}")
+                return
 
             # ── Step 3: 燒入字幕 ──
             ass_abs = str(Path(ass_path).resolve())
