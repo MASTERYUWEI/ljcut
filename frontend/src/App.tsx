@@ -7,6 +7,9 @@ import type { MediaItem, TimelineClip, Segment, AppSettings, RecOpts, MicDevice 
 import { formatTime, formatTimestamp, generateRulerTicks, findSnapTime, LABEL_W } from './utils';
 import { SettingsModal } from './components/SettingsModal';
 import { RecordingSettingsModal } from './components/RecordingSettingsModal';
+import { SpeedMenu } from './components/SpeedMenu';
+import { ExportProgress } from './components/ExportProgress';
+import { AiPanel } from './components/AiPanel';
 
 export default function App() {
     // 雙緩衝：兩個 <video> 疊在一起，永遠只有一個顯示(active)，另一個(standby)預載下一段。
@@ -1795,36 +1798,22 @@ export default function App() {
 
                                 {/* ── AI 助手（可折疊） ── */}
                                 {segments.length > 0 && (
-                                    <div className="ai-collapse">
-                                        <button className="ai-collapse-toggle" onClick={() => setAiExpanded(v => !v)}>
-                                            <span>{aiExpanded ? '▾' : '▸'} AI 助手</span>
-                                            <button className="ai-refresh-btn" disabled={!!aiLoadingType}
-                                                onClick={(ev) => { ev.stopPropagation(); runAllAi(segments); }} title="重新生成">🔄</button>
-                                        </button>
-                                        {aiExpanded && (
-                                            <div className="ai-assistant">
-                                                <div className="ai-tabs">
-                                                    {AI_TABS.map(tab => (
-                                                        <button key={tab.key}
-                                                            className={`ai-tab ${aiActiveTab === tab.key ? 'active' : ''} ${aiLoadingType === tab.key ? 'loading' : ''}`}
-                                                            onClick={() => setAiActiveTab(tab.key)}>
-                                                            {tab.label}
-                                                            {aiLoadingType === tab.key && <span className="ai-spinner">●</span>}
-                                                        </button>
-                                                    ))}
-                                                </div>
-                                                <div className="ai-result">
-                                                    <pre>{aiResultsRef.current[aiActiveTab] || ''}{aiLoadingType === aiActiveTab ? '▌' : ''}</pre>
-                                                    {aiResultsRef.current[aiActiveTab] && aiLoadingType !== aiActiveTab && (
-                                                        <button className="copy-btn" onClick={() => {
-                                                            navigator.clipboard.writeText(aiResultsRef.current[aiActiveTab]);
-                                                            setAiCopied(true); setTimeout(() => setAiCopied(false), 2000);
-                                                        }}>{aiCopied ? '✅ 已複製' : '複製'}</button>
-                                                    )}
-                                                </div>
-                                            </div>
-                                        )}
-                                    </div>
+                                    <AiPanel
+                                        expanded={aiExpanded}
+                                        onToggle={() => setAiExpanded(v => !v)}
+                                        tabs={AI_TABS}
+                                        activeTab={aiActiveTab}
+                                        onSelectTab={setAiActiveTab}
+                                        loadingType={aiLoadingType}
+                                        results={aiResultsRef}
+                                        copied={aiCopied}
+                                        onCopy={(t) => {
+                                            navigator.clipboard.writeText(t);
+                                            setAiCopied(true);
+                                            setTimeout(() => setAiCopied(false), 2000);
+                                        }}
+                                        onRefresh={() => runAllAi(segments)}
+                                    />
                                 )}
                             </>
                         )}
@@ -2148,49 +2137,15 @@ export default function App() {
         <>
             {mainJsx}
             {speedMenu && speedMenuClip && (
-                <div className="speed-menu-backdrop" onClick={() => setSpeedMenu(null)}>
-                    <div className="speed-menu" style={{
-                        left: Math.min(speedMenu.x, window.innerWidth - 220),
-                        top: Math.min(speedMenu.y, window.innerHeight - 200),
-                    }}
-                        onClick={(e) => e.stopPropagation()}>
-                        <div className="speed-menu-title">⚡ 影片速度</div>
-                        <div className="speed-menu-value">{speedMenuClip.speed.toFixed(1)}x</div>
-                        <input type="range" className="speed-slider"
-                            min={1} max={5} step={0.1}
-                            value={speedMenuClip.speed}
-                            onChange={(e) => setClipSpeed(speedMenu!.clipId, parseFloat(e.target.value))} />
-                        <div className="speed-menu-labels">
-                            <span>1x</span><span>2x</span><span>3x</span><span>4x</span><span>5x</span>
-                        </div>
-                        <div className="speed-menu-presets">
-                            {[1, 1.5, 2, 3, 5].map(s => (
-                                <button key={s}
-                                    className={`speed-preset-btn ${speedMenuClip!.speed === s ? 'active' : ''}`}
-                                    onClick={() => setClipSpeed(speedMenu!.clipId, s)}>{s}x</button>
-                            ))}
-                        </div>
-                    </div>
-                </div>
+                <SpeedMenu
+                    clip={speedMenuClip}
+                    x={speedMenu.x}
+                    y={speedMenu.y}
+                    onSetSpeed={setClipSpeed}
+                    onClose={() => setSpeedMenu(null)}
+                />
             )}
-            {/* 匯出進度 Modal */}
-            {exportProgress >= 0 && (
-                <div className="export-progress-backdrop">
-                    <div className="export-progress-modal">
-                        <div className="export-progress-title">🎬 匯出影片中...</div>
-                        <div className="export-progress-bar-track">
-                            <div
-                                className="export-progress-bar-fill"
-                                style={{ width: `${exportProgress}%` }}
-                            />
-                        </div>
-                        <div className="export-progress-pct">{exportProgress}%</div>
-                        {exportProgress >= 100 && (
-                            <div className="export-progress-done">✅ 完成！</div>
-                        )}
-                    </div>
-                </div>
-            )}
+            {exportProgress >= 0 && <ExportProgress progress={exportProgress} />}
         </>
     );
 }
