@@ -1,31 +1,46 @@
-# ── Python ──
-backend/venv/
-**/__pycache__/
-*.pyc
-backend/.env
+# ── 環境與敏感資訊 ──
 .env
+.env.local
+.env.*.local
 
-# ── Node ──
-frontend/node_modules/
-frontend/dist/
+# ── Node / React ──
+node_modules/
+dist/
+build/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 
-# ── Rust / Tauri ──
-src-tauri/target/
-src-tauri/gen/
+# ── Rust / Cargo ──
+target/
+Cargo.lock
+*.rlib
+*.rmeta
 
-# ── 產生物 / 媒體（不進版控）──
+# ── Python / Venv ──
+backend/venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# ── 開發工作檔 ──
 backend/uploads/
 backend/outputs/
-*.mp4
-*.exe
-*.wav
-*.srt
-*.ass
-
-# ── OS ──
-Thumbs.db
-.DS_Store
-
-# ── dev 執行階段擷取的 log（非產物，不入庫） ──
+app_data/
 dev-stdout.log
 dev-stderr.log
+
+# ── IDE / OS ──
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+*.lnk
+
+# ── 教學素材 ──
+scr_installer.exe
+Revit教學.mp4
+片頭.mp4
