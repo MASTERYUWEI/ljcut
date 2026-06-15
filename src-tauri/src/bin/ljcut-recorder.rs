@@ -33,7 +33,7 @@ use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SA
 use windows::Win32::Graphics::Dxgi::{
     CreateDXGIFactory1, IDXGIAdapter, IDXGIAdapter1, IDXGIFactory1, IDXGIOutput, IDXGIOutput1,
     IDXGIOutputDuplication, IDXGIResource, DXGI_ERROR_ACCESS_LOST, DXGI_ERROR_WAIT_TIMEOUT,
-    DXGI_OUTDUPL_FRAME_INFO,
+    DXGI_OUTDUPL_FRAME_INFO, DXGI_OUTDUPL_POINTER_SHAPE_INFO,
 };
 use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
 
@@ -65,6 +65,15 @@ struct Capturer {
     w: u32,
     h: u32,
     timeout_ms: u32,
+    // 游標（DXGI 桌面複製的畫面不含游標，位置與圖形另外提供，需自行合成）
+    cursor_shape: Vec<u8>,
+    cursor_type: u32, // 1=MONOCHROME, 2=COLOR, 4=MASKED_COLOR
+    cursor_w: u32,
+    cursor_h: u32,
+    cursor_pitch: u32,
+    cursor_x: i32,
+    cursor_y: i32,
+    cursor_visible: bool,
 }
 
 impl Capturer {
@@ -84,6 +93,34 @@ impl Capturer {
                 Err(e) if e.code() == DXGI_ERROR_WAIT_TIMEOUT => return Ok(false),
                 Err(e) if e.code() == DXGI_ERROR_ACCESS_LOST => return Err(GrabErr::AccessLost),
                 Err(e) => return Err(GrabErr::Other(e)),
+            }
+
+            // 更新游標位置（畫面本身不含游標，DXGI 另外提供）
+            if info.LastMouseUpdateTime != 0 {
+                self.cursor_visible = info.PointerPosition.Visible.as_bool();
+                self.cursor_x = info.PointerPosition.Position.x;
+                self.cursor_y = info.PointerPosition.Position.y;
+            }
+            // 游標圖形有更新時抓回來快取（必須在 ReleaseFrame 之前）
+            if info.PointerShapeBufferSize > 0 {
+                let mut buf = vec![0u8; info.PointerShapeBufferSize as usize];
+                let mut required = 0u32;
+                let mut sinfo = DXGI_OUTDUPL_POINTER_SHAPE_INFO::default();
+                if dupl
+                    .GetFramePointerShape(
+                        buf.len() as u32,
+                        buf.as_mut_ptr() as *mut std::ffi::c_void,
+                        &mut required,
+                        &mut sinfo,
+                    )
+                    .is_ok()
+                {
+                    self.cursor_shape = buf;
+                    self.cursor_type = sinfo.Type;
+                    self.cursor_w = sinfo.Width;
+                    self.cursor_h = sinfo.Height;
+                    self.cursor_pitch = sinfo.Pitch;
+                }
             }
 
             let resource = match res {
@@ -145,7 +182,110 @@ impl Capturer {
                 std::ptr::copy_nonoverlapping(s, d, cwb);
             }
             self.context.Unmap(&self.staging, 0);
+
+            // 合成游標（DXGI 畫面不含游標）
+            if self.cursor_visible {
+                self.draw_cursor(out_buf);
+            }
             Ok(true)
+        }
+    }
+
+    /// 把快取的游標圖形合成到 out_buf（bottom-to-top BGRA, self.w×self.h）。
+    /// 支援三種 DXGI 游標格式：彩色(2)、遮罩彩色(4)、單色 AND/XOR(其他)。
+    fn draw_cursor(&self, out_buf: &mut [u8]) {
+        if self.cursor_shape.is_empty() || self.cursor_w == 0 || self.cursor_h == 0 {
+            return;
+        }
+        let w = self.w as i32;
+        let h = self.h as i32;
+        let row = (self.w * 4) as usize;
+        let ox = self.cursor_x - self.x as i32; // 游標左上在裁切區內的位置
+        let oy = self.cursor_y - self.y as i32;
+        let pitch = self.cursor_pitch as usize;
+        let shape = &self.cursor_shape;
+
+        // 在 (px,py)（裁切區座標）以 alpha 混合寫入；含 bottom-to-top 翻轉
+        let blend = |buf: &mut [u8], px: i32, py: i32, b: u8, g: u8, r: u8, a: u16| {
+            if px < 0 || py < 0 || px >= w || py >= h || a == 0 {
+                return;
+            }
+            let idx = (h - 1 - py) as usize * row + px as usize * 4;
+            if a >= 255 {
+                buf[idx] = b;
+                buf[idx + 1] = g;
+                buf[idx + 2] = r;
+            } else {
+                let ia = 255 - a;
+                buf[idx] = ((b as u16 * a + buf[idx] as u16 * ia) / 255) as u8;
+                buf[idx + 1] = ((g as u16 * a + buf[idx + 1] as u16 * ia) / 255) as u8;
+                buf[idx + 2] = ((r as u16 * a + buf[idx + 2] as u16 * ia) / 255) as u8;
+            }
+        };
+        let xor_px = |buf: &mut [u8], px: i32, py: i32, b: u8, g: u8, r: u8| {
+            if px < 0 || py < 0 || px >= w || py >= h {
+                return;
+            }
+            let idx = (h - 1 - py) as usize * row + px as usize * 4;
+            buf[idx] ^= b;
+            buf[idx + 1] ^= g;
+            buf[idx + 2] ^= r;
+        };
+
+        match self.cursor_type {
+            2 => {
+                // COLOR：32bpp BGRA，依 alpha 混合
+                let (cw, ch) = (self.cursor_w as i32, self.cursor_h as i32);
+                for cy in 0..ch {
+                    for cx in 0..cw {
+                        let p = cy as usize * pitch + cx as usize * 4;
+                        if p + 3 >= shape.len() {
+                            continue;
+                        }
+                        blend(out_buf, ox + cx, oy + cy, shape[p], shape[p + 1], shape[p + 2], shape[p + 3] as u16);
+                    }
+                }
+            }
+            4 => {
+                // MASKED_COLOR：32bpp，A=0→不透明複製；A≠0→與背景 XOR
+                let (cw, ch) = (self.cursor_w as i32, self.cursor_h as i32);
+                for cy in 0..ch {
+                    for cx in 0..cw {
+                        let p = cy as usize * pitch + cx as usize * 4;
+                        if p + 3 >= shape.len() {
+                            continue;
+                        }
+                        if shape[p + 3] == 0 {
+                            blend(out_buf, ox + cx, oy + cy, shape[p], shape[p + 1], shape[p + 2], 255);
+                        } else {
+                            xor_px(out_buf, ox + cx, oy + cy, shape[p], shape[p + 1], shape[p + 2]);
+                        }
+                    }
+                }
+            }
+            _ => {
+                // MONOCHROME：1bpp，上半 AND 遮罩、下半 XOR 遮罩，實際高度為 Height/2
+                let cw = self.cursor_w as i32;
+                let ch = (self.cursor_h / 2) as i32;
+                for cy in 0..ch {
+                    for cx in 0..cw {
+                        let and_byte = cy as usize * pitch + cx as usize / 8;
+                        let xor_byte = (cy as usize + ch as usize) * pitch + cx as usize / 8;
+                        if xor_byte >= shape.len() {
+                            continue;
+                        }
+                        let bit = 7 - (cx as usize % 8);
+                        let a = (shape[and_byte] >> bit) & 1;
+                        let x = (shape[xor_byte] >> bit) & 1;
+                        match (a, x) {
+                            (0, 0) => blend(out_buf, ox + cx, oy + cy, 0, 0, 0, 255), // 黑
+                            (0, _) => blend(out_buf, ox + cx, oy + cy, 255, 255, 255, 255), // 白
+                            (_, 0) => {} // 透明
+                            _ => xor_px(out_buf, ox + cx, oy + cy, 255, 255, 255), // 反相
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -351,6 +491,14 @@ fn main() {
         w,
         h,
         timeout_ms: 100,
+        cursor_shape: Vec::new(),
+        cursor_type: 0,
+        cursor_w: 0,
+        cursor_h: 0,
+        cursor_pitch: 0,
+        cursor_x: 0,
+        cursor_y: 0,
+        cursor_visible: false,
     };
 
     // ── 建立編碼器（H.264 / MP4，音訊關閉；沿用 windows-capture 的硬體編碼器）──
