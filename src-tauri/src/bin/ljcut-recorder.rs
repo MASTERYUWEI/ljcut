@@ -36,6 +36,7 @@ use windows::Win32::Graphics::Dxgi::{
     DXGI_OUTDUPL_FRAME_INFO, DXGI_OUTDUPL_POINTER_SHAPE_INFO,
 };
 use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON, VK_RBUTTON};
 
 use windows_capture::encoder::{
     AudioSettingsBuilder, ContainerSettingsBuilder, VideoEncoder, VideoSettingsBuilder,
@@ -74,6 +75,14 @@ struct Capturer {
     cursor_x: i32,
     cursor_y: i32,
     cursor_visible: bool,
+    cursor_hotspot_x: i32,
+    cursor_hotspot_y: i32,
+    // 滑鼠光暈 / 點擊特效
+    glow: bool,
+    click_fx: bool,
+    prev_lbtn: bool,
+    prev_rbtn: bool,
+    ripples: Vec<(i32, i32, Instant)>, // 點擊漣漪：輸出座標 x,y + 起始時間
 }
 
 impl Capturer {
@@ -120,7 +129,25 @@ impl Capturer {
                     self.cursor_w = sinfo.Width;
                     self.cursor_h = sinfo.Height;
                     self.cursor_pitch = sinfo.Pitch;
+                    self.cursor_hotspot_x = sinfo.HotSpot.x;
+                    self.cursor_hotspot_y = sinfo.HotSpot.y;
                 }
+            }
+
+            // 偵測滑鼠點擊（按下瞬間在游標尖端產生漣漪）
+            if self.click_fx {
+                let tip_x = self.cursor_x + self.cursor_hotspot_x;
+                let tip_y = self.cursor_y + self.cursor_hotspot_y;
+                let l = (GetAsyncKeyState(VK_LBUTTON.0 as i32) as u16 & 0x8000) != 0;
+                let r = (GetAsyncKeyState(VK_RBUTTON.0 as i32) as u16 & 0x8000) != 0;
+                if (l && !self.prev_lbtn) || (r && !self.prev_rbtn) {
+                    self.ripples.push((tip_x, tip_y, Instant::now()));
+                }
+                self.prev_lbtn = l;
+                self.prev_rbtn = r;
+                // 清掉已結束的漣漪
+                self.ripples
+                    .retain(|(_, _, t)| t.elapsed().as_secs_f32() < 0.45);
             }
 
             let resource = match res {
@@ -183,11 +210,82 @@ impl Capturer {
             }
             self.context.Unmap(&self.staging, 0);
 
-            // 合成游標（DXGI 畫面不含游標）
+            // 合成順序：光暈(底) → 點擊漣漪 → 游標(頂)（DXGI 畫面不含游標/特效）
+            if self.glow && self.cursor_visible {
+                self.draw_glow(out_buf);
+            }
+            if self.click_fx {
+                self.draw_ripples(out_buf);
+            }
             if self.cursor_visible {
                 self.draw_cursor(out_buf);
             }
             Ok(true)
+        }
+    }
+
+    /// 在 (px,py)（裁切區座標）以 alpha 混合寫入；含 bottom-to-top 翻轉。供光暈/漣漪共用。
+    #[inline]
+    fn blend_px(&self, buf: &mut [u8], px: i32, py: i32, b: u8, g: u8, r: u8, a: u16) {
+        let w = self.w as i32;
+        let h = self.h as i32;
+        if px < 0 || py < 0 || px >= w || py >= h || a == 0 {
+            return;
+        }
+        let idx = (h - 1 - py) as usize * (self.w * 4) as usize + px as usize * 4;
+        if a >= 255 {
+            buf[idx] = b;
+            buf[idx + 1] = g;
+            buf[idx + 2] = r;
+        } else {
+            let ia = 255 - a;
+            buf[idx] = ((b as u16 * a + buf[idx] as u16 * ia) / 255) as u8;
+            buf[idx + 1] = ((g as u16 * a + buf[idx + 1] as u16 * ia) / 255) as u8;
+            buf[idx + 2] = ((r as u16 * a + buf[idx + 2] as u16 * ia) / 255) as u8;
+        }
+    }
+
+    /// 游標尖端柔光（暖黃，中心最亮、向外漸淡）
+    fn draw_glow(&self, out_buf: &mut [u8]) {
+        let cx = self.cursor_x + self.cursor_hotspot_x - self.x as i32;
+        let cy = self.cursor_y + self.cursor_hotspot_y - self.y as i32;
+        let radius = 44i32;
+        let max_a = 90.0f32;
+        let rf = radius as f32;
+        for dy in -radius..=radius {
+            for dx in -radius..=radius {
+                let d2 = (dx * dx + dy * dy) as f32;
+                if d2 > rf * rf {
+                    continue;
+                }
+                let a = (max_a * (1.0 - d2.sqrt() / rf)) as u16;
+                self.blend_px(out_buf, cx + dx, cy + dy, 40, 210, 255, a); // BGR 暖黃
+            }
+        }
+    }
+
+    /// 點擊漣漪：擴散環、隨時間變大變淡
+    fn draw_ripples(&self, out_buf: &mut [u8]) {
+        let dur = 0.45f32;
+        for &(rx, ry, start) in &self.ripples {
+            let age = start.elapsed().as_secs_f32();
+            if age >= dur {
+                continue;
+            }
+            let t = age / dur;
+            let radius = 8.0 + (42.0 - 8.0) * t;
+            let alpha = (190.0 * (1.0 - t)) as u16;
+            let cx = rx - self.x as i32;
+            let cy = ry - self.y as i32;
+            let ri = radius.ceil() as i32 + 2;
+            for dy in -ri..=ri {
+                for dx in -ri..=ri {
+                    let d = ((dx * dx + dy * dy) as f32).sqrt();
+                    if (d - radius).abs() <= 1.5 {
+                        self.blend_px(out_buf, cx + dx, cy + dy, 90, 230, 255, alpha); // BGR 亮黃白
+                    }
+                }
+            }
         }
     }
 
@@ -426,7 +524,7 @@ fn create_staging(device: &ID3D11Device, w: u32, h: u32) -> windows::core::Resul
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 8 {
-        fail("用法: ljcut-recorder <left> <top> <width> <height> <fps> <output.mp4> <monitor> [自動停止秒數]");
+        fail("用法: ljcut-recorder <left> <top> <width> <height> <fps> <output.mp4> <monitor> [光暈0/1] [點擊0/1] [自動停止秒數]");
     }
     let parse = |s: &str| -> u32 { s.parse().unwrap_or_else(|_| fail("參數需為整數")) };
     let mut x = parse(&args[1]);
@@ -436,7 +534,9 @@ fn main() {
     let fps = parse(&args[5]).max(1);
     let out = args[6].clone();
     let target = args[7].clone();
-    let auto_stop = args.get(8).and_then(|s| s.parse::<u64>().ok());
+    let glow = args.get(8).map(|s| s == "1").unwrap_or(false);
+    let click_fx = args.get(9).map(|s| s == "1").unwrap_or(false);
+    let auto_stop = args.get(10).and_then(|s| s.parse::<u64>().ok());
 
     // WinRT（VideoEncoder）需要 MTA；建立程序級 MTA 後，編碼器內部的 transcode thread 也能隱式參與
     unsafe {
@@ -499,6 +599,13 @@ fn main() {
         cursor_x: 0,
         cursor_y: 0,
         cursor_visible: false,
+        cursor_hotspot_x: 0,
+        cursor_hotspot_y: 0,
+        glow,
+        click_fx,
+        prev_lbtn: false,
+        prev_rbtn: false,
+        ripples: Vec::new(),
     };
 
     // ── 建立編碼器（H.264 / MP4，音訊關閉；沿用 windows-capture 的硬體編碼器）──

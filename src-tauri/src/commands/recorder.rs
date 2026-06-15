@@ -50,6 +50,10 @@ pub struct RecOptions {
     pub mic_vol: f32,
     #[serde(default = "default_vol")]
     pub sys_vol: f32,
+    #[serde(default)]
+    pub cursor_glow: bool,
+    #[serde(default)]
+    pub click_effect: bool,
 }
 
 fn default_fps() -> u32 {
@@ -108,6 +112,8 @@ pub async fn set_rec_options(
     fps: Option<u32>,
     mic_vol: Option<f32>,
     sys_vol: Option<f32>,
+    cursor_glow: Option<bool>,
+    click_effect: Option<bool>,
 ) -> Result<(), String> {
     let opts = RecOptions {
         sys_audio,
@@ -117,6 +123,8 @@ pub async fn set_rec_options(
         fps: fps.unwrap_or(60),
         mic_vol: mic_vol.unwrap_or(1.0),
         sys_vol: sys_vol.unwrap_or(1.0),
+        cursor_glow: cursor_glow.unwrap_or(false),
+        click_effect: click_effect.unwrap_or(false),
     };
     log::info!(
         "🎙️ 錄影選項: sys={}({:.0}%), mic={}({:.0}%), fps={}",
@@ -344,6 +352,8 @@ fn current_rec_opts() -> RecOptions {
         fps: 60,
         mic_vol: 1.0,
         sys_vol: 1.0,
+        cursor_glow: false,
+        click_effect: false,
     })
 }
 
@@ -382,6 +392,8 @@ fn begin_recording(
             fps.to_string(),
             video_path.to_string_lossy().to_string(),
             target.clone(),
+            if rec_opts.cursor_glow { "1".into() } else { "0".into() },
+            if rec_opts.click_effect { "1".into() } else { "0".into() },
         ])
         .creation_flags(CREATE_NO_WINDOW)
         .stdin(Stdio::piped())

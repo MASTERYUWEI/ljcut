@@ -104,6 +104,22 @@ export function RecordingSettingsModal({
                         ))}
                     </div>
                 </div>
+                <div className="rec-setting-row">
+                    <label>🖱️ 滑鼠光暈</label>
+                    <label className="toggle-switch">
+                        <input type="checkbox" checked={recOpts.cursorGlow}
+                            onChange={e => setRecOpts(o => ({ ...o, cursorGlow: e.target.checked }))} />
+                        <span className="toggle-slider" />
+                    </label>
+                </div>
+                <div className="rec-setting-row">
+                    <label>✨ 點擊特效</label>
+                    <label className="toggle-switch">
+                        <input type="checkbox" checked={recOpts.clickEffect}
+                            onChange={e => setRecOpts(o => ({ ...o, clickEffect: e.target.checked }))} />
+                        <span className="toggle-slider" />
+                    </label>
+                </div>
                 <button className="btn btn-accent" onClick={onStartRec}
                     style={{ width: '100%', justifyContent: 'center', marginTop: 16, padding: '10px 0', fontSize: 14 }}>
                     ⏺ 開始錄影

@@ -54,7 +54,7 @@ export default function App() {
     const [isPaused, setIsPaused] = useState(false);
     const [recSeconds, setRecSeconds] = useState(0);
     const [showRecSettings, setShowRecSettings] = useState(false);
-    const [recOpts, setRecOpts] = useState<RecOpts>({ sysAudio: false, mic: false, quality: '1080p', fps: 60, micDevice: '', sysAudioDevice: '', micVol: 1.0, sysVol: 1.0 });
+    const [recOpts, setRecOpts] = useState<RecOpts>({ sysAudio: false, mic: false, quality: '1080p', fps: 60, micDevice: '', sysAudioDevice: '', micVol: 1.0, sysVol: 1.0, cursorGlow: false, clickEffect: false });
     const [micDevices, setMicDevices] = useState<MicDevice[]>([]);
     const micStreamRef = useRef<MediaStream | null>(null);
     const micAnimRef = useRef<number>(0);
@@ -358,6 +358,8 @@ export default function App() {
                     fps: recOpts.fps,
                     micVol: recOpts.micVol,
                     sysVol: recOpts.sysVol,
+                    cursorGlow: recOpts.cursorGlow,
+                    clickEffect: recOpts.clickEffect,
                 });
 
                 // 開啟 overlay 選區窗

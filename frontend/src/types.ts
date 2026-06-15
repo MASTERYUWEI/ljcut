@@ -82,6 +82,8 @@ export interface RecOpts {
     sysAudioDevice: string;
     micVol: number;
     sysVol: number;
+    cursorGlow: boolean;
+    clickEffect: boolean;
 }
 
 export interface MicDevice {
