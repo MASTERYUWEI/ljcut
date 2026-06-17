@@ -32,6 +32,9 @@ export function SettingsModal({ settings, setSettings, onClose }: Props) {
     const [showKey, setShowKey] = useState(false);
     const [saving, setSaving] = useState(false);
     const [saveMsg, setSaveMsg] = useState('');
+    const [isEditing, setIsEditing] = useState(false);
+    // 沒金鑰 → 直接顯示輸入框；有金鑰 → 顯示遮罩狀態，按「變更」才進入編輯
+    const editing = !keyInfo.has_key || isEditing;
 
     useEffect(() => {
         api.getApiKeyInfo().then(setKeyInfo).catch(() => { });
@@ -47,6 +50,7 @@ export function SettingsModal({ settings, setSettings, onClose }: Props) {
             setKeyInfo({ has_key: r.has_key, masked: r.masked });
             setKeyInput('');
             setShowKey(false);
+            setIsEditing(false);
             setSaveMsg(r.status?.available
                 ? '✅ 金鑰有效，已儲存'
                 : `⚠️ 已儲存，但驗證失敗：${r.status?.error || '未知錯誤'}`);
@@ -98,35 +102,53 @@ export function SettingsModal({ settings, setSettings, onClose }: Props) {
 
                 {/* ── Gemini API Key ── */}
                 <div className="style-row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 8 }}>
-                    <label>
-                        Gemini API Key{' '}
-                        {keyInfo.has_key
-                            ? <span style={{ color: '#4caf50', fontSize: 12 }}>（目前：{keyInfo.masked}）</span>
-                            : <span style={{ color: '#e57373', fontSize: 12 }}>（尚未設定）</span>}
-                    </label>
-                    <div style={{ display: 'flex', gap: 6 }}>
-                        <input
-                            type={showKey ? 'text' : 'password'}
-                            value={keyInput}
-                            onChange={e => setKeyInput(e.target.value)}
-                            placeholder="貼上你的 API Key..."
-                            autoComplete="off"
-                            spellCheck={false}
-                            style={inputStyle}
-                        />
-                        <button className="btn" onClick={() => setShowKey(s => !s)}
-                            title={showKey ? '隱藏' : '顯示'} style={{ padding: '0 10px' }}>
-                            {showKey ? '🙈' : '👁'}
-                        </button>
-                        <button className="btn btn-primary" onClick={saveKey}
-                            disabled={saving || !keyInput.trim()} style={{ padding: '0 12px' }}>
-                            {saving ? '儲存中...' : '儲存'}
-                        </button>
-                    </div>
-                    <button className="btn" onClick={applyKey} style={{ justifyContent: 'center' }}
-                        title="開啟 Google AI Studio 申請金鑰">
-                        🔑 一鍵申請 API Key
-                    </button>
+                    <label>Gemini API Key</label>
+
+                    {!editing ? (
+                        // 已設定：顯示遮罩 + 變更按鈕（不再是空白框）
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <span style={{ color: '#4caf50', fontSize: 13 }}>
+                                ✅ 已設定金鑰：<code style={{ background: '#1e1e1e', padding: '2px 6px', borderRadius: 4 }}>{keyInfo.masked}</code>
+                            </span>
+                            <button className="btn" onClick={() => { setIsEditing(true); setKeyInput(''); setSaveMsg(''); }}
+                                style={{ marginLeft: 'auto', padding: '0 12px' }}>
+                                變更金鑰
+                            </button>
+                        </div>
+                    ) : (
+                        // 編輯中（無金鑰或按了變更）：輸入框 + 顯示切換 + 儲存（+ 有舊金鑰時可取消）
+                        <>
+                            <div style={{ display: 'flex', gap: 6 }}>
+                                <input
+                                    type={showKey ? 'text' : 'password'}
+                                    value={keyInput}
+                                    onChange={e => setKeyInput(e.target.value)}
+                                    placeholder={keyInfo.has_key ? '貼上新的 API Key...' : '貼上你的 API Key...'}
+                                    autoComplete="off"
+                                    spellCheck={false}
+                                    style={inputStyle}
+                                />
+                                <button className="btn" onClick={() => setShowKey(s => !s)}
+                                    title={showKey ? '隱藏' : '顯示'} style={{ padding: '0 10px' }}>
+                                    {showKey ? '🙈' : '👁'}
+                                </button>
+                                <button className="btn btn-primary" onClick={saveKey}
+                                    disabled={saving || !keyInput.trim()} style={{ padding: '0 12px' }}>
+                                    {saving ? '儲存中...' : '儲存'}
+                                </button>
+                                {keyInfo.has_key && (
+                                    <button className="btn" onClick={() => { setIsEditing(false); setKeyInput(''); setShowKey(false); setSaveMsg(''); }}
+                                        style={{ padding: '0 12px' }}>
+                                        取消
+                                    </button>
+                                )}
+                            </div>
+                            <button className="btn" onClick={applyKey} style={{ justifyContent: 'center' }}
+                                title="開啟 Google AI Studio 申請金鑰">
+                                🔑 一鍵申請 API Key
+                            </button>
+                        </>
+                    )}
                     {saveMsg && <div style={{ fontSize: 12, color: '#ccc' }}>{saveMsg}</div>}
                 </div>
             </div>
