@@ -672,6 +672,26 @@ export default function App() {
         return result;
     }, []);
 
+    // ── AI 逐句潤飾字幕（修錯字／去贅字／補標點，時間碼不變）──
+    const [isPolishing, setIsPolishing] = useState(false);
+    const handlePolishSubtitles = useCallback(async () => {
+        const activeClip = activeClipId ? timelineClips.find(c => c.id === activeClipId) : null;
+        if (!activeClip || !(activeClip.segments && activeClip.segments.length)) {
+            alert('這個片段還沒有字幕可潤飾，請先辨識字幕');
+            return;
+        }
+        setIsPolishing(true);
+        try {
+            const polished = await api.polishSubtitles(activeClip.segments);
+            pushUndo();
+            setClipSegments(activeClip.id, polished);
+        } catch (err) {
+            alert(`潤飾失敗: ${err}`);
+        } finally {
+            setIsPolishing(false);
+        }
+    }, [activeClipId, timelineClips, setClipSegments, pushUndo]);
+
     // ── 辨識（完成後自動觸發 AI 助手）──
     const handleTranscribe = useCallback(async () => {
         // 對當前選中的 clip 做辨識
@@ -1738,6 +1758,15 @@ export default function App() {
                                                 {isTranscribing ? '辨識中...' : '開始辨識'}
                                             </button>
                                             {isTranscribing && <div className="progress-bar"><div className="fill loading" style={{ width: '100%' }} /></div>}
+                                            {segments.length > 0 && (
+                                                <button className="btn" onClick={handlePolishSubtitles}
+                                                    disabled={isPolishing || isTranscribing}
+                                                    style={{ width: '100%', justifyContent: 'center', marginTop: 8 }}
+                                                    title="用 Gemini 修錯字、去贅字、補標點（時間碼不變、可復原）">
+                                                    {isPolishing ? '✨ 潤飾中...' : '✨ AI 潤飾標點'}
+                                                </button>
+                                            )}
+                                            {isPolishing && <div className="progress-bar"><div className="fill loading" style={{ width: '100%' }} /></div>}
                                         </div>
                                     </>
                                 )}

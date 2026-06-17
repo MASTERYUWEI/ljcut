@@ -431,3 +431,15 @@ async def ai_generate(body: dict = Body(...)):
     print(f"✅ AI Done: type={prompt_type}, result_len={len(result)}", flush=True)
     return JSONResponse({"result": result, "prompt_type": prompt_type})
 
+
+@app.post("/api/ai/polish")
+async def ai_polish(body: dict = Body(...)):
+    """逐句潤飾字幕（修錯字／去贅字／補標點），時間碼不變 — Gemini API"""
+    segments = body.get("segments", [])
+    if not segments:
+        raise HTTPException(400, "沒有字幕資料")
+
+    print(f"✨ AI Polish: segments={len(segments)}", flush=True)
+    polished = await LLMService.polish_subtitles(segments)
+    return JSONResponse({"segments": polished})
+

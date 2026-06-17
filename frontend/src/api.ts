@@ -325,6 +325,18 @@ export const api = {
         return data.result || '';
     },
 
+    /** AI 逐句潤飾字幕（修錯字／去贅字／補標點），時間碼不變 */
+    async polishSubtitles(segments: Segment[]): Promise<Segment[]> {
+        const res = await fetch(`${resolvedBase}/api/ai/polish`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ segments }),
+        });
+        if (!res.ok) throw new Error(await res.text());
+        const data = await res.json();
+        return data.segments || segments;
+    },
+
     /** 取得音頻波形 peak 數據 */
     async getWaveform(fileId: string): Promise<number[]> {
         const res = await fetch(`${resolvedBase}/api/waveform/${fileId}`);
