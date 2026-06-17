@@ -1,14 +1,37 @@
 """LLM 服務 — Google Gemini API（繁體中文生成）"""
 
 import os
+from pathlib import Path
+
 import httpx
 from dotenv import load_dotenv
 
 load_dotenv()
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+# API Key 可在執行期由 UI 更新（set_api_key），並寫回 backend/.env 持久化。
+_api_key = os.getenv("GEMINI_API_KEY", "")
+_ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
 GEMINI_MODEL = "gemini-2.0-flash"
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
+
+
+def _get_api_key() -> str:
+    return _api_key
+
+
+def _persist_key_to_env(key: str):
+    """把 GEMINI_API_KEY 寫回 backend/.env（保留其他變數）。"""
+    lines, found = [], False
+    if _ENV_PATH.exists():
+        for line in _ENV_PATH.read_text(encoding="utf-8").splitlines():
+            if line.strip().startswith("GEMINI_API_KEY="):
+                lines.append(f"GEMINI_API_KEY={key}")
+                found = True
+            else:
+                lines.append(line)
+    if not found:
+        lines.append(f"GEMINI_API_KEY={key}")
+    _ENV_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 # ── Prompt 模板 ──
 
@@ -71,15 +94,36 @@ class LLMService:
     """Google Gemini LLM 服務"""
 
     @staticmethod
+    def key_info() -> dict:
+        """回傳目前金鑰狀態（遮罩顯示，不外洩完整金鑰）。"""
+        k = _get_api_key()
+        if not k:
+            return {"has_key": False, "masked": ""}
+        masked = (k[:4] + "••••••" + k[-4:]) if len(k) > 8 else "••••••"
+        return {"has_key": True, "masked": masked}
+
+    @staticmethod
+    async def set_api_key(key: str) -> dict:
+        """設定金鑰（更新執行期 + 寫回 backend/.env），並回傳可用性檢查結果。"""
+        global _api_key
+        _api_key = (key or "").strip()
+        try:
+            _persist_key_to_env(_api_key)
+        except Exception as e:
+            print(f"❌ 寫入 .env 失敗: {e}", flush=True)
+        status = await LLMService.check_status()
+        return {"saved": True, "status": status, **LLMService.key_info()}
+
+    @staticmethod
     async def check_status() -> dict:
         """檢查 Gemini API 是否可用"""
-        if not GEMINI_API_KEY:
+        if not _get_api_key():
             return {"available": False, "error": "未設定 GEMINI_API_KEY"}
         try:
             async with httpx.AsyncClient(timeout=10) as client:
                 res = await client.get(
                     f"{GEMINI_BASE}/models/{GEMINI_MODEL}",
-                    params={"key": GEMINI_API_KEY},
+                    params={"key": _get_api_key()},
                 )
                 if res.status_code == 200:
                     return {
@@ -136,7 +180,7 @@ class LLMService:
                 async with httpx.AsyncClient(timeout=60) as client:
                     res = await client.post(
                         f"{GEMINI_BASE}/models/{GEMINI_MODEL}:generateContent",
-                        params={"key": GEMINI_API_KEY},
+                        params={"key": _get_api_key()},
                         json=payload,
                     )
 
@@ -183,7 +227,7 @@ class LLMService:
         import asyncio
         import json
 
-        if not GEMINI_API_KEY:
+        if not _get_api_key():
             print("⚠️ polish: 未設定 GEMINI_API_KEY，退回原文", flush=True)
             return segments
 
@@ -212,7 +256,7 @@ class LLMService:
                 async with httpx.AsyncClient(timeout=90) as client:
                     res = await client.post(
                         f"{GEMINI_BASE}/models/{GEMINI_MODEL}:generateContent",
-                        params={"key": GEMINI_API_KEY},
+                        params={"key": _get_api_key()},
                         json=payload,
                     )
 

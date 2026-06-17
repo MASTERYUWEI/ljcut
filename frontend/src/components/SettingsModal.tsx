@@ -1,11 +1,15 @@
-/* ── 設定 Modal（輸出目錄 / SRT 目錄）── */
+/* ── 設定 Modal（輸出目錄 / SRT 目錄 / Gemini API Key）── */
+import { useEffect, useState } from 'react';
 import type { AppSettings } from '../types';
+import { api } from '../api';
 
 interface Props {
     settings: AppSettings;
     setSettings: React.Dispatch<React.SetStateAction<AppSettings>>;
     onClose: () => void;
 }
+
+const APPLY_KEY_URL = 'https://aistudio.google.com/apikey';
 
 export function SettingsModal({ settings, setSettings, onClose }: Props) {
     const pickDir = async (key: 'outputDir' | 'srtDir', title: string) => {
@@ -20,6 +24,54 @@ export function SettingsModal({ settings, setSettings, onClose }: Props) {
                 setSettings(s => ({ ...s, [key]: handle.name }));
             }
         } catch { /* 使用者取消 */ }
+    };
+
+    // ── Gemini API Key ──
+    const [keyInfo, setKeyInfo] = useState<{ has_key: boolean; masked: string }>({ has_key: false, masked: '' });
+    const [keyInput, setKeyInput] = useState('');
+    const [showKey, setShowKey] = useState(false);
+    const [saving, setSaving] = useState(false);
+    const [saveMsg, setSaveMsg] = useState('');
+
+    useEffect(() => {
+        api.getApiKeyInfo().then(setKeyInfo).catch(() => { });
+    }, []);
+
+    const saveKey = async () => {
+        const k = keyInput.trim();
+        if (!k) return;
+        setSaving(true);
+        setSaveMsg('');
+        try {
+            const r = await api.setApiKey(k);
+            setKeyInfo({ has_key: r.has_key, masked: r.masked });
+            setKeyInput('');
+            setShowKey(false);
+            setSaveMsg(r.status?.available
+                ? '✅ 金鑰有效，已儲存'
+                : `⚠️ 已儲存，但驗證失敗：${r.status?.error || '未知錯誤'}`);
+        } catch (e) {
+            setSaveMsg(`❌ 儲存失敗：${e}`);
+        } finally {
+            setSaving(false);
+        }
+    };
+
+    const applyKey = async () => {
+        try {
+            const IS_TAURI = !!(window as any).__TAURI_INTERNALS__;
+            if (IS_TAURI) {
+                const { open } = await import('@tauri-apps/plugin-shell');
+                await open(APPLY_KEY_URL);
+            } else {
+                window.open(APPLY_KEY_URL, '_blank');
+            }
+        } catch { /* 忽略 */ }
+    };
+
+    const inputStyle: React.CSSProperties = {
+        flex: 1, padding: '6px 8px', borderRadius: 4,
+        border: '1px solid #444', background: '#1e1e1e', color: '#eee', fontSize: 13,
     };
 
     return (
@@ -42,6 +94,40 @@ export function SettingsModal({ settings, setSettings, onClose }: Props) {
                         <span>{settings.srtDir || '預設：與輸出相同'}</span>
                         <span className="folder-icon">📁</span>
                     </button>
+                </div>
+
+                {/* ── Gemini API Key ── */}
+                <div className="style-row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 8 }}>
+                    <label>
+                        Gemini API Key{' '}
+                        {keyInfo.has_key
+                            ? <span style={{ color: '#4caf50', fontSize: 12 }}>（目前：{keyInfo.masked}）</span>
+                            : <span style={{ color: '#e57373', fontSize: 12 }}>（尚未設定）</span>}
+                    </label>
+                    <div style={{ display: 'flex', gap: 6 }}>
+                        <input
+                            type={showKey ? 'text' : 'password'}
+                            value={keyInput}
+                            onChange={e => setKeyInput(e.target.value)}
+                            placeholder="貼上你的 API Key..."
+                            autoComplete="off"
+                            spellCheck={false}
+                            style={inputStyle}
+                        />
+                        <button className="btn" onClick={() => setShowKey(s => !s)}
+                            title={showKey ? '隱藏' : '顯示'} style={{ padding: '0 10px' }}>
+                            {showKey ? '🙈' : '👁'}
+                        </button>
+                        <button className="btn btn-primary" onClick={saveKey}
+                            disabled={saving || !keyInput.trim()} style={{ padding: '0 12px' }}>
+                            {saving ? '儲存中...' : '儲存'}
+                        </button>
+                    </div>
+                    <button className="btn" onClick={applyKey} style={{ justifyContent: 'center' }}
+                        title="開啟 Google AI Studio 申請金鑰">
+                        🔑 一鍵申請 API Key
+                    </button>
+                    {saveMsg && <div style={{ fontSize: 12, color: '#ccc' }}>{saveMsg}</div>}
                 </div>
             </div>
         </div>

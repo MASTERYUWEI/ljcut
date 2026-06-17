@@ -325,6 +325,24 @@ export const api = {
         return data.result || '';
     },
 
+    /** 取得目前 Gemini 金鑰狀態（遮罩） */
+    async getApiKeyInfo(): Promise<{ has_key: boolean; masked: string }> {
+        const res = await fetch(`${resolvedBase}/api/ai/key`);
+        if (!res.ok) return { has_key: false, masked: '' };
+        return res.json();
+    },
+
+    /** 設定 Gemini 金鑰（寫回 .env 並即時生效），回傳可用性 */
+    async setApiKey(key: string): Promise<{ saved: boolean; has_key: boolean; masked: string; status: { available: boolean; error?: string } }> {
+        const res = await fetch(`${resolvedBase}/api/ai/key`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ key }),
+        });
+        if (!res.ok) throw new Error(await res.text());
+        return res.json();
+    },
+
     /** AI 逐句潤飾字幕（修錯字／去贅字／補標點），時間碼不變 */
     async polishSubtitles(segments: Segment[]): Promise<Segment[]> {
         const res = await fetch(`${resolvedBase}/api/ai/polish`, {

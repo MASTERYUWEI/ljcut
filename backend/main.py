@@ -415,6 +415,23 @@ async def ai_status():
     return await LLMService.check_status()
 
 
+@app.get("/api/ai/key")
+async def ai_get_key():
+    """取得目前金鑰狀態（遮罩顯示）"""
+    return JSONResponse(LLMService.key_info())
+
+
+@app.post("/api/ai/key")
+async def ai_set_key(body: dict = Body(...)):
+    """設定 Gemini API Key（寫回 .env 並即時生效）"""
+    key = (body.get("key") or "").strip()
+    if not key:
+        raise HTTPException(400, "金鑰不可為空")
+    result = await LLMService.set_api_key(key)
+    print(f"🔑 已更新 GEMINI_API_KEY，可用={result.get('status', {}).get('available')}", flush=True)
+    return JSONResponse(result)
+
+
 @app.post("/api/ai/generate")
 async def ai_generate(body: dict = Body(...)):
     """AI 生成文案 — Gemini API"""
