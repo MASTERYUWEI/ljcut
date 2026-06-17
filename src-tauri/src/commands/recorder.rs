@@ -50,6 +50,9 @@ pub struct RecOptions {
     pub mic_vol: f32,
     #[serde(default = "default_vol")]
     pub sys_vol: f32,
+    /// 麥克風相對系統的同步偏移(ms)；正=延後麥克風(麥克風超前時用)，負=延後系統
+    #[serde(default)]
+    pub audio_sync_ms: f32,
     #[serde(default)]
     pub cursor_glow: bool,
     #[serde(default)]
@@ -130,6 +133,7 @@ pub async fn set_rec_options(
     fps: Option<u32>,
     mic_vol: Option<f32>,
     sys_vol: Option<f32>,
+    audio_sync_ms: Option<f32>,
     cursor_glow: Option<bool>,
     click_effect: Option<bool>,
     glow_color: Option<String>,
@@ -145,6 +149,7 @@ pub async fn set_rec_options(
         fps: fps.unwrap_or(60),
         mic_vol: mic_vol.unwrap_or(1.0),
         sys_vol: sys_vol.unwrap_or(1.0),
+        audio_sync_ms: audio_sync_ms.unwrap_or(0.0),
         cursor_glow: cursor_glow.unwrap_or(false),
         click_effect: click_effect.unwrap_or(false),
         glow_color: glow_color.unwrap_or_else(default_glow_color),
@@ -243,11 +248,29 @@ fn start_audio_capture(
     let sys_v = opts.sys_vol;
     let mic_v = opts.mic_vol;
     if has_sys && has_mic {
-        let fc = if (sys_v - 1.0).abs() < 0.01 && (mic_v - 1.0).abs() < 0.01 {
-            "[0:a][1:a]amerge=inputs=2[a]".to_string()
-        } else {
-            format!("[0:a]volume={sys_v:.2}[s];[1:a]volume={mic_v:.2}[m];[s][m]amerge=inputs=2[a]")
+        // 同步偏移：正=延後麥克風(麥克風超前時)、負=延後系統
+        let sync = opts.audio_sync_ms;
+        let delay_mic = if sync > 0.0 { sync } else { 0.0 };
+        let delay_sys = if sync < 0.0 { -sync } else { 0.0 };
+        // 為每條音軌組 filter chain（音量 + 可選 adelay），無濾鏡時用 anull
+        let chain = |label_in: &str, vol: f32, delay_ms: f32, label_out: &str| -> String {
+            let mut fs: Vec<String> = Vec::new();
+            if (vol - 1.0).abs() >= 0.01 {
+                fs.push(format!("volume={vol:.2}"));
+            }
+            if delay_ms >= 1.0 {
+                fs.push(format!("adelay={:.0}:all=1", delay_ms));
+            }
+            if fs.is_empty() {
+                fs.push("anull".into());
+            }
+            format!("{label_in}{}{label_out}", fs.join(","))
         };
+        let fc = format!(
+            "{};{};[s][m]amerge=inputs=2[a]",
+            chain("[0:a]", sys_v, delay_sys, "[s]"),
+            chain("[1:a]", mic_v, delay_mic, "[m]"),
+        );
         args.extend([
             "-filter_complex".into(),
             fc,
@@ -378,6 +401,7 @@ fn current_rec_opts() -> RecOptions {
         fps: 60,
         mic_vol: 1.0,
         sys_vol: 1.0,
+        audio_sync_ms: 0.0,
         cursor_glow: false,
         click_effect: false,
         glow_color: default_glow_color(),

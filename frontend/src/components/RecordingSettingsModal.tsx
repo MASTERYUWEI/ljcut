@@ -1,5 +1,7 @@
 /* ── 螢幕錄影設定 Modal ── */
+import { useState } from 'react';
 import type { RecOpts, RecQuality, RecFps, MicDevice } from '../types';
+import { api } from '../api';
 
 interface Props {
     recOpts: RecOpts;
@@ -15,6 +17,34 @@ interface Props {
 export function RecordingSettingsModal({
     recOpts, setRecOpts, micDevices, isTauri, micMeterFillRef, micMeterValRef, onClose, onStartRec,
 }: Props) {
+    const [calibrating, setCalibrating] = useState(false);
+    const [calMsg, setCalMsg] = useState('');
+
+    const calibrate = async () => {
+        if (!recOpts.sysAudioDevice || !recOpts.micDevice) {
+            setCalMsg('需要同時選好「系統聲音」與「麥克風」裝置');
+            return;
+        }
+        setCalibrating(true);
+        setCalMsg('🎚️ 校正中…請讓 KTV 持續播放音樂約 5 秒');
+        try {
+            const r = await api.calibrateAudio(recOpts.sysAudioDevice, recOpts.micDevice, 5);
+            if (!r.ok) {
+                setCalMsg(`❌ ${r.error || '校正失敗'}`);
+            } else {
+                const ms = r.mic_ahead_ms ?? 0;
+                setRecOpts(o => ({ ...o, audioSyncMs: ms }));
+                setCalMsg(r.reliable
+                    ? `✅ 量到麥克風超前 ${ms}ms，已自動填入（信心 ${r.confidence}）`
+                    : `⚠️ 量到 ${ms}ms 但訊號偏弱（信心 ${r.confidence}）；請確認用喇叭且音樂夠大聲，或手動微調`);
+            }
+        } catch (e) {
+            setCalMsg(`❌ 校正失敗：${e}`);
+        } finally {
+            setCalibrating(false);
+        }
+    };
+
     return (
         <div className="modal-overlay" onClick={onClose}>
             <div className="modal-box" onClick={e => e.stopPropagation()}>
@@ -82,6 +112,28 @@ export function RecordingSettingsModal({
                             onChange={e => setRecOpts(o => ({ ...o, micVol: parseInt(e.target.value) / 100 }))}
                             style={{ flex: 1, margin: '0 8px' }} />
                         <span style={{ fontSize: 12, minWidth: 36, textAlign: 'right' }}>{Math.round(recOpts.micVol * 100)}%</span>
+                    </div>
+                )}
+                {recOpts.sysAudio && recOpts.mic && (
+                    <div className="rec-setting-row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 8 }}>
+                        <label title="正值＝延後麥克風（麥克風超前時用）；負值＝延後系統聲音">
+                            🎚️ 音訊同步（麥克風延後 ms）
+                        </label>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <input type="number" step={10} value={recOpts.audioSyncMs}
+                                onChange={e => setRecOpts(o => ({ ...o, audioSyncMs: parseInt(e.target.value) || 0 }))}
+                                style={{ width: 90, padding: '4px 8px', borderRadius: 4, border: '1px solid #444', background: '#1e1e1e', color: '#eee' }} />
+                            <span style={{ fontSize: 12, color: '#888' }}>ms</span>
+                            <button className="btn" onClick={calibrate} disabled={calibrating}
+                                style={{ marginLeft: 'auto', padding: '0 12px' }}
+                                title="用喇叭播放音樂時，自動量出麥克風超前多少毫秒">
+                                {calibrating ? '校正中…' : '🎚️ 一鍵校正'}
+                            </button>
+                        </div>
+                        <div style={{ fontSize: 11, color: '#888', lineHeight: 1.5 }}>
+                            用喇叭播放音樂 → 按「一鍵校正」→ 自動量出麥克風超前的毫秒數並填入。
+                        </div>
+                        {calMsg && <div style={{ fontSize: 12, color: '#ccc' }}>{calMsg}</div>}
                     </div>
                 )}
                 <div className="rec-setting-row">

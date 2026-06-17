@@ -325,6 +325,17 @@ export const api = {
         return data.result || '';
     },
 
+    /** 音訊同步校正：同時錄系統+麥克風幾秒，互相關算出麥克風超前 ms */
+    async calibrateAudio(sysDevice: string, micDevice: string, seconds = 5): Promise<{ ok: boolean; mic_ahead_ms?: number; confidence?: number; reliable?: boolean; error?: string }> {
+        const res = await fetch(`${resolvedBase}/api/calibrate-audio`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sys_device: sysDevice, mic_device: micDevice, seconds }),
+        });
+        if (!res.ok) throw new Error(await res.text());
+        return res.json();
+    },
+
     /** 取得目前 Gemini 金鑰狀態（遮罩） */
     async getApiKeyInfo(): Promise<{ has_key: boolean; masked: string }> {
         const res = await fetch(`${resolvedBase}/api/ai/key`);

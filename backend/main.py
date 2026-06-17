@@ -449,6 +449,25 @@ async def ai_generate(body: dict = Body(...)):
     return JSONResponse({"result": result, "prompt_type": prompt_type})
 
 
+@app.post("/api/calibrate-audio")
+async def calibrate_audio(body: dict = Body(...)):
+    """音訊同步校正：同時錄系統+麥克風幾秒，互相關算出麥克風超前 ms"""
+    import asyncio
+
+    from services.audio_calibrate import calibrate
+
+    sys_device = (body.get("sys_device") or "").strip()
+    mic_device = (body.get("mic_device") or "").strip()
+    seconds = int(body.get("seconds", 5))
+    if not sys_device or not mic_device:
+        raise HTTPException(400, "需要同時提供系統與麥克風裝置")
+
+    print(f"🎚️ 音訊校正: sys={sys_device}, mic={mic_device}, {seconds}s", flush=True)
+    result = await asyncio.to_thread(calibrate, sys_device, mic_device, seconds)
+    print(f"🎚️ 校正結果: {result}", flush=True)
+    return JSONResponse(result)
+
+
 @app.post("/api/ai/polish")
 async def ai_polish(body: dict = Body(...)):
     """逐句潤飾字幕（修錯字／去贅字／補標點），時間碼不變 — Gemini API"""

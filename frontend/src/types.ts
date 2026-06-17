@@ -82,6 +82,7 @@ export interface RecOpts {
     sysAudioDevice: string;
     micVol: number;
     sysVol: number;
+    audioSyncMs: number;
     cursorGlow: boolean;
     clickEffect: boolean;
     glowColor: string;
