@@ -54,7 +54,15 @@ export default function App() {
     const [isPaused, setIsPaused] = useState(false);
     const [recSeconds, setRecSeconds] = useState(0);
     const [showRecSettings, setShowRecSettings] = useState(false);
-    const [recOpts, setRecOpts] = useState<RecOpts>({ sysAudio: false, mic: false, quality: '1080p', fps: 60, micDevice: '', sysAudioDevice: '', micVol: 1.0, sysVol: 1.0, audioSyncMs: 0, cursorGlow: false, clickEffect: false, glowColor: '#ffd228', clickColor: '#ffe65a', cursorScale: 1, cursorHidden: false });
+    const [recOpts, setRecOpts] = useState<RecOpts>(() => {
+        const saved = parseInt(localStorage.getItem('ljcut.audioSyncMs') ?? '');
+        const audioSyncMs = Number.isFinite(saved) ? saved : 250; // 預設鎖 250ms，之後讀回上次校正值
+        return { sysAudio: false, mic: false, quality: '1080p', fps: 60, micDevice: '', sysAudioDevice: '', micVol: 1.0, sysVol: 1.0, audioSyncMs, cursorGlow: false, clickEffect: false, glowColor: '#ffd228', clickColor: '#ffe65a', cursorScale: 1, cursorHidden: false };
+    });
+    // 音訊同步偏移持久化（每次變更即存，下次啟動自動讀回，不必重設）
+    useEffect(() => {
+        localStorage.setItem('ljcut.audioSyncMs', String(recOpts.audioSyncMs));
+    }, [recOpts.audioSyncMs]);
     const [micDevices, setMicDevices] = useState<MicDevice[]>([]);
     const micStreamRef = useRef<MediaStream | null>(null);
     const micAnimRef = useRef<number>(0);
@@ -771,6 +779,11 @@ export default function App() {
             return;
         }
 
+        // 匯出時暫停預覽（背景影片/聲音停住，匯出走獨立的 ffmpeg 管線）
+        vid0Ref.current?.pause();
+        vid1Ref.current?.pause();
+        setIsPlaying(false);
+
         setIsBurning(true);
         setExportProgress(0);
         try {
@@ -848,7 +861,7 @@ export default function App() {
         } finally {
             setIsBurning(false);
         }
-    }, [fileId, segments, subtitleStyle, timelineClips, mediaItems, duration]);
+    }, [fileId, segments, subtitleStyle, timelineClips, mediaItems, duration, setIsPlaying]);
 
     // ── 播放 ──
     const activeClipSpeed = useMemo(() => {
