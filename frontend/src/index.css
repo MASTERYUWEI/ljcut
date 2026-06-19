@@ -741,6 +741,7 @@ body {
   height: 100%;
   pointer-events: none;
   will-change: transform; /* GPU 合成平移；寬度與 translateX 由 React inline style 控制（filmstrip 視窗）*/
+  transition: opacity 0.12s ease; /* 拖拉裁切時淡出/淡入，避免拖曳期視覺飄移 */
 }
 
 .clip-text-over-waveform {

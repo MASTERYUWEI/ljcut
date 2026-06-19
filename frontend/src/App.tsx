@@ -661,10 +661,12 @@ export default function App() {
         const prevEnd = Math.max(0, ...same.filter(c => c.startTime + c.duration <= o.startTime + 1e-3).map(c => c.startTime + c.duration));
         const nextStart = Math.min(Infinity, ...same.filter(c => c.startTime >= R - 1e-3).map(c => c.startTime));
 
-        // 純 state 更新：波形是 filmstrip 視窗，會隨 clip.trimStart/duration 由 React 同步(不重畫、不漂移)
+        // 純 state 更新；拖拉裁切時把該片段波形淡出(避免拖曳期視覺飄移/lag)，放開復原
+        const cv = document.querySelector<HTMLElement>(`canvas[data-clip-id="${clipId}"]`);
         let undoPushed = false;
         const onMove = (ev: MouseEvent) => {
             if (!undoPushed) { undoPushed = true; pushUndo(); } // 第一次實際拖動才記錄 undo
+            if (cv) cv.style.opacity = '0'; // 拖拉中隱藏波形
             const dx = (ev.clientX - startX) / pixelsPerSecond;
             if (edge === 'left') {
                 const maxDur = o.trimEnd / speed; // trimStart 最多回到 0
@@ -682,6 +684,7 @@ export default function App() {
             }
         };
         const onUp = () => {
+            if (cv) cv.style.opacity = ''; // 放開復原波形
             window.removeEventListener('mousemove', onMove);
             window.removeEventListener('mouseup', onUp);
         };
