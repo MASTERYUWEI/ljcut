@@ -1677,8 +1677,10 @@ export default function App() {
     }, [isPlaying, currentTime, timelineClips, segments]);
 
     // ── Per-clip 波形繪製 ──
-    const drawClipWaveform = useCallback((canvas: HTMLCanvasElement, peaks: number[], clipWidthPx: number, maxAmp: number) => {
-        if (peaks.length === 0 || clipWidthPx <= 0) return;
+    // step = 每個 peak 的時間軸像素步距；offset = 第 0 個 peak 的 x（補整數切片殘差，
+    // 讓 trim 時 peak 錨定在「時間位置」平滑滑動，不會被重新分配而左右抖動）
+    const drawClipWaveform = useCallback((canvas: HTMLCanvasElement, peaks: number[], clipWidthPx: number, maxAmp: number, step: number, offset: number) => {
+        if (peaks.length === 0 || clipWidthPx <= 0 || step <= 0) return;
         const h = canvas.parentElement?.clientHeight || 60;
         const dpr = window.devicePixelRatio || 1;
 
@@ -1696,21 +1698,16 @@ export default function App() {
         ctx.scale(dpr, dpr);
         ctx.clearRect(0, 0, w, h);
 
-        // 如果超限，計算要繪製的 peak 範圍（只畫可見區域附近）
-        const ratio = w / rawW; // 實際繪製的比例
-        const peaksToRender = ratio < 1
-            ? peaks.slice(0, Math.ceil(peaks.length * ratio))
-            : peaks;
-
+        const sx = w / rawW; // 超寬被夾住時的壓縮係數（一般 = 1）
         const cellH = 4, gapY = 1.5, gapX = 1;
-        const barW = Math.max(3, w / peaksToRender.length - gapX);
+        const barW = Math.max(2, step * sx - gapX);
         const maxCells = Math.floor(h / (cellH + gapY));
-        // maxAmp 由呼叫端以「整段媒體」最大值傳入，確保同一影片切成多段後高度一致
 
-        for (let i = 0; i < peaksToRender.length; i++) {
-            const norm = peaksToRender[i] / maxAmp;
+        for (let i = 0; i < peaks.length; i++) {
+            const x = (offset + i * step) * sx; // 時間錨定座標
+            if (x < -barW || x > w) continue;   // 超出畫布的略過
+            const norm = peaks[i] / maxAmp;
             const cells = Math.max(1, Math.round(norm * maxCells));
-            const x = (i / peaksToRender.length) * w;
             for (let c = 0; c < cells; c++) {
                 const y = h - (c + 1) * (cellH + gapY);
                 const ratioc = c / maxCells;
@@ -1727,18 +1724,20 @@ export default function App() {
             const canvas = document.querySelector<HTMLCanvasElement>(`canvas[data-clip-id="${clip.id}"]`);
             if (!canvas) continue;
             const clipWidthPx = clip.duration * pixelsPerSecond;
-            // 只取「裁切後可見範圍 [trimStart, trimEnd]」對應的波形，避免整段被等比例壓窄
             const full = media.waveformPeaks;
             const dur = media.info.duration || 0;
-            // 用「整段媒體」的最大振幅正規化 → 同一影片切成多段後，各段高度一致（不跳動）
+            if (dur <= 0) { drawClipWaveform(canvas, full, clipWidthPx, full.reduce((m, v) => (v > m ? v : m), 0.01), clipWidthPx / Math.max(full.length, 1), 0); continue; }
+            // 用「整段媒體」最大振幅正規化 → 切成多段後各段高度一致
             const fullMax = full.reduce((m, v) => (v > m ? v : m), 0.01);
-            let peaks = full;
-            if (dur > 0) {
-                const s = Math.max(0, Math.floor((clip.trimStart / dur) * full.length));
-                const e = Math.min(full.length, Math.ceil((clip.trimEnd / dur) * full.length));
-                if (e > s) peaks = full.slice(s, e);
-            }
-            drawClipWaveform(canvas, peaks, clipWidthPx, fullMax);
+            const sps = full.length / dur;                 // 每媒體秒的 peak 數
+            const step = pixelsPerSecond / (sps * clip.speed); // 每個 peak 的時間軸像素步距（固定）
+            const sExact = clip.trimStart * sps;           // trimStart 對應的小數 peak 索引
+            const s = Math.max(0, Math.floor(sExact));
+            const e = Math.min(full.length, Math.ceil(clip.trimEnd * sps));
+            // 只取可見範圍的 peak；offset 補整數切片殘差，讓 trim 平滑不抖
+            const peaks = e > s ? full.slice(s, e) : full;
+            const offset = -(sExact - s) * step;
+            drawClipWaveform(canvas, peaks, clipWidthPx, fullMax, step, offset);
         }
     }, [timelineClips, mediaItems, pixelsPerSecond, drawClipWaveform]);
 
