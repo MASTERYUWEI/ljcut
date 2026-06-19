@@ -2124,12 +2124,17 @@ export default function App() {
                                     <div className="track-content" style={{ width: timelineWidth }}>
                                         {timelineClips.filter(c => c.trackIndex === 0).map(clip => {
                                             const media = mediaItems.find(m => m.id === clip.mediaId);
-                                            const left = clip.startTime * pixelsPerSecond;
-                                            const width = Math.max(clip.duration * pixelsPerSecond, 4);
-                                            // filmstrip 視窗：波形 canvas 寬 = 整段媒體寬，translateX 對準 trimStart
+                                            // left/right 都取整數像素：左裁切時右邊緣(rightPx)恆定、左邊緣(left)整數位移
+                                            const left = Math.round(clip.startTime * pixelsPerSecond);
+                                            const rightPx = Math.round((clip.startTime + clip.duration) * pixelsPerSecond);
+                                            const width = Math.max(rightPx - left, 4);
+                                            // filmstrip 視窗：波形 canvas 寬 = 整段媒體寬。
+                                            // 關鍵：waveTx = 波形原點(media t=0)在時間軸的像素位置 − 實際取整後的 left。
+                                            // 如此 canvas 螢幕位置 = left + waveTx = 原點位置(裁切時恆定) → 與 left 取整精準抵消，左裁切零漂移。
                                             const mDur = media?.info.duration || 0;
                                             const waveFullW = mDur > 0 ? (mDur / (clip.speed || 1)) * pixelsPerSecond : width;
-                                            const waveTx = mDur > 0 ? -((clip.trimStart / (clip.speed || 1)) * pixelsPerSecond) : 0;
+                                            const waveOriginPx = (clip.startTime - clip.trimStart / (clip.speed || 1)) * pixelsPerSecond;
+                                            const waveTx = mDur > 0 ? (waveOriginPx - left) : 0;
                                             return (
                                                 <div key={clip.id}
                                                     className={`track-clip video-clip ${draggingClipId === clip.id ? 'dragging' : ''} ${activeClipId === clip.id ? 'active-clip' : ''}`}
