@@ -2134,7 +2134,9 @@ export default function App() {
                                             const mDur = media?.info.duration || 0;
                                             const waveFullW = mDur > 0 ? (mDur / (clip.speed || 1)) * pixelsPerSecond : width;
                                             const waveOriginPx = (clip.startTime - clip.trimStart / (clip.speed || 1)) * pixelsPerSecond;
-                                            const waveTx = mDur > 0 ? (waveOriginPx - left) : 0;
+                                            // 取整：left(整數)+waveTx(整數) = round(waveOriginPx)，左裁切時為定值常數→
+                                            // 不留分數給 GPU 合成層去捨入(will-change 會把圖層 snap 到整數裝置像素)→徹底零漂
+                                            const waveTx = mDur > 0 ? Math.round(waveOriginPx - left) : 0;
                                             return (
                                                 <div key={clip.id}
                                                     className={`track-clip video-clip ${draggingClipId === clip.id ? 'dragging' : ''} ${activeClipId === clip.id ? 'active-clip' : ''}`}
