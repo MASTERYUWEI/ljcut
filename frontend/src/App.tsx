@@ -316,6 +316,33 @@ export default function App() {
     const timelineWidth = duration > 0 ? duration * pixelsPerSecond : 0;
     const SNAP_THRESHOLD_SEC = 8 / pixelsPerSecond; // 8px 吸附範圍
 
+    // ── 防重疊：以剛放下/移動的片段為錨點，把同軌重疊到的鄰段往兩側推開（保留間隙）──
+    const resolveOverlaps = useCallback((anchorId: string) => {
+        const clips = useStore.getState().timelineClips;
+        const anchor = clips.find(c => c.id === anchorId);
+        if (!anchor) return;
+        const Ms = anchor.startTime;
+        const Me = anchor.startTime + anchor.duration;
+        const others = clips.filter(c => c.id !== anchorId && c.trackIndex === anchor.trackIndex);
+        const patches: { id: string; startTime: number }[] = [];
+
+        // 右側（start >= 錨點起點）：依序往右推到不重疊（原本就不重疊的維持間隙）
+        let wallR = Me;
+        for (const c of others.filter(c => c.startTime >= Ms).sort((a, b) => a.startTime - b.startTime)) {
+            let s = c.startTime;
+            if (s < wallR - 1e-6) { s = wallR; patches.push({ id: c.id, startTime: s }); }
+            wallR = s + c.duration;
+        }
+        // 左側（start < 錨點起點）：依序往左推到不重疊
+        let wallL = Ms;
+        for (const c of others.filter(c => c.startTime < Ms).sort((a, b) => b.startTime - a.startTime)) {
+            let s = c.startTime;
+            if (s + c.duration > wallL + 1e-6) { s = Math.max(0, wallL - c.duration); patches.push({ id: c.id, startTime: s }); }
+            wallL = s;
+        }
+        for (const p of patches) updateClip(p.id, { startTime: p.startTime });
+    }, [updateClip]);
+
     // ── 同步尺標滾動 ──
     const syncRulerScroll = useCallback(() => {
         if (rulerRef.current && tracksRef.current) {
@@ -550,8 +577,9 @@ export default function App() {
             segments: [],
         };
         addClip(clip);
+        resolveOverlaps(clipId); // 放下後把重疊到的鄰段推開
         setActiveClipId(clipId);
-    }, [mediaItems, timelineClips, addClip, pixelsPerSecond, SNAP_THRESHOLD_SEC]);
+    }, [mediaItems, timelineClips, addClip, pixelsPerSecond, SNAP_THRESHOLD_SEC, resolveOverlaps]);
 
     // ── 拖拉時間軸上的 clip（左右移動 + 磁力吸附） ──
     const [draggingClipId, setDraggingClipId] = useState<string | null>(null);
@@ -594,6 +622,7 @@ export default function App() {
             updateClip(clipId, { startTime: Math.max(0, newStart) });
         };
         const onUp = () => {
+            resolveOverlaps(clipId); // 放開後把重疊到的鄰段推開
             setDraggingClipId(null);
             setSnapTime(null);
             window.removeEventListener('mousemove', onMove);
@@ -601,7 +630,7 @@ export default function App() {
         };
         window.addEventListener('mousemove', onMove);
         window.addEventListener('mouseup', onUp);
-    }, [timelineClips, pixelsPerSecond, SNAP_THRESHOLD_SEC, updateClip]);
+    }, [timelineClips, pixelsPerSecond, SNAP_THRESHOLD_SEC, updateClip, resolveOverlaps]);
 
     // ── Cue Splitting：超長字幕自動分段（語義斷句） ──
     const splitLongCues = useCallback((segs: typeof segments, maxChars: number) => {
