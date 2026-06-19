@@ -72,6 +72,7 @@ export default function App() {
     const micMeterValRef = useRef<HTMLSpanElement>(null);
     // ── 倍速右鍵選單 ──
     const [speedMenu, setSpeedMenu] = useState<{ clipId: string; x: number; y: number; splitTime: number } | null>(null);
+    const speedUndoPushedRef = useRef(false); // 同一次右鍵選單調速只記一次 undo
 
     // ── 系統音訊 loopback 裝置偵測（獨立於麥克風，設定面板開啟時觸發） ──
     useEffect(() => {
@@ -290,6 +291,7 @@ export default function App() {
         getDuration,
         addMedia, removeMedia, updateMedia,
         addClip, updateClip, removeClip, setClipSpeed,
+        restoreTimeline,
         setClipSegments,
         setSegments, updateSegment, setActiveSegment,
         setSubtitleStyle,
@@ -303,16 +305,20 @@ export default function App() {
     const fileId = primaryMedia?.id ?? null;
     const hasTimeline = timelineClips.length > 0;
 
-    // ── Undo 歷史堆疊 ──
-    const undoStack = useRef<(typeof segments)[]>([]);
+    // ── Undo 歷史堆疊（記錄整個時間軸：片段 + 各片段字幕 + 選取）──
+    const undoStack = useRef<{ clips: TimelineClip[]; activeClipId: string | null }[]>([]);
     const pushUndo = useCallback(() => {
-        undoStack.current.push(segments.map(s => ({ ...s })));
+        // 深拷貝 clips（含各自 segments），避免之後 mutate 影響快照
+        undoStack.current.push({
+            clips: timelineClips.map(c => ({ ...c, segments: c.segments.map(s => ({ ...s })) })),
+            activeClipId,
+        });
         if (undoStack.current.length > 50) undoStack.current.shift();
-    }, [segments]);
+    }, [timelineClips, activeClipId]);
     const handleUndo = useCallback(() => {
         const prev = undoStack.current.pop();
-        if (prev) setSegments(prev);
-    }, [setSegments]);
+        if (prev) restoreTimeline(prev.clips, prev.activeClipId);
+    }, [restoreTimeline]);
 
     const pixelsPerSecond = 10 * zoom;
     const timelineWidth = duration > 0 ? duration * pixelsPerSecond : 0;
@@ -578,10 +584,11 @@ export default function App() {
             speed: 1,
             segments: [],
         };
+        pushUndo();
         addClip(clip);
         resolveOverlaps(clipId); // 放下後把重疊到的鄰段推開
         setActiveClipId(clipId);
-    }, [mediaItems, timelineClips, addClip, pixelsPerSecond, SNAP_THRESHOLD_SEC, resolveOverlaps]);
+    }, [mediaItems, timelineClips, addClip, pixelsPerSecond, SNAP_THRESHOLD_SEC, resolveOverlaps, pushUndo, setActiveClipId]);
 
     // ── 拖拉時間軸上的 clip（左右移動 + 磁力吸附） ──
     const [draggingClipId, setDraggingClipId] = useState<string | null>(null);
@@ -596,7 +603,9 @@ export default function App() {
         if (!clip) return;
         const startTime = clip.startTime;
 
+        let undoPushed = false;
         const onMove = (ev: MouseEvent) => {
+            if (!undoPushed) { undoPushed = true; pushUndo(); } // 第一次實際拖動才記錄 undo
             const dx = ev.clientX - startX;
             let newStart = Math.max(0, startTime + dx / pixelsPerSecond);
 
@@ -632,7 +641,7 @@ export default function App() {
         };
         window.addEventListener('mousemove', onMove);
         window.addEventListener('mouseup', onUp);
-    }, [timelineClips, pixelsPerSecond, SNAP_THRESHOLD_SEC, updateClip, resolveOverlaps]);
+    }, [timelineClips, pixelsPerSecond, SNAP_THRESHOLD_SEC, updateClip, resolveOverlaps, pushUndo]);
 
     // ── 片段邊緣拉桿（trim）：左拉桿改 in 點(右邊固定)、右拉桿改 out 點(左邊固定）──
     const handleClipTrim = useCallback((e: React.MouseEvent, clipId: string, edge: 'left' | 'right') => {
@@ -652,7 +661,9 @@ export default function App() {
         const prevEnd = Math.max(0, ...same.filter(c => c.startTime + c.duration <= o.startTime + 1e-3).map(c => c.startTime + c.duration));
         const nextStart = Math.min(Infinity, ...same.filter(c => c.startTime >= R - 1e-3).map(c => c.startTime));
 
+        let undoPushed = false;
         const onMove = (ev: MouseEvent) => {
+            if (!undoPushed) { undoPushed = true; pushUndo(); } // 第一次實際拖動才記錄 undo
             const dx = (ev.clientX - startX) / pixelsPerSecond;
             if (edge === 'left') {
                 const maxDur = o.trimEnd / speed; // trimStart 最多回到 0
@@ -675,14 +686,15 @@ export default function App() {
         };
         window.addEventListener('mousemove', onMove);
         window.addEventListener('mouseup', onUp);
-    }, [timelineClips, mediaItems, pixelsPerSecond, updateClip]);
+    }, [timelineClips, mediaItems, pixelsPerSecond, updateClip, pushUndo]);
 
     // ── 刪除片段（右鍵選單）──
     const handleClipDelete = useCallback((clipId: string) => {
+        pushUndo();
         removeClip(clipId);
         if (activeClipId === clipId) setActiveClipId(null);
         setSpeedMenu(null);
-    }, [removeClip, activeClipId, setActiveClipId]);
+    }, [removeClip, activeClipId, setActiveClipId, pushUndo]);
 
     // ── Cue Splitting：超長字幕自動分段（語義斷句） ──
     const splitLongCues = useCallback((segs: typeof segments, maxChars: number) => {
@@ -2135,6 +2147,7 @@ export default function App() {
                                                         e.preventDefault();
                                                         e.stopPropagation();
                                                         // 切點 = 播放線位置（不是滑鼠點的位置，才精確可控）
+                                                        speedUndoPushedRef.current = false;
                                                         setSpeedMenu({ clipId: clip.id, x: e.clientX, y: e.clientY, splitTime: timelinePosRef.current });
                                                     }}
                                                     title={`${media?.filename ?? 'clip'}${clip.speed !== 1 ? ` (${clip.speed}x)` : ''}\n${formatTimestamp(clip.startTime)} → ${formatTimestamp(clip.startTime + clip.duration)}\n拖曳左右邊緣可裁切；右鍵可分割/刪除`}>
@@ -2335,7 +2348,10 @@ export default function App() {
                     splitTime={splitT}
                     onSplit={() => handleSplitClip(speedMenuClip.id, splitT)}
                     onDelete={() => handleClipDelete(speedMenuClip.id)}
-                    onSetSpeed={setClipSpeed}
+                    onSetSpeed={(id, sp) => {
+                        if (!speedUndoPushedRef.current) { speedUndoPushedRef.current = true; pushUndo(); }
+                        setClipSpeed(id, sp);
+                    }}
                     onClose={() => setSpeedMenu(null)}
                 />
             )}

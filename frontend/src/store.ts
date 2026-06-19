@@ -56,6 +56,8 @@ interface AppState {
     removeClip: (id: string) => void;
     setClipSpeed: (id: string, speed: number) => void;
     setActiveClipId: (id: string | null) => void;
+    /** Undo 用：整批還原時間軸（並依 activeClipId 重新同步 segments） */
+    restoreTimeline: (clips: TimelineClip[], activeClipId: string | null) => void;
 
     // ── Per-clip 字幕 Actions ──
     setClipSegments: (clipId: string, segments: Segment[]) => void;
@@ -165,6 +167,15 @@ export const useStore = create<AppState>((set, get) => ({
             activeClipId: id,
             // 同步全域 segments 向後相容
             segments: clip?.segments ?? [],
+            activeSegmentId: null,
+        };
+    }),
+    restoreTimeline: (clips, activeClipId) => set(() => {
+        const active = activeClipId ? clips.find(c => c.id === activeClipId) : null;
+        return {
+            timelineClips: clips,
+            activeClipId: active ? activeClipId : null,
+            segments: active?.segments ?? [],
             activeSegmentId: null,
         };
     }),
