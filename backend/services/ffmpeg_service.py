@@ -229,6 +229,7 @@ class FFmpegService:
         """
         import tempfile
         import threading
+        import time
 
         temp_dir = Path(output_path).parent / "_temp_concat"
         temp_dir.mkdir(parents=True, exist_ok=True)
@@ -256,6 +257,20 @@ class FFmpegService:
         except Exception as e:
             print(f"⚠️ fps 偵測失敗，用預設 {target_fps}: {e}")
         print(f"🎞️ 匯出統一 fps = {target_fps}")
+
+        # ETA：以「已處理輸出秒數 / 總工作量」估算（編碼為主；有字幕再加一輪燒錄）
+        t0 = time.monotonic()
+        _ass_pre = Path(ass_path)
+        _pre_has_subs = _ass_pre.exists() and "Dialogue:" in _ass_pre.read_text(encoding="utf-8-sig", errors="ignore")
+        total_work = (total_duration * (2 if _pre_has_subs else 1)) or 1.0
+        processed = 0.0  # 已處理的輸出秒數
+
+        def calc_eta(done_sec):
+            frac = max(0.0, min(1.0, done_sec / total_work))
+            el = time.monotonic() - t0
+            if frac <= 0.02 or el < 1.5:
+                return None  # 還估不準
+            return int(max(0, el * (1 - frac) / frac))
 
         try:
             # ── Step 1: 逐 clip 產生標準化暫存檔 ──
@@ -313,16 +328,48 @@ class FFmpegService:
                     temp_out,
                 ]
 
-                print(f"📦 Clip {idx+1}/{total_clips}: {' '.join(cmd)}")
-                result = subprocess.run(cmd, capture_output=True, timeout=600)
-                if result.returncode != 0:
-                    stderr = result.stderr.decode("utf-8", errors="replace")
-                    print(f"❌ Clip {idx+1} 失敗:\n{stderr}")
-                    raise subprocess.CalledProcessError(result.returncode, cmd, stderr=result.stderr)
+                # 段內即時進度：用 -progress 串流回 out_time（這段佔整體 0~60% 的對應區間）
+                out_dur = (clip_dur / speed) if speed else clip_dur
+                cmd_run = cmd[:2] + ["-progress", "pipe:1", "-nostats"] + cmd[2:]
+                print(f"📦 Clip {idx+1}/{total_clips}: {' '.join(cmd_run)}")
+                band_start = 60.0 * idx / total_clips
+                band_end = 60.0 * (idx + 1) / total_clips
+                proc = subprocess.Popen(
+                    cmd_run, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    universal_newlines=True, encoding="utf-8", errors="replace",
+                )
+                cerr: list[str] = []
+                cth = threading.Thread(
+                    target=lambda: cerr.append(proc.stderr.read()) if proc.stderr else None,
+                    daemon=True,
+                )
+                cth.start()
+                last = -1
+                for line in iter(proc.stdout.readline, ''):
+                    line = line.strip()
+                    if line.startswith("out_time_us="):
+                        try:
+                            cur = max(0.0, int(line.split("=")[1]) / 1_000_000)
+                        except ValueError:
+                            continue
+                        intra = min(1.0, cur / out_dur) if out_dur > 0 else 0
+                        disp = int(band_start + (band_end - band_start) * intra)
+                        if disp != last:
+                            last = disp
+                            yield {"progress": disp, "stage": f"準備片段 {idx+1}/{total_clips}",
+                                   "eta_seconds": calc_eta(processed + cur)}
+                    elif line == "progress=end":
+                        break
+                proc.wait()
+                cth.join(timeout=5)
+                if proc.returncode != 0:
+                    err = cerr[0] if cerr else ""
+                    print(f"❌ Clip {idx+1} 失敗:\n{err}")
+                    raise subprocess.CalledProcessError(proc.returncode, cmd_run)
 
-                # 進度：clip 準備佔 60%
-                pct = int((idx + 1) / total_clips * 60)
-                yield {"progress": pct, "stage": f"準備片段 {idx+1}/{total_clips}"}
+                processed += out_dur
+                yield {"progress": int(band_end), "stage": f"準備片段 {idx+1}/{total_clips}",
+                       "eta_seconds": calc_eta(processed)}
 
             # ── Step 2: FFmpeg concat demuxer 串接 ──
             concat_list = str(temp_dir / "concat.txt")
@@ -348,7 +395,7 @@ class FFmpegService:
                 print(f"❌ Concat 失敗:\n{stderr}")
                 raise subprocess.CalledProcessError(result.returncode, cmd_concat, stderr=result.stderr)
 
-            yield {"progress": 70, "stage": "片段已串接"}
+            yield {"progress": 70, "stage": "片段已串接", "eta_seconds": calc_eta(processed)}
 
             # 無字幕（所有 clip 都沒辨識字幕）→ 直接輸出串接結果，跳過燒字幕步驟
             import shutil as _sh
@@ -358,7 +405,7 @@ class FFmpegService:
                 if Path(output_path).exists():
                     Path(output_path).unlink()
                 _sh.move(concat_out, output_path)
-                yield {"progress": 100}
+                yield {"progress": 100, "eta_seconds": 0}
                 print(f"✅ 多 clip 匯出完成（無字幕）: {output_path}")
                 return
 
@@ -410,7 +457,8 @@ class FFmpegService:
                             pct = 70 + min(int(us / (total_duration * 1_000_000) * 29), 29)
                             if pct > last_pct:
                                 last_pct = pct
-                                yield {"progress": pct, "stage": "燒入字幕"}
+                                yield {"progress": pct, "stage": "燒入字幕",
+                                       "eta_seconds": calc_eta(total_duration + us / 1_000_000)}
                     except ValueError:
                         pass
                 elif line == "progress=end":
@@ -423,7 +471,7 @@ class FFmpegService:
                 print(f"❌ 燒入失敗:\n{err_msg}")
                 raise subprocess.CalledProcessError(proc.returncode, cmd_burn)
 
-            yield {"progress": 100}
+            yield {"progress": 100, "eta_seconds": 0}
             print(f"✅ 多 clip 匯出完成: {output_path}")
 
         finally:

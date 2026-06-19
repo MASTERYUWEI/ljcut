@@ -240,7 +240,7 @@ export const api = {
         defaultFileName: string,
         videoWidth: number,
         videoHeight: number,
-        onProgress: (pct: number, stage?: string) => void,
+        onProgress: (pct: number, stage?: string, etaSeconds?: number | null) => void,
     ): Promise<{ outputPath: string } | null> {
         // 1. 存檔對話框
         let outputPath = '';
@@ -295,7 +295,7 @@ export const api = {
                 try {
                     const evt = JSON.parse(dataLine.slice(6));
                     if (evt.error) throw new Error(evt.error);
-                    if (evt.progress != null) onProgress(evt.progress, evt.stage);
+                    if (evt.progress != null) onProgress(evt.progress, evt.stage, evt.eta_seconds);
                     if (evt.output_path) finalPath = evt.output_path;
                 } catch (e) {
                     if (e instanceof Error && e.message) throw e;

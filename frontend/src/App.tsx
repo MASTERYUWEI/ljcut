@@ -43,6 +43,8 @@ export default function App() {
     const [aiExpanded, setAiExpanded] = useState(false);
     const [isBurning, setIsBurning] = useState(false);
     const [exportProgress, setExportProgress] = useState(-1); // -1=idle, 0~100=progress
+    const [exportEta, setExportEta] = useState<number | null>(null); // 預估剩餘秒數
+    const [exportStage, setExportStage] = useState(''); // 目前階段文字
     const [isDraggingPlayhead, setIsDraggingPlayhead] = useState(false);
     const [snapTime, setSnapTime] = useState<number | null>(null);
     const [isDraggingPreview, setIsDraggingPreview] = useState(false);
@@ -815,6 +817,8 @@ export default function App() {
 
         setIsBurning(true);
         setExportProgress(0);
+        setExportEta(null);
+        setExportStage('準備中');
         try {
             const v = videoRef.current;
             const videoW = v?.videoWidth || 1920;
@@ -861,7 +865,7 @@ export default function App() {
                     subtitleStyle as unknown as Record<string, unknown>,
                     defaultFileName,
                     videoW, videoH,
-                    (pct) => setExportProgress(pct),
+                    (pct, stage, eta) => { setExportProgress(pct); setExportStage(stage ?? ''); setExportEta(eta ?? null); },
                 );
             }
 
@@ -2266,7 +2270,7 @@ export default function App() {
                     onClose={() => setSpeedMenu(null)}
                 />
             )}
-            {exportProgress >= 0 && <ExportProgress progress={exportProgress} />}
+            {exportProgress >= 0 && <ExportProgress progress={exportProgress} etaSeconds={exportEta} stage={exportStage} />}
         </>
     );
 }
