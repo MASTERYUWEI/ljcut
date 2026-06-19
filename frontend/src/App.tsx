@@ -667,10 +667,13 @@ export default function App() {
         const nextStart = Math.min(Infinity, ...same.filter(c => c.startTime >= R - 1e-3).map(c => c.startTime));
 
         const cv = document.querySelector<HTMLCanvasElement>(`canvas[data-clip-id="${clipId}"]`);
+        // 根因：.waveform-canvas 是 width:100%，拖曳時片段 div 縮小 → 凍結的點陣圖被「每幀橫向重縮放」
+        // → 波形漂移。對策：拖曳期間把 canvas 顯示寬度釘死成拖曳前的像素寬，絕不隨 div 縮放。
+        const cvW0 = cv ? (cv.style.width || cv.getBoundingClientRect().width + 'px') : '';
+        adjustingRef.current = true; // mousedown 即凍結重繪（避免首幀競態）
         let undoPushed = false;
         const onMove = (ev: MouseEvent) => {
             if (!undoPushed) { undoPushed = true; pushUndo(); } // 第一次實際拖動才記錄 undo
-            adjustingRef.current = true; // 拖曳中：波形凍結不重繪
             const dx = (ev.clientX - startX) / pixelsPerSecond;
             if (edge === 'left') {
                 const maxDur = o.trimEnd / speed; // trimStart 最多回到 0
@@ -679,20 +682,24 @@ export default function App() {
                 const duration = R - newStart;
                 const trimStart = Math.max(0, o.trimEnd - duration * speed);
                 updateClip(clipId, { startTime: newStart, duration, trimStart });
-                // 凍結的波形用 CSS 平移補償片段左移 → 左裁切時內容平滑不抖
-                if (cv) cv.style.transform = `translateX(${-(newStart - o.startTime) * pixelsPerSecond}px)`;
+                if (cv) {
+                    cv.style.width = cvW0; // 釘死寬度→不重縮放
+                    // 整數平移補償片段左移（與 div left 同格對齊，避免次像素抖動）
+                    cv.style.transform = `translateX(${-Math.round((newStart - o.startTime) * pixelsPerSecond)}px)`;
+                }
             } else {
                 const maxEnd = Math.min(o.startTime + (mediaDur - o.trimStart) / speed, nextStart);
                 const newEnd = Math.max(Math.min(R + dx, maxEnd), o.startTime + MIN);
                 const duration = newEnd - o.startTime;
                 const trimEnd = Math.min(mediaDur, o.trimStart + duration * speed);
                 updateClip(clipId, { duration, trimEnd });
+                if (cv) cv.style.width = cvW0; // 右裁切只需釘寬（左邊固定、不需平移）
             }
         };
         const onUp = () => {
             adjustingRef.current = false;
-            if (cv) cv.style.transform = '';
-            requestAnimationFrame(() => redrawWaveformsRef.current()); // 放開後重繪一次（已是最終尺寸）
+            // 不在此清 transform/width（會閃一幀）；交給 redrawWaveforms 重設為最終正確值
+            requestAnimationFrame(() => redrawWaveformsRef.current());
             window.removeEventListener('mousemove', onMove);
             window.removeEventListener('mouseup', onUp);
         };
