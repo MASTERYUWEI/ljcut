@@ -1,18 +1,20 @@
-/* ── 片段倍速右鍵選單 ── */
+/* ── 片段右鍵選單（分割 / 刪除 / 倍速）── */
 import type { TimelineClip } from '../types';
+import { formatTimestamp } from '../utils';
 
 interface Props {
     clip: TimelineClip;
     x: number;
     y: number;
     canSplit: boolean;
+    splitTime: number;
     onSplit: () => void;
     onDelete: () => void;
     onSetSpeed: (clipId: string, speed: number) => void;
     onClose: () => void;
 }
 
-export function SpeedMenu({ clip, x, y, canSplit, onSplit, onDelete, onSetSpeed, onClose }: Props) {
+export function SpeedMenu({ clip, x, y, canSplit, splitTime, onSplit, onDelete, onSetSpeed, onClose }: Props) {
     return (
         <div className="speed-menu-backdrop" onClick={onClose}>
             <div
@@ -27,10 +29,10 @@ export function SpeedMenu({ clip, x, y, canSplit, onSplit, onDelete, onSetSpeed,
                     className="speed-preset-btn"
                     style={{ width: '100%', marginBottom: 10, opacity: canSplit ? 1 : 0.4, cursor: canSplit ? 'pointer' : 'not-allowed' }}
                     disabled={!canSplit}
-                    title={canSplit ? '在播放點把此片段切成兩段' : '請先把播放點移到此片段中間'}
+                    title={canSplit ? '在播放線位置把此片段切成兩段' : '請先把播放線(時間軸游標)移到此片段中間'}
                     onClick={onSplit}
                 >
-                    ✂️ 在此處分割
+                    {canSplit ? `✂️ 在播放線分割 (${formatTimestamp(splitTime)})` : '✂️ 分割（播放線不在此片段）'}
                 </button>
                 <button
                     className="speed-preset-btn"

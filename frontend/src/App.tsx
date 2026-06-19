@@ -2134,13 +2134,8 @@ export default function App() {
                                                     onContextMenu={(e) => {
                                                         e.preventDefault();
                                                         e.stopPropagation();
-                                                        const elt = tracksRef.current;
-                                                        let st = timelinePosRef.current;
-                                                        if (elt) {
-                                                            const rect = elt.getBoundingClientRect();
-                                                            st = (e.clientX - rect.left + elt.scrollLeft - LABEL_W) / pixelsPerSecond;
-                                                        }
-                                                        setSpeedMenu({ clipId: clip.id, x: e.clientX, y: e.clientY, splitTime: st });
+                                                        // 切點 = 播放線位置（不是滑鼠點的位置，才精確可控）
+                                                        setSpeedMenu({ clipId: clip.id, x: e.clientX, y: e.clientY, splitTime: timelinePosRef.current });
                                                     }}
                                                     title={`${media?.filename ?? 'clip'}${clip.speed !== 1 ? ` (${clip.speed}x)` : ''}\n${formatTimestamp(clip.startTime)} → ${formatTimestamp(clip.startTime + clip.duration)}\n拖曳左右邊緣可裁切；右鍵可分割/刪除`}>
                                                     <canvas data-clip-id={clip.id} className="waveform-canvas" />
@@ -2337,6 +2332,7 @@ export default function App() {
                     x={speedMenu.x}
                     y={speedMenu.y}
                     canSplit={canSplitMenuClip}
+                    splitTime={splitT}
                     onSplit={() => handleSplitClip(speedMenuClip.id, splitT)}
                     onDelete={() => handleClipDelete(speedMenuClip.id)}
                     onSetSpeed={setClipSpeed}
