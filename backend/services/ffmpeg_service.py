@@ -236,6 +236,27 @@ class FFmpegService:
         total_clips = len(clips)
         total_duration = sum(c.get("output_duration", 0) for c in clips)
 
+        # 目標 fps：取各段來源最高 fps（避免把 60fps 錄影降成 30 變頓），夾 24~60
+        target_fps = 30
+        try:
+            fps_list = []
+            for c in clips:
+                pr = subprocess.run(
+                    ["ffprobe", "-v", "error", "-select_streams", "v:0",
+                     "-show_entries", "stream=avg_frame_rate", "-of", "default=nk=1:nw=1",
+                     c["video_path"]],
+                    capture_output=True, timeout=30)
+                raw = pr.stdout.decode("utf-8", "ignore").strip()
+                if "/" in raw:
+                    n, d = raw.split("/")
+                    if float(d) > 0:
+                        fps_list.append(float(n) / float(d))
+            if fps_list:
+                target_fps = max(24, min(60, round(max(fps_list))))
+        except Exception as e:
+            print(f"⚠️ fps 偵測失敗，用預設 {target_fps}: {e}")
+        print(f"🎞️ 匯出統一 fps = {target_fps}")
+
         try:
             # ── Step 1: 逐 clip 產生標準化暫存檔 ──
             for idx, clip in enumerate(clips):
@@ -256,31 +277,38 @@ class FFmpegService:
                 if clip_dur > 0:
                     cmd += ["-t", str(clip_dur)]
 
-                # 統一解析度 + 變速
-                vf_parts = [f"scale={video_width}:{video_height}:force_original_aspect_ratio=decrease",
-                            f"pad={video_width}:{video_height}:(ow-iw)/2:(oh-ih)/2:black",
-                            "setsar=1"]
-                if speed != 1.0:
-                    vf_parts.insert(0, f"setpts=PTS/{speed}")
-
+                # 統一解析度 + 變速 + 重置 PTS + 統一 fps（concat 要求各段參數一致，
+                # 否則 fps/timebase 不同會造成影像錯位、白畫面凍結直到時間戳追上）
+                # setpts=(PTS-STARTPTS)/speed：把每段起點歸零，順便套變速（speed=1 即純歸零）
+                speed_expr = f"(PTS-STARTPTS)/{speed}" if speed != 1.0 else "PTS-STARTPTS"
+                vf_parts = [
+                    f"setpts={speed_expr}",
+                    f"scale={video_width}:{video_height}:force_original_aspect_ratio=decrease",
+                    f"pad={video_width}:{video_height}:(ow-iw)/2:(oh-ih)/2:black",
+                    "setsar=1",
+                    f"fps={target_fps}",  # 統一影格率 → 強制 CFR
+                ]
                 cmd += ["-vf", ",".join(vf_parts)]
 
-                # 音訊變速
+                # 音訊：重置 PTS（+ 變速）並統一格式
+                af_parts = ["asetpts=PTS-STARTPTS"]
                 if speed != 1.0:
-                    atempo_parts = []
                     remaining = speed
                     while remaining > 2.0:
-                        atempo_parts.append("atempo=2.0")
+                        af_parts.append("atempo=2.0")
                         remaining /= 2.0
                     if remaining < 0.5:
                         remaining = 0.5
-                    atempo_parts.append(f"atempo={remaining:.4f}")
-                    cmd += ["-af", ",".join(atempo_parts)]
+                    af_parts.append(f"atempo={remaining:.4f}")
+                cmd += ["-af", ",".join(af_parts)]
 
                 cmd += [
+                    "-r", str(target_fps),
+                    "-fps_mode", "cfr",  # 強制固定影格率輸出
                     "-c:v", "libx264", "-preset", "fast", "-crf", "18",
-                    "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
+                    "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
                     "-pix_fmt", "yuv420p",
+                    "-video_track_timescale", "90000",  # 統一時間基，concat 才不會錯位
                     "-avoid_negative_ts", "make_zero",
                     temp_out,
                 ]
