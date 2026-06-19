@@ -1715,7 +1715,16 @@ export default function App() {
             const canvas = document.querySelector<HTMLCanvasElement>(`canvas[data-clip-id="${clip.id}"]`);
             if (!canvas) continue;
             const clipWidthPx = clip.duration * pixelsPerSecond;
-            drawClipWaveform(canvas, media.waveformPeaks, clipWidthPx);
+            // 只取「裁切後可見範圍 [trimStart, trimEnd]」對應的波形，避免整段被等比例壓窄
+            const full = media.waveformPeaks;
+            const dur = media.info.duration || 0;
+            let peaks = full;
+            if (dur > 0) {
+                const s = Math.max(0, Math.floor((clip.trimStart / dur) * full.length));
+                const e = Math.min(full.length, Math.ceil((clip.trimEnd / dur) * full.length));
+                if (e > s) peaks = full.slice(s, e);
+            }
+            drawClipWaveform(canvas, peaks, clipWidthPx);
         }
     }, [timelineClips, mediaItems, pixelsPerSecond, drawClipWaveform]);
 
