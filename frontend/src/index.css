@@ -627,6 +627,26 @@ body {
   transform: scaleY(1.03);
 }
 
+/* 片段左右裁切拉桿 */
+.clip-trim-handle {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  width: 9px;
+  cursor: ew-resize;
+  z-index: 3;
+  background: transparent;
+}
+.clip-trim-left { left: 0; }
+.clip-trim-right { right: 0; }
+.track-clip:hover .clip-trim-handle {
+  background: rgba(255, 255, 255, 0.18);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.35);
+}
+.clip-trim-handle:hover {
+  background: rgba(96, 165, 250, 0.55) !important;
+}
+
 .clip-text {
   font-size: 10px;
   font-family: var(--font-mono);

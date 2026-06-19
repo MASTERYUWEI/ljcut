@@ -71,7 +71,7 @@ export default function App() {
     const micMeterFillRef = useRef<HTMLDivElement>(null);
     const micMeterValRef = useRef<HTMLSpanElement>(null);
     // ── 倍速右鍵選單 ──
-    const [speedMenu, setSpeedMenu] = useState<{ clipId: string; x: number; y: number } | null>(null);
+    const [speedMenu, setSpeedMenu] = useState<{ clipId: string; x: number; y: number; splitTime: number } | null>(null);
 
     // ── 系統音訊 loopback 裝置偵測（獨立於麥克風，設定面板開啟時觸發） ──
     useEffect(() => {
@@ -289,7 +289,7 @@ export default function App() {
         isUploading, isTranscribing, language,
         getDuration,
         addMedia, removeMedia, updateMedia,
-        addClip, updateClip, removeClip: _removeClip, setClipSpeed,
+        addClip, updateClip, removeClip, setClipSpeed,
         setClipSegments,
         setSegments, updateSegment, setActiveSegment,
         setSubtitleStyle,
@@ -633,6 +633,56 @@ export default function App() {
         window.addEventListener('mousemove', onMove);
         window.addEventListener('mouseup', onUp);
     }, [timelineClips, pixelsPerSecond, SNAP_THRESHOLD_SEC, updateClip, resolveOverlaps]);
+
+    // ── 片段邊緣拉桿（trim）：左拉桿改 in 點(右邊固定)、右拉桿改 out 點(左邊固定）──
+    const handleClipTrim = useCallback((e: React.MouseEvent, clipId: string, edge: 'left' | 'right') => {
+        e.preventDefault();
+        e.stopPropagation(); // 不要觸發整段拖動
+        const clip = timelineClips.find(c => c.id === clipId);
+        if (!clip) return;
+        const media = mediaItems.find(m => m.id === clip.mediaId);
+        const mediaDur = media?.info.duration ?? clip.trimEnd;
+        const speed = clip.speed || 1;
+        const MIN = 0.1; // 最短片段（秒）
+        const startX = e.clientX;
+        const o = { startTime: clip.startTime, duration: clip.duration, trimStart: clip.trimStart, trimEnd: clip.trimEnd };
+        const R = o.startTime + o.duration;
+        // 鄰段邊界（同軌，trim 不可越界造成重疊）
+        const same = timelineClips.filter(c => c.id !== clipId && c.trackIndex === clip.trackIndex);
+        const prevEnd = Math.max(0, ...same.filter(c => c.startTime + c.duration <= o.startTime + 1e-3).map(c => c.startTime + c.duration));
+        const nextStart = Math.min(Infinity, ...same.filter(c => c.startTime >= R - 1e-3).map(c => c.startTime));
+
+        const onMove = (ev: MouseEvent) => {
+            const dx = (ev.clientX - startX) / pixelsPerSecond;
+            if (edge === 'left') {
+                const maxDur = o.trimEnd / speed; // trimStart 最多回到 0
+                const minStart = Math.max(0, prevEnd, R - maxDur);
+                const newStart = Math.min(Math.max(o.startTime + dx, minStart), R - MIN);
+                const duration = R - newStart;
+                const trimStart = Math.max(0, o.trimEnd - duration * speed);
+                updateClip(clipId, { startTime: newStart, duration, trimStart });
+            } else {
+                const maxEnd = Math.min(o.startTime + (mediaDur - o.trimStart) / speed, nextStart);
+                const newEnd = Math.max(Math.min(R + dx, maxEnd), o.startTime + MIN);
+                const duration = newEnd - o.startTime;
+                const trimEnd = Math.min(mediaDur, o.trimStart + duration * speed);
+                updateClip(clipId, { duration, trimEnd });
+            }
+        };
+        const onUp = () => {
+            window.removeEventListener('mousemove', onMove);
+            window.removeEventListener('mouseup', onUp);
+        };
+        window.addEventListener('mousemove', onMove);
+        window.addEventListener('mouseup', onUp);
+    }, [timelineClips, mediaItems, pixelsPerSecond, updateClip]);
+
+    // ── 刪除片段（右鍵選單）──
+    const handleClipDelete = useCallback((clipId: string) => {
+        removeClip(clipId);
+        if (activeClipId === clipId) setActiveClipId(null);
+        setSpeedMenu(null);
+    }, [removeClip, activeClipId, setActiveClipId]);
 
     // ── Cue Splitting：超長字幕自動分段（語義斷句） ──
     const splitLongCues = useCallback((segs: typeof segments, maxChars: number) => {
@@ -2075,12 +2125,25 @@ export default function App() {
                                                     onContextMenu={(e) => {
                                                         e.preventDefault();
                                                         e.stopPropagation();
-                                                        setSpeedMenu({ clipId: clip.id, x: e.clientX, y: e.clientY });
+                                                        const elt = tracksRef.current;
+                                                        let st = timelinePosRef.current;
+                                                        if (elt) {
+                                                            const rect = elt.getBoundingClientRect();
+                                                            st = (e.clientX - rect.left + elt.scrollLeft - LABEL_W) / pixelsPerSecond;
+                                                        }
+                                                        setSpeedMenu({ clipId: clip.id, x: e.clientX, y: e.clientY, splitTime: st });
                                                     }}
-                                                    title={`${media?.filename ?? 'clip'}${clip.speed !== 1 ? ` (${clip.speed}x)` : ''}\n${formatTimestamp(clip.startTime)} → ${formatTimestamp(clip.startTime + clip.duration)}`}>
+                                                    title={`${media?.filename ?? 'clip'}${clip.speed !== 1 ? ` (${clip.speed}x)` : ''}\n${formatTimestamp(clip.startTime)} → ${formatTimestamp(clip.startTime + clip.duration)}\n拖曳左右邊緣可裁切；右鍵可分割/刪除`}>
                                                     <canvas data-clip-id={clip.id} className="waveform-canvas" />
                                                     <span className="clip-text clip-text-over-waveform">{media?.filename ?? ''}</span>
                                                     {clip.speed !== 1 && <span style={{ position: 'absolute', right: 4, top: 2, fontSize: 10, color: '#fbbf24', fontWeight: 700 }}>⚡{clip.speed}x</span>}
+                                                    {/* 左右裁切拉桿 */}
+                                                    <div className="clip-trim-handle clip-trim-left"
+                                                        onMouseDown={(e) => handleClipTrim(e, clip.id, 'left')}
+                                                        title="拖曳裁切開頭" />
+                                                    <div className="clip-trim-handle clip-trim-right"
+                                                        onMouseDown={(e) => handleClipTrim(e, clip.id, 'right')}
+                                                        title="拖曳裁切結尾" />
                                                 </div>
                                             );
                                         })}
@@ -2215,13 +2278,12 @@ export default function App() {
     );
 
     // ── 在播放點分割片段 ──
-    const handleSplitClip = useCallback((clipId: string) => {
+    const handleSplitClip = useCallback((clipId: string, T: number) => {
         const clip = timelineClips.find(c => c.id === clipId);
         if (!clip) return;
-        const T = timelinePosRef.current; // 播放點（時間軸秒）
         const eps = 0.001;
         if (T <= clip.startTime + eps || T >= clip.startTime + clip.duration - eps) {
-            alert('請先把播放點移到這個片段中間，再分割');
+            alert('請在片段中間的位置按右鍵再分割');
             return;
         }
         // 時間軸時間 → 媒體時間（segments 的 start/end 為媒體時間）
@@ -2251,10 +2313,11 @@ export default function App() {
 
     // ── 倍速右鍵選單 portal（放在最外層避免被截斷） ──
     const speedMenuClip = speedMenu ? timelineClips.find(c => c.id === speedMenu.clipId) : null;
-    // 播放點是否落在該片段中間（決定「分割」可否點）
+    // 右鍵點到的位置是否落在該片段中間（決定「分割」可否點）
+    const splitT = speedMenu?.splitTime ?? -1;
     const canSplitMenuClip = !!speedMenuClip
-        && timelinePosRef.current > speedMenuClip.startTime + 0.001
-        && timelinePosRef.current < speedMenuClip.startTime + speedMenuClip.duration - 0.001;
+        && splitT > speedMenuClip.startTime + 0.001
+        && splitT < speedMenuClip.startTime + speedMenuClip.duration - 0.001;
 
     return (
         <>
@@ -2265,7 +2328,8 @@ export default function App() {
                     x={speedMenu.x}
                     y={speedMenu.y}
                     canSplit={canSplitMenuClip}
-                    onSplit={() => handleSplitClip(speedMenuClip.id)}
+                    onSplit={() => handleSplitClip(speedMenuClip.id, splitT)}
+                    onDelete={() => handleClipDelete(speedMenuClip.id)}
                     onSetSpeed={setClipSpeed}
                     onClose={() => setSpeedMenu(null)}
                 />
