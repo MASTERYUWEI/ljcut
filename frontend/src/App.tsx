@@ -1677,7 +1677,7 @@ export default function App() {
     }, [isPlaying, currentTime, timelineClips, segments]);
 
     // ── Per-clip 波形繪製 ──
-    const drawClipWaveform = useCallback((canvas: HTMLCanvasElement, peaks: number[], clipWidthPx: number) => {
+    const drawClipWaveform = useCallback((canvas: HTMLCanvasElement, peaks: number[], clipWidthPx: number, maxAmp: number) => {
         if (peaks.length === 0 || clipWidthPx <= 0) return;
         const h = canvas.parentElement?.clientHeight || 60;
         const dpr = window.devicePixelRatio || 1;
@@ -1705,7 +1705,7 @@ export default function App() {
         const cellH = 4, gapY = 1.5, gapX = 1;
         const barW = Math.max(3, w / peaksToRender.length - gapX);
         const maxCells = Math.floor(h / (cellH + gapY));
-        const maxAmp = Math.max(...peaksToRender, 0.01);
+        // maxAmp 由呼叫端以「整段媒體」最大值傳入，確保同一影片切成多段後高度一致
 
         for (let i = 0; i < peaksToRender.length; i++) {
             const norm = peaksToRender[i] / maxAmp;
@@ -1730,13 +1730,15 @@ export default function App() {
             // 只取「裁切後可見範圍 [trimStart, trimEnd]」對應的波形，避免整段被等比例壓窄
             const full = media.waveformPeaks;
             const dur = media.info.duration || 0;
+            // 用「整段媒體」的最大振幅正規化 → 同一影片切成多段後，各段高度一致（不跳動）
+            const fullMax = full.reduce((m, v) => (v > m ? v : m), 0.01);
             let peaks = full;
             if (dur > 0) {
                 const s = Math.max(0, Math.floor((clip.trimStart / dur) * full.length));
                 const e = Math.min(full.length, Math.ceil((clip.trimEnd / dur) * full.length));
                 if (e > s) peaks = full.slice(s, e);
             }
-            drawClipWaveform(canvas, peaks, clipWidthPx);
+            drawClipWaveform(canvas, peaks, clipWidthPx, fullMax);
         }
     }, [timelineClips, mediaItems, pixelsPerSecond, drawClipWaveform]);
 
@@ -2210,6 +2212,17 @@ export default function App() {
                                         className={`timeline-playhead ${isDraggingPlayhead ? 'dragging' : ''}`}
                                         style={{ left: 0, transform: `translateX(${currentTime * pixelsPerSecond + LABEL_W}px)` }}
                                         onMouseDown={handlePlayheadMouseDown}
+                                        onContextMenu={(e) => {
+                                            // 右鍵點在播放線上 → 直接對「播放線下的片段」開分割選單
+                                            e.preventDefault();
+                                            e.stopPropagation();
+                                            const t = timelinePosRef.current;
+                                            const clip = timelineClips.find(c => c.trackIndex === 0 && t >= c.startTime && t < c.startTime + c.duration);
+                                            if (clip) {
+                                                speedUndoPushedRef.current = false;
+                                                setSpeedMenu({ clipId: clip.id, x: e.clientX, y: e.clientY, splitTime: t });
+                                            }
+                                        }}
                                     />
                                 )}
 
