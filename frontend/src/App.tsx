@@ -73,6 +73,8 @@ export default function App() {
     // ── 倍速右鍵選單 ──
     const [speedMenu, setSpeedMenu] = useState<{ clipId: string; x: number; y: number; splitTime: number } | null>(null);
     const speedUndoPushedRef = useRef(false); // 同一次右鍵選單調速只記一次 undo
+    const adjustingRef = useRef(false); // 拖曳裁切/移動片段中：波形暫停重繪以免抖動
+    const redrawWaveformsRef = useRef<() => void>(() => {}); // 指向 redrawWaveforms（避免宣告順序 TDZ）
 
     // ── 系統音訊 loopback 裝置偵測（獨立於麥克風，設定面板開啟時觸發） ──
     useEffect(() => {
@@ -606,6 +608,7 @@ export default function App() {
         let undoPushed = false;
         const onMove = (ev: MouseEvent) => {
             if (!undoPushed) { undoPushed = true; pushUndo(); } // 第一次實際拖動才記錄 undo
+            adjustingRef.current = true; // 拖曳中：波形凍結（整段隨片段移動，內容不變）
             const dx = ev.clientX - startX;
             let newStart = Math.max(0, startTime + dx / pixelsPerSecond);
 
@@ -634,6 +637,8 @@ export default function App() {
         };
         const onUp = () => {
             resolveOverlaps(clipId); // 放開後把重疊到的鄰段推開
+            adjustingRef.current = false;
+            requestAnimationFrame(() => redrawWaveformsRef.current());
             setDraggingClipId(null);
             setSnapTime(null);
             window.removeEventListener('mousemove', onMove);
@@ -661,9 +666,11 @@ export default function App() {
         const prevEnd = Math.max(0, ...same.filter(c => c.startTime + c.duration <= o.startTime + 1e-3).map(c => c.startTime + c.duration));
         const nextStart = Math.min(Infinity, ...same.filter(c => c.startTime >= R - 1e-3).map(c => c.startTime));
 
+        const cv = document.querySelector<HTMLCanvasElement>(`canvas[data-clip-id="${clipId}"]`);
         let undoPushed = false;
         const onMove = (ev: MouseEvent) => {
             if (!undoPushed) { undoPushed = true; pushUndo(); } // 第一次實際拖動才記錄 undo
+            adjustingRef.current = true; // 拖曳中：波形凍結不重繪
             const dx = (ev.clientX - startX) / pixelsPerSecond;
             if (edge === 'left') {
                 const maxDur = o.trimEnd / speed; // trimStart 最多回到 0
@@ -672,6 +679,8 @@ export default function App() {
                 const duration = R - newStart;
                 const trimStart = Math.max(0, o.trimEnd - duration * speed);
                 updateClip(clipId, { startTime: newStart, duration, trimStart });
+                // 凍結的波形用 CSS 平移補償片段左移 → 左裁切時內容平滑不抖
+                if (cv) cv.style.transform = `translateX(${-(newStart - o.startTime) * pixelsPerSecond}px)`;
             } else {
                 const maxEnd = Math.min(o.startTime + (mediaDur - o.trimStart) / speed, nextStart);
                 const newEnd = Math.max(Math.min(R + dx, maxEnd), o.startTime + MIN);
@@ -681,6 +690,9 @@ export default function App() {
             }
         };
         const onUp = () => {
+            adjustingRef.current = false;
+            if (cv) cv.style.transform = '';
+            requestAnimationFrame(() => redrawWaveformsRef.current()); // 放開後重繪一次（已是最終尺寸）
             window.removeEventListener('mousemove', onMove);
             window.removeEventListener('mouseup', onUp);
         };
@@ -1717,29 +1729,36 @@ export default function App() {
         }
     }, []);
 
-    useEffect(() => {
-        for (const clip of timelineClips) {
-            const media = mediaItems.find(m => m.id === clip.mediaId);
-            if (!media || media.waveformPeaks.length === 0) continue;
+    const redrawWaveforms = useCallback(() => {
+        const { timelineClips: clips, mediaItems: media } = useStore.getState();
+        for (const clip of clips) {
+            const m = media.find(x => x.id === clip.mediaId);
+            if (!m || m.waveformPeaks.length === 0) continue;
             const canvas = document.querySelector<HTMLCanvasElement>(`canvas[data-clip-id="${clip.id}"]`);
             if (!canvas) continue;
+            canvas.style.transform = ''; // 清掉拖曳期間的暫時平移
             const clipWidthPx = clip.duration * pixelsPerSecond;
-            const full = media.waveformPeaks;
-            const dur = media.info.duration || 0;
-            if (dur <= 0) { drawClipWaveform(canvas, full, clipWidthPx, full.reduce((m, v) => (v > m ? v : m), 0.01), clipWidthPx / Math.max(full.length, 1), 0); continue; }
+            const full = m.waveformPeaks;
+            const dur = m.info.duration || 0;
             // 用「整段媒體」最大振幅正規化 → 切成多段後各段高度一致
-            const fullMax = full.reduce((m, v) => (v > m ? v : m), 0.01);
+            const fullMax = full.reduce((a, v) => (v > a ? v : a), 0.01);
+            if (dur <= 0) { drawClipWaveform(canvas, full, clipWidthPx, fullMax, clipWidthPx / Math.max(full.length, 1), 0); continue; }
             const sps = full.length / dur;                 // 每媒體秒的 peak 數
             const step = pixelsPerSecond / (sps * clip.speed); // 每個 peak 的時間軸像素步距（固定）
-            const sExact = clip.trimStart * sps;           // trimStart 對應的小數 peak 索引
+            const sExact = clip.trimStart * sps;
             const s = Math.max(0, Math.floor(sExact));
             const e = Math.min(full.length, Math.ceil(clip.trimEnd * sps));
-            // 只取可見範圍的 peak；offset 補整數切片殘差，讓 trim 平滑不抖
             const peaks = e > s ? full.slice(s, e) : full;
             const offset = -(sExact - s) * step;
             drawClipWaveform(canvas, peaks, clipWidthPx, fullMax, step, offset);
         }
-    }, [timelineClips, mediaItems, pixelsPerSecond, drawClipWaveform]);
+    }, [pixelsPerSecond, drawClipWaveform]);
+    redrawWaveformsRef.current = redrawWaveforms; // 供拖曳 onUp 透過 ref 呼叫（避開 TDZ）
+
+    useEffect(() => {
+        if (adjustingRef.current) return; // 拖曳中不重繪（避免抖動），放開時再由 onUp 重繪
+        redrawWaveforms();
+    }, [redrawWaveforms, timelineClips, mediaItems]);
 
     const rulerTicks = generateRulerTicks(duration, pixelsPerSecond);
 
