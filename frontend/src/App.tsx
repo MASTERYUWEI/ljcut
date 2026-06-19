@@ -2181,8 +2181,47 @@ export default function App() {
         </div>
     );
 
+    // ── 在播放點分割片段 ──
+    const handleSplitClip = useCallback((clipId: string) => {
+        const clip = timelineClips.find(c => c.id === clipId);
+        if (!clip) return;
+        const T = timelinePosRef.current; // 播放點（時間軸秒）
+        const eps = 0.001;
+        if (T <= clip.startTime + eps || T >= clip.startTime + clip.duration - eps) {
+            alert('請先把播放點移到這個片段中間，再分割');
+            return;
+        }
+        // 時間軸時間 → 媒體時間（segments 的 start/end 為媒體時間）
+        const mediaTime = clip.trimStart + (T - clip.startTime) * clip.speed;
+        const segs = clip.segments ?? [];
+        const leftSegs = segs.filter(s => s.start < mediaTime).map(s => ({ ...s, end: Math.min(s.end, mediaTime) }));
+        const rightSegs = segs.filter(s => s.end > mediaTime).map(s => ({ ...s, start: Math.max(s.start, mediaTime) }));
+        pushUndo();
+        // 左段：縮到切點
+        updateClip(clip.id, {
+            trimEnd: mediaTime,
+            duration: (mediaTime - clip.trimStart) / clip.speed,
+            segments: leftSegs,
+        });
+        // 右段：新片段（共用同一 mediaId）
+        addClip({
+            ...clip,
+            id: crypto.randomUUID(),
+            startTime: T,
+            trimStart: mediaTime,
+            trimEnd: clip.trimEnd,
+            duration: (clip.trimEnd - mediaTime) / clip.speed,
+            segments: rightSegs,
+        });
+        setSpeedMenu(null);
+    }, [timelineClips, updateClip, addClip, pushUndo]);
+
     // ── 倍速右鍵選單 portal（放在最外層避免被截斷） ──
     const speedMenuClip = speedMenu ? timelineClips.find(c => c.id === speedMenu.clipId) : null;
+    // 播放點是否落在該片段中間（決定「分割」可否點）
+    const canSplitMenuClip = !!speedMenuClip
+        && timelinePosRef.current > speedMenuClip.startTime + 0.001
+        && timelinePosRef.current < speedMenuClip.startTime + speedMenuClip.duration - 0.001;
 
     return (
         <>
@@ -2192,6 +2231,8 @@ export default function App() {
                     clip={speedMenuClip}
                     x={speedMenu.x}
                     y={speedMenu.y}
+                    canSplit={canSplitMenuClip}
+                    onSplit={() => handleSplitClip(speedMenuClip.id)}
                     onSetSpeed={setClipSpeed}
                     onClose={() => setSpeedMenu(null)}
                 />

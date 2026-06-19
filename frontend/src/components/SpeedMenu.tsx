@@ -5,11 +5,13 @@ interface Props {
     clip: TimelineClip;
     x: number;
     y: number;
+    canSplit: boolean;
+    onSplit: () => void;
     onSetSpeed: (clipId: string, speed: number) => void;
     onClose: () => void;
 }
 
-export function SpeedMenu({ clip, x, y, onSetSpeed, onClose }: Props) {
+export function SpeedMenu({ clip, x, y, canSplit, onSplit, onSetSpeed, onClose }: Props) {
     return (
         <div className="speed-menu-backdrop" onClick={onClose}>
             <div
@@ -20,6 +22,15 @@ export function SpeedMenu({ clip, x, y, onSetSpeed, onClose }: Props) {
                 }}
                 onClick={(e) => e.stopPropagation()}
             >
+                <button
+                    className="speed-preset-btn"
+                    style={{ width: '100%', marginBottom: 10, opacity: canSplit ? 1 : 0.4, cursor: canSplit ? 'pointer' : 'not-allowed' }}
+                    disabled={!canSplit}
+                    title={canSplit ? '在播放點把此片段切成兩段' : '請先把播放點移到此片段中間'}
+                    onClick={onSplit}
+                >
+                    ✂️ 在播放點分割
+                </button>
                 <div className="speed-menu-title">⚡ 影片速度</div>
                 <div className="speed-menu-value">{clip.speed.toFixed(1)}x</div>
                 <input type="range" className="speed-slider"
