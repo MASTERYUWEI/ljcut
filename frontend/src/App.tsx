@@ -1,6 +1,6 @@
 /* ── LJCUT 主應用 ── */
 
-import { useRef, useCallback, useState, useEffect, useMemo } from 'react';
+import { useRef, useCallback, useState, useEffect, useLayoutEffect, useMemo } from 'react';
 import { useStore } from './store';
 import { api } from './api';
 import type { MediaItem, TimelineClip, Segment, AppSettings, RecOpts, MicDevice } from './types';
@@ -1716,7 +1716,8 @@ export default function App() {
     }, []);
 
     // 媒體/縮放/速度變更時重畫底片；裁切/移動因 fullWidth 不變 → guard 內部略過(零重畫)
-    useEffect(() => {
+    // useLayoutEffect：在瀏覽器繪製前同步執行，避免「狀態變更→畫面已動，canvas 慢一幀」的延遲抖動
+    useLayoutEffect(() => {
         for (const clip of timelineClips) {
             const m = mediaItems.find(x => x.id === clip.mediaId);
             if (!m || m.waveformPeaks.length === 0) continue;
