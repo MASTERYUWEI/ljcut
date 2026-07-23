@@ -19,10 +19,23 @@ async function tauriInvoke<T>(cmd: string, args?: Record<string, unknown>): Prom
  */
 let resolvedBase = '';
 
+// ── 後端就緒通知（App 掛載後訂閱，顯示/隱藏啟動畫面）──
+let _apiReady = false;
+const _readyCbs: (() => void)[] = [];
+export function onApiReady(cb: () => void): void {
+    if (_apiReady) cb();
+    else _readyCbs.push(cb);
+}
+function _markReady(): void {
+    _apiReady = true;
+    _readyCbs.splice(0).forEach(cb => { try { cb(); } catch { /* noop */ } });
+}
+
 /** 在 App 掛載前呼叫一次：解析後端 port 並等待後端就緒 */
 export async function initApiBase(): Promise<void> {
     if (!IS_TAURI) {
         resolvedBase = ''; // Vite proxy
+        _markReady();
         return;
     }
     // 1. 向 Rust 取得 sidecar port（setup 可能稍慢，重試）
@@ -35,19 +48,21 @@ export async function initApiBase(): Promise<void> {
     }
     if (port == null) {
         console.error('無法取得後端 port，sidecar 可能未啟動');
+        _markReady();
         return;
     }
     resolvedBase = `http://127.0.0.1:${port}`;
 
-    // 2. 等待 FastAPI 真的可連（best-effort，最多 ~15s）
-    for (let i = 0; i < 75; i++) {
+    // 2. 等待 FastAPI 真的可連（首次啟動可能被防毒掃描拖慢，最多等 ~90s）
+    for (let i = 0; i < 450; i++) {
         try {
             const res = await fetch(`${resolvedBase}/health`);
-            if (res.ok) { console.log(`✅ 後端就緒: ${resolvedBase}`); return; }
+            if (res.ok) { console.log(`✅ 後端就緒: ${resolvedBase}`); _markReady(); return; }
         } catch { /* 尚未起來 */ }
         await new Promise(r => setTimeout(r, 200));
     }
     console.warn(`後端 ${resolvedBase} 健康檢查逾時，仍嘗試使用`);
+    _markReady();
 }
 
 /** 取得目前後端 base URL（已解析） */

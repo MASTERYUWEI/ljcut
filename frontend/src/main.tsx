@@ -4,11 +4,10 @@ import './index.css'
 import App from './App'
 import { initApiBase } from './api'
 
-// 先解析後端 sidecar 位址（並等待就緒），再渲染 App
-initApiBase().finally(() => {
-    createRoot(document.getElementById('root')!).render(
-        <StrictMode>
-            <App />
-        </StrictMode>,
-    )
-})
+// 立即渲染 App（顯示啟動畫面）；後端位址解析在背景進行，就緒後由 onApiReady 通知
+initApiBase()
+createRoot(document.getElementById('root')!).render(
+    <StrictMode>
+        <App />
+    </StrictMode>,
+)

@@ -2,7 +2,7 @@
 
 import { useRef, useCallback, useState, useEffect, useLayoutEffect, useMemo } from 'react';
 import { useStore } from './store';
-import { api } from './api';
+import { api, onApiReady } from './api';
 import type { MediaItem, TimelineClip, Segment, AppSettings, RecOpts, MicDevice } from './types';
 import { formatTime, formatTimestamp, generateRulerTicks, findSnapTime, LABEL_W } from './utils';
 import { SettingsModal } from './components/SettingsModal';
@@ -50,6 +50,8 @@ export default function App() {
     // 匯出時是否把字幕燒進畫面（false = 乾淨畫面，YouTube 用 CC/SRT 顯示字幕）
     const [burnSubs, setBurnSubs] = useState(false);
     const [showExportModal, setShowExportModal] = useState(false);
+    // 後端就緒前顯示啟動畫面（首次啟動被防毒掃描拖慢時不再黑屏）
+    const [backendBooting, setBackendBooting] = useState<boolean>(() => !!(window as any).__TAURI_INTERNALS__);
     const [showYtUpload, setShowYtUpload] = useState(false);
     const [exportEta, setExportEta] = useState<number | null>(null); // 預估剩餘秒數
     const [exportStage, setExportStage] = useState(''); // 目前階段文字
@@ -535,6 +537,12 @@ export default function App() {
             if (cancelled) { u(); } else { unlisten = u; }
         })();
         return () => { cancelled = true; if (unlisten) unlisten(); };
+    }, []);
+
+    // ── 後端就緒通知：關閉啟動畫面 ──
+    useEffect(() => {
+        if (!IS_TAURI) return;
+        onApiReady(() => setBackendBooting(false));
     }, []);
 
     // ── 自動檢查更新（發行版；開發模式 check 會失敗並靜默略過）──
@@ -2568,6 +2576,17 @@ export default function App() {
                     onClose={() => setSpeedMenu(null)}
                 />
             )}
+            {backendBooting && (
+                <div className="boot-splash">
+                    <div className="boot-splash-logo">LJCUT</div>
+                    <div className="progress-bar" style={{ width: 220 }}>
+                        <div className="fill loading" style={{ width: '100%' }} />
+                    </div>
+                    <div className="boot-splash-text">正在啟動後端服務…</div>
+                    <div className="boot-splash-hint">首次啟動需要載入 AI 模型，可能需要 30 秒～1 分鐘</div>
+                </div>
+            )}
+
             {exportProgress >= 0 && <ExportProgress progress={exportProgress} etaSeconds={exportEta} stage={exportStage} />}
 
             {/* 匯出影片設定彈窗 */}

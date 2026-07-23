@@ -1898,6 +1898,36 @@ body {
   white-space: nowrap;
 }
 
+/* 啟動畫面（後端就緒前） */
+.boot-splash {
+  position: fixed;
+  inset: 0;
+  z-index: 500;
+  background: var(--bg-base, #11111b);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+}
+
+.boot-splash-logo {
+  font-size: 34px;
+  font-weight: 800;
+  letter-spacing: 6px;
+  color: var(--accent-amber, #f0b050);
+}
+
+.boot-splash-text {
+  font-size: 14px;
+  color: var(--fg-text, #eee);
+}
+
+.boot-splash-hint {
+  font-size: 12px;
+  color: var(--fg-subtext0, #888);
+}
+
 /* 右側字幕工具列（操作跟著字幕清單走） */
 .subtitle-toolbar {
   padding: 8px 10px;

@@ -53,10 +53,10 @@ Copy-Item "$FfmpegBin\ffprobe.exe" "$Res\ffprobe.exe" -Force
 Remove-Item "$Res\.keep" -ErrorAction SilentlyContinue
 
 Write-Host "=== [4/5] tauri build（NSIS + MSI，含更新簽章）===" -ForegroundColor Cyan
-$env:TAURI_SIGNING_PRIVATE_KEY = Get-Content "$env:USERPROFILE\.tauri\ljcut_updater.key" -Raw
-$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ""
+# 注意：PowerShell 無法把環境變數設成「空字串」($env:X="" 等於刪除)，
+# 而簽章金鑰無密碼需要 PASSWORD 存在且為空 → 改經 Git Bash 執行 build。
 Push-Location $Root
-npx -y @tauri-apps/cli build
+& "C:\Program Files\Gitinash.exe" -c 'TAURI_SIGNING_PRIVATE_KEY="$(cat ~/.tauri/ljcut_updater.key)" TAURI_SIGNING_PRIVATE_KEY_PASSWORD="" npx -y @tauri-apps/cli build'
 if ($LASTEXITCODE -ne 0) { throw "tauri build 失敗" }
 Pop-Location
 
