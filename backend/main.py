@@ -111,7 +111,10 @@ app = FastAPI(title="LJCUT API", version="0.1.0", lifespan=lifespan)
 # CORS — 允許前端 dev server
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000"],
+    # 本機 sidecar（只綁 127.0.0.1、隨機 port）→ 放行所有來源。
+    # 打包後 Tauri webview 的 origin 是 http(s)://tauri.localhost，開發是 localhost:5173；
+    # 用 regex 全涵蓋，否則打包版所有 API（含 /health）都會被 CORS 擋、前端連不上後端。
+    allow_origin_regex=".*",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
