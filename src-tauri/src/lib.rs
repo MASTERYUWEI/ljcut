@@ -34,6 +34,8 @@ pub fn run() {
             commands::recorder::enter_window_pick,
             commands::recorder::hover_window_rect,
             commands::recorder::snap_overlay_to_window,
+            commands::recorder::get_encoder_info,
+            commands::recorder::reveal_media,
         ])
         .setup(|app| {
             // 確保 uploads 和 outputs 目錄存在

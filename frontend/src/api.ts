@@ -88,13 +88,46 @@ export const api = {
         return api.upload(file);
     },
 
-    /** 語音辨識 */
-    async transcribe(fileId: string, language = 'zh'): Promise<TranscribeResult> {
+    /** 語音辨識（SSE 串流進度；相容舊後端的純 JSON 回應） */
+    async transcribe(
+        fileId: string,
+        language = 'zh',
+        onProgress?: (pct: number, current?: number, total?: number) => void,
+    ): Promise<TranscribeResult> {
         const form = new FormData();
         form.append('language', language);
         const res = await fetch(`${resolvedBase}/api/transcribe/${fileId}`, { method: 'POST', body: form });
         if (!res.ok) throw new Error(await res.text());
-        return res.json();
+
+        // 舊後端：直接回 JSON（無串流）
+        const ct = res.headers.get('content-type') || '';
+        if (!ct.includes('text/event-stream')) {
+            return res.json();
+        }
+
+        // 新後端：解析 SSE 進度，最後一個事件帶 result
+        const reader = res.body?.getReader();
+        if (!reader) throw new Error('無法讀取串流');
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let result: TranscribeResult | null = null;
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const blocks = buffer.split('\n\n');
+            buffer = blocks.pop() || '';
+            for (const block of blocks) {
+                const line = block.trim();
+                if (!line.startsWith('data: ')) continue;
+                const evt = JSON.parse(line.slice(6));
+                if (evt.error) throw new Error(evt.error);
+                if (evt.progress != null) onProgress?.(evt.progress, evt.current, evt.total);
+                if (evt.result) result = evt.result;
+            }
+        }
+        if (!result) throw new Error('辨識未回傳結果');
+        return result;
     },
 
     /** 匯出 SRT */
@@ -331,6 +364,148 @@ export const api = {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ sys_device: sysDevice, mic_device: micDevice, seconds }),
+        });
+        if (!res.ok) throw new Error(await res.text());
+        return res.json();
+    },
+
+    /** AI 產 5 個 YouTube 標題候選 */
+    async aiTitles(texts: string[]): Promise<{ ok: boolean; titles: string[]; error?: string }> {
+        const res = await fetch(`${resolvedBase}/api/ai/titles`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ texts }),
+        });
+        if (!res.ok) throw new Error(await res.text());
+        return res.json();
+    },
+
+    /** AI 生成 N 款封面候選（內容感知：附逐字稿），回傳可預覽的 URL 與檔名 */
+    async ytGenThumbnails(title: string, transcript = '', count = 5): Promise<{ ok: boolean; items: { file: string; url: string }[]; error?: string }> {
+        const res = await fetch(`${resolvedBase}/api/yt/thumbnails`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ title, transcript, count }),
+        });
+        if (!res.ok) throw new Error(await res.text());
+        return res.json();
+    },
+
+    /** outputs 靜態檔完整網址（封面預覽用） */
+    outputUrl(path: string): string {
+        return `${resolvedBase}${path.startsWith('/') ? path : '/' + path}`;
+    },
+
+    /** YouTube：連結狀態 */
+    async ytStatus(): Promise<{ configured: boolean; connected: boolean; channel?: string; auth_error?: string }> {
+        const res = await fetch(`${resolvedBase}/api/yt/status`);
+        if (!res.ok) throw new Error(await res.text());
+        return res.json();
+    },
+
+    /** YouTube：儲存 OAuth 用戶端憑證（空字串=清除） */
+    async ytSetCredentials(clientId: string, clientSecret: string): Promise<{ configured: boolean; connected: boolean }> {
+        const res = await fetch(`${resolvedBase}/api/yt/credentials`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ client_id: clientId, client_secret: clientSecret }),
+        });
+        if (!res.ok) throw new Error(await res.text());
+        return res.json();
+    },
+
+    /** YouTube：啟動 OAuth 授權，回傳要開的網址 */
+    async ytAuthStart(): Promise<{ ok: boolean; auth_url?: string; error?: string }> {
+        const res = await fetch(`${resolvedBase}/api/yt/auth/start`, { method: 'POST' });
+        if (!res.ok) throw new Error(await res.text());
+        return res.json();
+    },
+
+    /** YouTube：解除連結 */
+    async ytDisconnect(): Promise<void> {
+        await fetch(`${resolvedBase}/api/yt/disconnect`, { method: 'POST' });
+    },
+
+    /** YouTube：上傳影片（SSE 進度），完成回傳網址 */
+    async ytUpload(
+        body: {
+            video_path: string; title: string; description: string; tags: string[];
+            privacy: string; thumbnail_time: number | null; thumbnail_path?: string; segments: Segment[];
+        },
+        onProgress: (pct: number, stage?: string) => void,
+    ): Promise<{ video_id: string; watch_url: string; studio_url: string; warnings?: string[] }> {
+        const res = await fetch(`${resolvedBase}/api/yt/upload`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        if (!res.ok) throw new Error(await res.text());
+        const reader = res.body?.getReader();
+        if (!reader) throw new Error('無法讀取串流');
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let result: { video_id: string; watch_url: string; studio_url: string; warnings?: string[] } | null = null;
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const blocks = buffer.split('\n\n');
+            buffer = blocks.pop() || '';
+            for (const block of blocks) {
+                const line = block.trim();
+                if (!line.startsWith('data: ')) continue;
+                const evt = JSON.parse(line.slice(6));
+                if (evt.error) throw new Error(evt.error);
+                if (evt.progress != null) onProgress(evt.progress, evt.stage);
+                if (evt.done) result = evt;
+            }
+        }
+        if (!result) throw new Error('上傳未完成');
+        return result;
+    },
+
+    /** AI 掃描語意不通順/疑似辨識錯誤的句子：回傳 index+原因 */
+    async scanSuspicious(texts: string[]): Promise<{ ok: boolean; items: { index: number; reason: string }[]; error?: string }> {
+        const res = await fetch(`${resolvedBase}/api/ai/suspicious`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ texts }),
+        });
+        if (!res.ok) throw new Error(await res.text());
+        return res.json();
+    },
+
+    /** AI 掃描字幕錯字：回傳建議「錯字→正字」清單 */
+    async scanTypos(texts: string[]): Promise<{ ok: boolean; suggestions: { wrong: string; correct: string }[]; error?: string }> {
+        const res = await fetch(`${resolvedBase}/api/ai/typos`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ texts }),
+        });
+        if (!res.ok) throw new Error(await res.text());
+        return res.json();
+    },
+
+    /** 金鑰健康度實測：真的敲一次 Gemini，回傳延遲與錯誤說明 */
+    async checkAiHealth(): Promise<{ ok: boolean; model?: string; latency_ms?: number; reply?: string; status?: number; error?: string; detail?: string }> {
+        const res = await fetch(`${resolvedBase}/api/ai/health`, { method: 'POST' });
+        if (!res.ok) throw new Error(await res.text());
+        return res.json();
+    },
+
+    /** 取得 AI 模型資訊（目前使用 / 最新可用 / 是否有更新） */
+    async getAiModel(): Promise<{ current: string; best: string; update_available: boolean; current_alive: boolean | null; models: string[] }> {
+        const res = await fetch(`${resolvedBase}/api/ai/model`);
+        if (!res.ok) throw new Error(await res.text());
+        return res.json();
+    },
+
+    /** 切換 AI 模型（空字串 = 自動選最新 Flash），寫回 .env */
+    async setAiModel(model = ''): Promise<{ ok: boolean; current: string; error?: string }> {
+        const res = await fetch(`${resolvedBase}/api/ai/model`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ model }),
         });
         if (!res.ok) throw new Error(await res.text());
         return res.json();

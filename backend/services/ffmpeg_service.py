@@ -118,13 +118,15 @@ class FFmpegService:
             "ffmpeg",
             "-y",
         ]
-        cmd += ["-i", video_path]
-        # 裁切：-ss 放在 -i 之後做 output seeking（精確定位）
+        # 裁切：-ss 放在 -i 之前做 input seeking——解碼時間戳歸零後才進字幕濾鏡，
+        # 與「以裁切點為 0 起算」的 ASS 對齊（output seeking 會讓字幕整體提前 trimStart 秒）；
+        # 也不用解碼被丟棄的前段，大檔裁頭時匯出快很多。
         if trim_start > 0:
             cmd += ["-ss", str(trim_start)]
-        # 只有真正裁切時才加 -to（trimStart=0 且 trimEnd=全長時不加）
+        cmd += ["-i", video_path]
+        # 只要有有效裁切區間就限制輸出長度（含「只裁尾不裁頭」的情況）
         trim_dur = trim_end - trim_start if (trim_end > 0 and trim_end > trim_start) else 0
-        if trim_start > 0 and trim_dur > 0:
+        if trim_dur > 0:
             # -to 是輸出時間，需考慮倍速
             output_dur = trim_dur / speed if speed != 1.0 else trim_dur
             cmd += ["-to", str(output_dur)]

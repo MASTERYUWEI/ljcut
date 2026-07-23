@@ -9,7 +9,7 @@ import { SettingsModal } from './components/SettingsModal';
 import { RecordingSettingsModal } from './components/RecordingSettingsModal';
 import { SpeedMenu } from './components/SpeedMenu';
 import { ExportProgress } from './components/ExportProgress';
-import { AiPanel } from './components/AiPanel';
+import { YouTubeUploadModal } from './components/YouTubeUploadModal';
 
 export default function App() {
     // 雙緩衝：兩個 <video> 疊在一起，永遠只有一個顯示(active)，另一個(standby)預載下一段。
@@ -40,9 +40,17 @@ export default function App() {
 
     const [zoom, setZoom] = useState(1);
     const [leftTab, setLeftTab] = useState<'media' | 'subtitle'>('media');
-    const [aiExpanded, setAiExpanded] = useState(false);
     const [isBurning, setIsBurning] = useState(false);
     const [exportProgress, setExportProgress] = useState(-1); // -1=idle, 0~100=progress
+    // 辨識進度：null=idle；pct<0=準備中(抽取音訊)；0~100=辨識中
+    const [transProg, setTransProg] = useState<{ pct: number; cur: number; total: number } | null>(null);
+    const [transElapsed, setTransElapsed] = useState(0);
+    // 最近一次匯出成品路徑（YouTube 上傳用）
+    const [lastExport, setLastExport] = useState<string | null>(null);
+    // 匯出時是否把字幕燒進畫面（false = 乾淨畫面，YouTube 用 CC/SRT 顯示字幕）
+    const [burnSubs, setBurnSubs] = useState(false);
+    const [showExportModal, setShowExportModal] = useState(false);
+    const [showYtUpload, setShowYtUpload] = useState(false);
     const [exportEta, setExportEta] = useState<number | null>(null); // 預估剩餘秒數
     const [exportStage, setExportStage] = useState(''); // 目前階段文字
     const [isDraggingPlayhead, setIsDraggingPlayhead] = useState(false);
@@ -53,6 +61,8 @@ export default function App() {
     const [showSettings, setShowSettings] = useState(false);
     const [settings, setSettings] = useState<AppSettings>({ outputDir: '', srtDir: '' });
     const [isRecording, setIsRecording] = useState(false);
+    type EncoderInfo = { hw: boolean; name: string; nvenc_active: boolean | null };
+    const [encoderInfo, setEncoderInfo] = useState<EncoderInfo | null>(null);
     const [isPaused, setIsPaused] = useState(false);
     const [recSeconds, setRecSeconds] = useState(0);
     const [showRecSettings, setShowRecSettings] = useState(false);
@@ -247,39 +257,6 @@ export default function App() {
     const [timelineHeight, setTimelineHeight] = useState(200);
     const [isResizing, setIsResizing] = useState(false);
 
-    // AI 助手 — 用 ref 避免 closure stale state
-    const aiResultsRef = useRef<Record<string, string>>({});
-    const [, forceRender] = useState(0);
-    const [aiLoadingType, setAiLoadingType] = useState<string | null>(null);
-    const [aiActiveTab, setAiActiveTab] = useState('summary');
-    const [aiCopied, setAiCopied] = useState(false);
-
-    const AI_TABS = [
-        { key: 'summary', label: '摘要' },
-        { key: 'marketing', label: '行銷' },
-        { key: 'youtube', label: 'YT 說明' },
-    ] as const;
-
-    const runAiGenerate = useCallback(async (segs: typeof segments, type: string) => {
-        setAiLoadingType(type);
-        aiResultsRef.current[type] = '⏳ 生成中...';
-        forceRender(n => n + 1);
-        try {
-            const text = await api.aiGenerate(segs, type);
-            aiResultsRef.current[type] = text;
-        } catch (e) {
-            aiResultsRef.current[type] = `❌ ${e}`;
-        }
-        forceRender(n => n + 1);
-        setAiLoadingType(null);
-    }, []);
-
-    const runAllAi = useCallback(async (segs: typeof segments) => {
-        for (const tab of ['summary', 'marketing', 'youtube']) {
-            setAiActiveTab(tab);
-            await runAiGenerate(segs, tab);
-        }
-    }, [runAiGenerate]);
 
     const {
         mediaItems, timelineClips,
@@ -546,6 +523,19 @@ export default function App() {
         })();
         return () => { cancelled = true; if (unlisten) unlisten(); };
     }, [handleStopRec]);
+
+    // ── 編碼器狀態徽章：監聽 recorder 回報的硬體/NVENC 狀態 ──
+    useEffect(() => {
+        if (!IS_TAURI) return;
+        let unlisten: (() => void) | null = null;
+        let cancelled = false;
+        (async () => {
+            const { listen } = await import('@tauri-apps/api/event');
+            const u = await listen<EncoderInfo>('recorder://encoder', (e) => setEncoderInfo(e.payload));
+            if (cancelled) { u(); } else { unlisten = u; }
+        })();
+        return () => { cancelled = true; if (unlisten) unlisten(); };
+    }, []);
 
     // ── 從媒體庫拖放到時間軸：建立 clip ──
     const handleDropToTimeline = useCallback((e: React.DragEvent) => {
@@ -814,19 +804,146 @@ export default function App() {
             return;
         }
         setIsTranscribing(true);
+        setTransProg({ pct: -1, cur: 0, total: 0 });
+        setTransElapsed(0);
+        const t0 = Date.now();
+        const elapsedTimer = setInterval(() => setTransElapsed(Math.floor((Date.now() - t0) / 1000)), 1000);
         try {
-            const result = await api.transcribe(targetFileId, language);
+            const result = await api.transcribe(targetFileId, language, (pct, cur, total) => {
+                setTransProg({ pct, cur: cur ?? 0, total: total ?? 0 });
+            });
             // 自動 cue splitting
             const split = splitLongCues(result.segments, subtitleStyle.maxCharsPerCue);
             // 寫入到選中的 clip
             setClipSegments(activeClip.id, split);
-            // 辨識完成後自動啟動 AI 生成
-            if (split.length > 0) {
-                runAllAi(split);
-            }
         } catch (err) { alert(`辨識失敗: ${err}`); }
-        finally { setIsTranscribing(false); }
-    }, [fileId, language, setClipSegments, setIsTranscribing, runAllAi, splitLongCues, subtitleStyle.maxCharsPerCue, timelineClips, activeClipId, mediaItems]);
+        finally { clearInterval(elapsedTimer); setIsTranscribing(false); setTransProg(null); }
+    }, [fileId, language, setClipSegments, setIsTranscribing, splitLongCues, subtitleStyle.maxCharsPerCue, timelineClips, activeClipId, mediaItems]);
+
+    // ── 收集時間軸全部字幕（時間映射到時間軸；複製/匯出共用邏輯）──
+    const buildTimelineSegments = useCallback((): Segment[] => {
+        const track0Clips = timelineClips
+            .filter(c => c.trackIndex === 0)
+            .sort((a, b) => a.startTime - b.startTime);
+        const all: Segment[] = [];
+        for (const clip of track0Clips) {
+            for (const seg of (clip.segments ?? [])) {
+                const s = (seg.start - clip.trimStart) / clip.speed + clip.startTime;
+                const e = (seg.end - clip.trimStart) / clip.speed + clip.startTime;
+                if (e <= 0) continue;
+                all.push({ ...seg, id: all.length, start: Math.max(s, 0), end: e });
+            }
+        }
+        return all;
+    }, [timelineClips]);
+
+    // ── 一鍵複製字幕（純文字 / SRT 格式）──
+    const [copyMsg, setCopyMsg] = useState<'' | 'text' | 'srt'>('');
+    const handleCopySubtitles = useCallback(async (kind: 'text' | 'srt') => {
+        const segs = buildTimelineSegments();
+        if (segs.length === 0) { alert('沒有字幕可複製'); return; }
+        const fmtSrtTime = (t: number) => {
+            const h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), s = Math.floor(t % 60);
+            const ms = Math.min(999, Math.round((t - Math.floor(t)) * 1000));
+            return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')},${ms.toString().padStart(3, '0')}`;
+        };
+        const content = kind === 'text'
+            ? segs.map(s => s.text).join('\n')
+            : segs.map((s, i) => `${i + 1}\n${fmtSrtTime(s.start)} --> ${fmtSrtTime(s.end)}\n${s.text}\n`).join('\n');
+        try {
+            await navigator.clipboard.writeText(content);
+        } catch {
+            // 剪貼簿 API 被擋時的退路
+            const ta = document.createElement('textarea');
+            ta.value = content;
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand('copy');
+            document.body.removeChild(ta);
+        }
+        setCopyMsg(kind);
+        setTimeout(() => setCopyMsg(''), 1500);
+    }, [buildTimelineSegments]);
+
+    // ── 錯字修正：全部取代（套用到時間軸全部 clip，可 Ctrl+Z 復原）──
+    const [typoFrom, setTypoFrom] = useState('');
+    const [typoTo, setTypoTo] = useState('');
+    const [typoMsg, setTypoMsg] = useState('');
+    const [isScanningTypos, setIsScanningTypos] = useState(false);
+    const [typoSuggestions, setTypoSuggestions] = useState<{ wrong: string; correct: string; count: number }[]>([]);
+
+    const countOccurrences = useCallback((needle: string) => {
+        let n = 0;
+        for (const clip of timelineClips) {
+            for (const seg of (clip.segments ?? [])) n += seg.text.split(needle).length - 1;
+        }
+        return n;
+    }, [timelineClips]);
+
+    /** 批次取代核心：一次 pushUndo，多組取代 → Ctrl+Z 一次全復原 */
+    const applyReplacements = useCallback((pairs: { from: string; to: string }[]) => {
+        const valid = pairs.filter(pr => pr.from);
+        if (!valid.length) return 0;
+        let total = 0;
+        for (const pr of valid) total += countOccurrences(pr.from);
+        if (total === 0) return 0;
+        pushUndo();
+        for (const clip of timelineClips) {
+            if (!(clip.segments?.length)) continue;
+            let changed = false;
+            const segs = clip.segments.map(s => {
+                let t = s.text;
+                for (const pr of valid) {
+                    if (t.includes(pr.from)) t = t.split(pr.from).join(pr.to);
+                }
+                if (t !== s.text) { changed = true; return { ...s, text: t }; }
+                return s;
+            });
+            if (changed) setClipSegments(clip.id, segs);
+        }
+        return total;
+    }, [timelineClips, countOccurrences, pushUndo, setClipSegments]);
+
+    const handleReplaceAll = useCallback(() => {
+        const n = applyReplacements([{ from: typoFrom, to: typoTo }]);
+        setTypoMsg(n > 0
+            ? `✅ 已把「${typoFrom}」→「${typoTo}」共 ${n} 處（Ctrl+Z 可復原）`
+            : `找不到「${typoFrom}」`);
+        if (n > 0) { setTypoFrom(''); setTypoTo(''); }
+    }, [typoFrom, typoTo, applyReplacements]);
+
+    const handleScanTypos = useCallback(async () => {
+        const segs = buildTimelineSegments();
+        if (segs.length === 0) { alert('沒有字幕可掃描'); return; }
+        setIsScanningTypos(true);
+        setTypoSuggestions([]);
+        setTypoMsg('');
+        try {
+            const r = await api.scanTypos(segs.map(s => s.text));
+            if (!r.ok && r.error) { setTypoMsg(`❌ ${r.error}`); return; }
+            const sugg = (r.suggestions || [])
+                .map(t => ({ ...t, count: countOccurrences(t.wrong) }))
+                .filter(t => t.count > 0 && t.wrong !== t.correct);
+            setTypoSuggestions(sugg);
+            if (sugg.length === 0) setTypoMsg('🎉 沒掃到可疑錯字');
+        } catch (e) { setTypoMsg(`❌ 掃描失敗: ${e}`); }
+        finally { setIsScanningTypos(false); }
+    }, [buildTimelineSegments, countOccurrences]);
+
+    const handleApplySuggestion = useCallback((idx: number) => {
+        const t = typoSuggestions[idx];
+        if (!t) return;
+        const n = applyReplacements([{ from: t.wrong, to: t.correct }]);
+        setTypoMsg(n > 0 ? `✅「${t.wrong}」→「${t.correct}」共 ${n} 處` : `找不到「${t.wrong}」（可能已被取代）`);
+        setTypoSuggestions(list => list.filter((_, i) => i !== idx));
+    }, [typoSuggestions, applyReplacements]);
+
+    const handleApplyAllSuggestions = useCallback(() => {
+        if (!typoSuggestions.length) return;
+        const n = applyReplacements(typoSuggestions.map(t => ({ from: t.wrong, to: t.correct })));
+        setTypoMsg(n > 0 ? `✅ 已套用 ${typoSuggestions.length} 組建議，共 ${n} 處（Ctrl+Z 一次全復原）` : '沒有可取代的內容');
+        setTypoSuggestions([]);
+    }, [typoSuggestions, applyReplacements]);
 
     // ── 匯出 SRT ──
     const handleExportSrt = useCallback(async () => {
@@ -897,7 +1014,7 @@ export default function App() {
                 const clip = track0Clips[0];
                 const media = mediaItems.find(m => m.id === clip.mediaId);
                 const burnFileId = media?.id ?? fileId;
-                const burnSegments = clip.segments ?? segments;
+                const burnSegments = burnSubs ? (clip.segments ?? segments) : [];
                 const burnSpeed = clip.speed ?? 1;
                 const burnDuration = clip.trimEnd - clip.trimStart;
                 if (!burnFileId) { alert('找不到影片'); return; }
@@ -921,7 +1038,7 @@ export default function App() {
                         trimStart: clip.trimStart,
                         trimEnd: clip.trimEnd,
                         speed: clip.speed,
-                        segments: clip.segments ?? [],
+                        segments: burnSubs ? (clip.segments ?? []) : [],
                     };
                 });
                 const defaultFileName = 'timeline_output.mp4';
@@ -937,6 +1054,7 @@ export default function App() {
 
             if (result) {
                 setExportProgress(100);
+                setLastExport(result.outputPath);
                 setTimeout(async () => {
                     alert(`✅ 匯出完成！\n輸出路徑：${result!.outputPath}`);
                     setExportProgress(-1);
@@ -960,7 +1078,7 @@ export default function App() {
         } finally {
             setIsBurning(false);
         }
-    }, [fileId, segments, subtitleStyle, timelineClips, mediaItems, duration, setIsPlaying]);
+    }, [fileId, segments, subtitleStyle, timelineClips, mediaItems, duration, setIsPlaying, burnSubs]);
 
     // ── 播放 ──
     const activeClipSpeed = useMemo(() => {
@@ -1374,6 +1492,47 @@ export default function App() {
     }, [pushUndo, updateSegment]);
 
     // ── 手動重新分段 ──
+    // ── AI 掃描不通順語句（點擊定位，手動修改）──
+    const [isScanningFlow, setIsScanningFlow] = useState(false);
+    const [flowMsg, setFlowMsg] = useState('');
+    const [flowIssues, setFlowIssues] = useState<{ clipId: string; segId: number; text: string; tl: number; reason: string }[]>([]);
+
+    const handleScanFlow = useCallback(async () => {
+        const refs: { clipId: string; segId: number; text: string; tl: number }[] = [];
+        const track0 = timelineClips.filter(c => c.trackIndex === 0).sort((a, b) => a.startTime - b.startTime);
+        for (const clip of track0) {
+            for (const seg of (clip.segments ?? [])) {
+                refs.push({
+                    clipId: clip.id,
+                    segId: seg.id,
+                    text: seg.text,
+                    tl: (seg.start - clip.trimStart) / clip.speed + clip.startTime,
+                });
+            }
+        }
+        if (!refs.length) { alert('沒有字幕可掃描'); return; }
+        setIsScanningFlow(true);
+        setFlowIssues([]);
+        setFlowMsg('');
+        try {
+            const r = await api.scanSuspicious(refs.map(x => x.text));
+            if (!r.ok && r.error) { setFlowMsg(`❌ ${r.error}`); return; }
+            const items = (r.items || [])
+                .filter(it => Number.isInteger(it.index) && it.index >= 0 && it.index < refs.length)
+                .map(it => ({ ...refs[it.index], reason: it.reason || '語意可疑' }));
+            setFlowIssues(items);
+            setFlowMsg(items.length ? `找到 ${items.length} 句可疑，點擊可定位` : '🎉 沒掃到明顯不通順的句子');
+        } catch (e) { setFlowMsg(`❌ 掃描失敗: ${e}`); }
+        finally { setIsScanningFlow(false); }
+    }, [timelineClips]);
+
+    const handleLocateIssue = useCallback((item: { clipId: string; segId: number; tl: number }) => {
+        // 選中片段（同步右側清單）→ 高亮該句（清單自動捲到）→ 播放頭跳過去
+        setActiveClipId(item.clipId);
+        setActiveSegment(item.segId);
+        seekTo(item.tl);
+    }, [setActiveClipId, setActiveSegment, seekTo]);
+
     const handleResplit = useCallback(() => {
         if (segments.length === 0) return;
         const split = splitLongCues(segments, subtitleStyle.maxCharsPerCue);
@@ -1398,9 +1557,11 @@ export default function App() {
             const activeClip = activeClipId ? timelineClips.find(c => c.id === activeClipId) : null;
             const seg = segments.find(s => s.id === segId);
             if (seg && activeClip) {
-                seekTo(activeClip.startTime + seg.start / activeClip.speed);
+                seekTo((seg.start - activeClip.trimStart) / activeClip.speed + activeClip.startTime);
             } else if (seg) {
-                seekTo(seg.start);
+                // 沒有 activeClip 的退路：找出實際擁有此字幕的 clip 來換算 timeline 位置
+                const owner = timelineClips.find(c => c.trackIndex === 0 && c.segments.some(x => x.id === segId));
+                seekTo(owner ? (seg.start - owner.trimStart) / owner.speed + owner.startTime : seg.start);
             }
         }
     }, [setActiveSegment, seekTo, segments, activeClipId, timelineClips]);
@@ -1740,16 +1901,16 @@ export default function App() {
             <header className="app-header">
                 <h1>LJCUT</h1>
                 <div style={{ display: 'flex', gap: 8 }}>
-                    {/* 匯出 SRT：有字幕才出現 */}
-                    {segments.length > 0 && (
-                        <button className="btn" onClick={handleExportSrt}>📄 匯出 SRT</button>
-                    )}
                     {/* 匯出影片：只要時間軸上有片段就能匯出（純剪輯、無字幕也可） */}
-                    {hasTimeline && (
-                        <button className="btn btn-accent" onClick={handleExportVideo} disabled={isBurning}>
+                    {hasTimeline && (<>
+                        <button className="btn btn-accent" onClick={() => setShowExportModal(true)} disabled={isBurning}>
                             {isBurning ? `⏳ 匯出中 ${exportProgress >= 0 ? exportProgress + '%' : '...'}` : '🎬 匯出影片'}
                         </button>
-                    )}
+                        <button className="btn" onClick={() => setShowYtUpload(true)} disabled={!lastExport || isBurning}
+                            title={lastExport ? `上傳最近匯出的成品到 YouTube\n${lastExport}` : '請先匯出影片，再上傳 YouTube'}>
+                            ⬆️ YouTube
+                        </button>
+                    </>)}
                     <button className="btn" onClick={() => setShowRecSettings(true)}>⏺ 螢幕錄影</button>
                     <button className="btn" onClick={() => setShowSettings(true)} title="設定" style={{ padding: '6px 10px' }}>⚙</button>
                 </div>
@@ -1774,6 +1935,15 @@ export default function App() {
                 <div className="rec-floating-bar">
                     <span className="rec-dot" />
                     <span className="rec-timer">{formatTime(recSeconds)}</span>
+                    {encoderInfo && (() => {
+                        const e = encoderInfo;
+                        let label: string, cls: string, tip: string;
+                        if (!e.hw) { label = '🟡 軟體編碼'; cls = 'sw'; tip = '本機無硬體 H.264 編碼器，使用 CPU 軟體編碼'; }
+                        else if (e.nvenc_active === false) { label = '🟡 掉回軟體'; cls = 'warn'; tip = '偵測到硬體編碼器，但這次錄影未在使用（可能 NVENC session 被其他程式占用），已掉回 CPU 軟體編碼'; }
+                        else if (e.nvenc_active === true) { label = '🟢 NVENC'; cls = 'hw'; tip = `硬體編碼運作中：${e.name}`; }
+                        else { label = '🟢 硬體編碼'; cls = 'hw'; tip = `硬體編碼器：${e.name}（執行期確認中…）`; }
+                        return <span className={`enc-badge enc-${cls}`} title={tip}>{label}</span>;
+                    })()}
                     <button className="rec-ctrl-btn" onClick={handlePauseRec} title={isPaused ? '繼續' : '暫停'}>
                         {isPaused ? '▶' : '⏸'}
                     </button>
@@ -1838,7 +2008,16 @@ export default function App() {
                                                     <div className="media-name">{item.filename}</div>
                                                     <div className="media-duration">{formatTime(item.info.duration)}</div>
                                                 </div>
-                                                <button className="media-remove" onClick={(e) => { e.stopPropagation(); removeMedia(item.id); }} title="移除">×</button>
+                                                {IS_TAURI && (
+                                                    <button className="media-remove media-folder" onClick={async (e) => {
+                                                        e.stopPropagation();
+                                                        try {
+                                                            const { invoke } = await import('@tauri-apps/api/core');
+                                                            await invoke('reveal_media', { filename: item.filename, fileId: item.id });
+                                                        } catch (err) { alert(`開啟資料夾失敗: ${err}`); }
+                                                    }} title="開啟檔案所在資料夾">📂</button>
+                                                )}
+                                                <button className="media-remove" onClick={(e) => { e.stopPropagation(); removeMedia(item.id); }} title="從媒體庫移除（不會刪除磁碟上的檔案）">×</button>
                                             </div>
                                         ))}
                                     </div>
@@ -1867,101 +2046,31 @@ export default function App() {
                                                 disabled={isTranscribing} style={{ width: '100%', justifyContent: 'center' }}>
                                                 {isTranscribing ? '辨識中...' : '開始辨識'}
                                             </button>
-                                            {isTranscribing && <div className="progress-bar"><div className="fill loading" style={{ width: '100%' }} /></div>}
-                                            {segments.length > 0 && (
-                                                <button className="btn" onClick={handlePolishSubtitles}
-                                                    disabled={isPolishing || isTranscribing}
-                                                    style={{ width: '100%', justifyContent: 'center', marginTop: 8 }}
-                                                    title="用 Gemini 修錯字、去贅字、補標點（時間碼不變、可復原）">
-                                                    {isPolishing ? '✨ 潤飾中...' : '✨ AI 潤飾標點'}
-                                                </button>
+                                            {isTranscribing && (
+                                                <div className="transcribe-prog">
+                                                    <div className="progress-bar">
+                                                        <div
+                                                            className={`fill ${!transProg || transProg.pct < 0 ? 'loading' : ''}`}
+                                                            style={{ width: transProg && transProg.pct >= 0 ? `${transProg.pct}%` : '100%' }}
+                                                        />
+                                                    </div>
+                                                    <div className="transcribe-prog-info">
+                                                        <span className="alive-dot" title="運作中（未當機）" />
+                                                        {!transProg || transProg.pct < 0
+                                                            ? '準備中…（抽取音訊）'
+                                                            : `辨識中 ${transProg.pct}%`}
+                                                        {transProg && transProg.total > 0 && transProg.pct >= 0
+                                                            ? ` · ${formatTime(transProg.cur)} / ${formatTime(transProg.total)}`
+                                                            : ''}
+                                                        <span className="transcribe-elapsed">已費時 {formatTime(transElapsed)}</span>
+                                                    </div>
+                                                </div>
                                             )}
-                                            {isPolishing && <div className="progress-bar"><div className="fill loading" style={{ width: '100%' }} /></div>}
                                         </div>
                                     </>
                                 )}
                                 {!primaryMedia && <div className="empty-state" style={{ padding: 20 }}><p>請先上傳媒體</p></div>}
 
-                                {/* 字幕樣式 */}
-                                {segments.length > 0 && (
-                                    <div className="subtitle-style-panel">
-                                        <div className="style-title">字幕樣式</div>
-                                        <div className="style-row">
-                                            <label>字形</label>
-                                            <select value={subtitleStyle.fontName}
-                                                onChange={e => setSubtitleStyle({ fontName: e.target.value })}>
-                                                <option value="Microsoft JhengHei">微軟正黑體</option>
-                                                <option value="DFKai-SB">標楷體</option>
-                                                <option value="Microsoft YaHei">微軟雅黑</option>
-                                                <option value="Noto Sans TC">Noto Sans TC</option>
-                                                <option value="Arial">Arial</option>
-                                            </select>
-                                        </div>
-                                        <div className="style-row">
-                                            <label>字體大小</label>
-                                            <input type="number" min={8} max={72} value={subtitleStyle.fontSize}
-                                                onChange={e => setSubtitleStyle({ fontSize: Number(e.target.value) })} />
-                                        </div>
-                                        <div className="style-row">
-                                            <label>外框粗細</label>
-                                            <input type="number" min={0} max={5} value={subtitleStyle.outlineWidth}
-                                                onChange={e => setSubtitleStyle({ outlineWidth: Number(e.target.value) })} />
-                                        </div>
-                                        <div className="style-row">
-                                            <label>文字背景</label>
-                                            <label className="toggle-switch">
-                                                <input type="checkbox" checked={subtitleStyle.bgEnabled}
-                                                    onChange={e => setSubtitleStyle({ bgEnabled: e.target.checked })} />
-                                                <span className="toggle-slider" />
-                                            </label>
-                                        </div>
-                                        {subtitleStyle.bgEnabled && (
-                                            <div className="style-row">
-                                                <label>透明度</label>
-                                                <input type="range" min={0} max={100} value={subtitleStyle.bgOpacity}
-                                                    onChange={e => setSubtitleStyle({ bgOpacity: Number(e.target.value) })} />
-                                                <span className="opacity-val">{subtitleStyle.bgOpacity}%</span>
-                                            </div>
-                                        )}
-                                    </div>
-                                )}
-
-                                {/* 字幕分段 */}
-                                {segments.length > 0 && (
-                                    <div className="subtitle-style-panel">
-                                        <div className="style-title">字幕分段</div>
-                                        <div className="style-row">
-                                            <label>每段上限</label>
-                                            <input type="number" min={5} max={50} value={subtitleStyle.maxCharsPerCue}
-                                                onChange={e => setSubtitleStyle({ maxCharsPerCue: Number(e.target.value) })} />
-                                            <span className="opacity-val">字</span>
-                                        </div>
-                                        <button className="btn" onClick={handleResplit}
-                                            style={{ width: '100%', justifyContent: 'center', marginTop: 6, fontSize: 12 }}>
-                                            重新分段
-                                        </button>
-                                    </div>
-                                )}
-
-                                {/* ── AI 助手（可折疊） ── */}
-                                {segments.length > 0 && (
-                                    <AiPanel
-                                        expanded={aiExpanded}
-                                        onToggle={() => setAiExpanded(v => !v)}
-                                        tabs={AI_TABS}
-                                        activeTab={aiActiveTab}
-                                        onSelectTab={setAiActiveTab}
-                                        loadingType={aiLoadingType}
-                                        results={aiResultsRef}
-                                        copied={aiCopied}
-                                        onCopy={(t) => {
-                                            navigator.clipboard.writeText(t);
-                                            setAiCopied(true);
-                                            setTimeout(() => setAiCopied(false), 2000);
-                                        }}
-                                        onRefresh={() => runAllAi(segments)}
-                                    />
-                                )}
                             </>
                         )}
                     </div>
@@ -2180,7 +2289,7 @@ export default function App() {
                                     <div className="track-content" style={{ width: timelineWidth }}>
                                         {timelineClips.filter(c => c.trackIndex === 0 && c.segments.length > 0).map(clip =>
                                             clip.segments.map((seg) => {
-                                                const left = (clip.startTime + seg.start / clip.speed) * pixelsPerSecond;
+                                                const left = ((seg.start - clip.trimStart) / clip.speed + clip.startTime) * pixelsPerSecond;
                                                 const width = Math.max(((seg.end - seg.start) / clip.speed) * pixelsPerSecond, 2);
                                                 return (
                                                     <div
@@ -2191,7 +2300,7 @@ export default function App() {
                                                             e.stopPropagation();
                                                             setActiveClipId(clip.id);
                                                             setActiveSegment(seg.id);
-                                                            seekTo((clip.startTime + seg.start / clip.speed));
+                                                            seekTo((seg.start - clip.trimStart) / clip.speed + clip.startTime);
                                                         }}
                                                         title={`${formatTimestamp(seg.start)} → ${formatTimestamp(seg.end)}\n${seg.text}`}
                                                     >
@@ -2249,6 +2358,72 @@ export default function App() {
                             <span style={{ fontSize: 12, color: 'var(--fg-subtext0)' }}>{segments.length} 段</span>
                         )}
                     </div>
+                    {segments.length > 0 && (
+                        <div className="subtitle-toolbar">
+                            <div className="st-row">
+                                <button className="btn st-btn" onClick={handlePolishSubtitles} disabled={isPolishing || isTranscribing}
+                                    title="AI 修錯字、去贅字、補標點（時間碼不變、Ctrl+Z 可復原）">{isPolishing ? '✨ 潤飾中' : '✨ 潤飾'}</button>
+                                <button className="btn st-btn" onClick={handleScanTypos} disabled={isScanningTypos}
+                                    title="AI 掃描重複出現的可疑錯字，一鍵全部取代">{isScanningTypos ? '🔍 掃描中' : '🔍 掃錯字'}</button>
+                                <button className="btn st-btn" onClick={handleScanFlow} disabled={isScanningFlow}
+                                    title="AI 找出語意不通順的句子，點擊定位手動修改">{isScanningFlow ? '🧠 掃描中' : '🧠 掃語意'}</button>
+                            </div>
+                            <div className="st-row">
+                                <button className="btn st-btn" onClick={() => handleCopySubtitles('text')} title="複製全部字幕文字（不含時間碼，貼給 AI 潤稿用）">
+                                    {copyMsg === 'text' ? '✅ 已複製' : '📋 全文'}</button>
+                                <button className="btn st-btn" onClick={() => handleCopySubtitles('srt')} title="複製完整 SRT 內容（含時間碼）">
+                                    {copyMsg === 'srt' ? '✅ 已複製' : '📋 SRT'}</button>
+                                <button className="btn st-btn" onClick={handleExportSrt} title="匯出 SRT 檔案到資料夾">💾 SRT 檔</button>
+                            </div>
+                            <div className="st-row st-split">
+                                <span className="st-label">每段上限</span>
+                                <input type="number" min={5} max={50} value={subtitleStyle.maxCharsPerCue}
+                                    onChange={e => setSubtitleStyle({ maxCharsPerCue: Number(e.target.value) })} />
+                                <span className="st-label">字</span>
+                                <button className="btn st-btn" onClick={handleResplit} title="依上限重新分段（可復原）">重新分段</button>
+                            </div>
+                            {(isPolishing || isScanningTypos || isScanningFlow) &&
+                                <div className="progress-bar"><div className="fill loading" style={{ width: '100%' }} /></div>}
+                            <div className="st-row">
+                                <input value={typoFrom} onChange={e => setTypoFrom(e.target.value)} placeholder="錯字" className="st-input" />
+                                <span style={{ color: '#888', flexShrink: 0 }}>→</span>
+                                <input value={typoTo} onChange={e => setTypoTo(e.target.value)} placeholder="正字" className="st-input" />
+                                <button className="btn st-btn" disabled={!typoFrom} onClick={handleReplaceAll}
+                                    title="整條時間軸所有出現處一次取代（Ctrl+Z 可復原）">取代</button>
+                            </div>
+                            {typoSuggestions.length > 0 && (
+                                <div className="st-list">
+                                    {typoSuggestions.map((t, i) => (
+                                        <div key={`${t.wrong}-${i}`} className="st-item">
+                                            <span className="st-item-text" title={`「${t.wrong}」→「${t.correct}」（出現 ${t.count} 處）`}>
+                                                「{t.wrong}」→「{t.correct}」<span style={{ color: '#888' }}>({t.count})</span>
+                                            </span>
+                                            <button className="btn st-btn" onClick={() => handleApplySuggestion(i)}>取代</button>
+                                        </div>
+                                    ))}
+                                    <button className="btn btn-primary st-btn" style={{ justifyContent: 'center' }}
+                                        onClick={handleApplyAllSuggestions}>✅ 全部套用（{typoSuggestions.length} 組）</button>
+                                </div>
+                            )}
+                            {typoMsg && <div className="st-msg" style={{ color: typoMsg.startsWith('❌') ? '#ff8a80' : '#7cb27c' }}>{typoMsg}</div>}
+                            {flowIssues.length > 0 && (
+                                <div className="st-list" style={{ maxHeight: 170, overflowY: 'auto' }}>
+                                    {flowIssues.map((it, i) => (
+                                        <div key={`${it.clipId}-${it.segId}-${i}`} className="st-item st-flow"
+                                            onClick={() => handleLocateIssue(it)} title="點擊定位到此字幕（清單捲過去、播放頭跳到該句）">
+                                            <div style={{ flex: 1, minWidth: 0 }}>
+                                                <div className="st-item-text">{it.text}</div>
+                                                <div style={{ fontSize: 11, color: '#ffb74d' }}>⚠ {it.reason} · {formatTimestamp(it.tl)}</div>
+                                            </div>
+                                            <button className="btn st-btn" onClick={(e) => { e.stopPropagation(); setFlowIssues(l => l.filter((_, j) => j !== i)); }}
+                                                title="已處理，從清單移除">✓</button>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                            {flowMsg && <div className="st-msg" style={{ color: flowMsg.startsWith('❌') ? '#ff8a80' : '#7cb27c' }}>{flowMsg}</div>}
+                        </div>
+                    )}
                     <div className="subtitle-list" ref={subtitleListRef}>
                         {segments.length === 0 ? (
                             <div className="empty-state">
@@ -2371,6 +2546,86 @@ export default function App() {
                 />
             )}
             {exportProgress >= 0 && <ExportProgress progress={exportProgress} etaSeconds={exportEta} stage={exportStage} />}
+
+            {/* 匯出影片設定彈窗 */}
+            {showExportModal && (
+                <div className="modal-overlay" onClick={() => setShowExportModal(false)}>
+                    <div className="modal-box" onClick={e => e.stopPropagation()} style={{ maxWidth: 430 }}>
+                        <div className="modal-header">
+                            <h3>🎬 匯出影片</h3>
+                            <button className="btn" onClick={() => setShowExportModal(false)} style={{ padding: '2px 8px' }}>✕</button>
+                        </div>
+                        <div className="style-row" title="關閉＝匯出乾淨畫面（推薦：YouTube 觀眾用 CC 字幕，之後改錯字免重傳影片）；開啟＝字幕燒進畫面">
+                            <label>燒入字幕到畫面</label>
+                            <label className="toggle-switch">
+                                <input type="checkbox" checked={burnSubs} onChange={e => setBurnSubs(e.target.checked)} />
+                                <span className="toggle-slider" />
+                            </label>
+                        </div>
+                        {!burnSubs && (
+                            <div style={{ fontSize: 12, color: '#7cb27c', padding: '2px 0 6px' }}>
+                                ✅ 乾淨畫面匯出 — 上傳 YouTube 時會自動掛 SRT 字幕（CC）
+                            </div>
+                        )}
+                        {burnSubs && (
+                            <>
+                                <div className="style-row">
+                                    <label>字形</label>
+                                    <select value={subtitleStyle.fontName}
+                                        onChange={e => setSubtitleStyle({ fontName: e.target.value })}>
+                                        <option value="Microsoft JhengHei">微軟正黑體</option>
+                                        <option value="DFKai-SB">標楷體</option>
+                                        <option value="Microsoft YaHei">微軟雅黑</option>
+                                        <option value="Noto Sans TC">Noto Sans TC</option>
+                                        <option value="Arial">Arial</option>
+                                    </select>
+                                </div>
+                                <div className="style-row">
+                                    <label>字體大小</label>
+                                    <input type="number" min={8} max={72} value={subtitleStyle.fontSize}
+                                        onChange={e => setSubtitleStyle({ fontSize: Number(e.target.value) })} />
+                                </div>
+                                <div className="style-row">
+                                    <label>外框粗細</label>
+                                    <input type="number" min={0} max={5} value={subtitleStyle.outlineWidth}
+                                        onChange={e => setSubtitleStyle({ outlineWidth: Number(e.target.value) })} />
+                                </div>
+                                <div className="style-row">
+                                    <label>文字背景</label>
+                                    <label className="toggle-switch">
+                                        <input type="checkbox" checked={subtitleStyle.bgEnabled}
+                                            onChange={e => setSubtitleStyle({ bgEnabled: e.target.checked })} />
+                                        <span className="toggle-slider" />
+                                    </label>
+                                </div>
+                                {subtitleStyle.bgEnabled && (
+                                    <div className="style-row">
+                                        <label>透明度</label>
+                                        <input type="range" min={0} max={100} value={subtitleStyle.bgOpacity}
+                                            onChange={e => setSubtitleStyle({ bgOpacity: Number(e.target.value) })} />
+                                        <span className="opacity-val">{subtitleStyle.bgOpacity}%</span>
+                                    </div>
+                                )}
+                            </>
+                        )}
+                        <button className="btn btn-primary" style={{ width: '100%', justifyContent: 'center', marginTop: 10 }}
+                            onClick={() => { setShowExportModal(false); handleExportVideo(); }}>
+                            🎬 開始匯出
+                        </button>
+                    </div>
+                </div>
+            )}
+
+            {showYtUpload && lastExport && (
+                <YouTubeUploadModal
+                    videoPath={lastExport}
+                    defaultTitle={(primaryMedia?.filename || 'LJCUT 影片').replace(/\.[^.]+$/, '')}
+                    defaultDescription={''}
+                    segments={buildTimelineSegments()}
+                    thumbnailTime={currentTime}
+                    onClose={() => setShowYtUpload(false)}
+                />
+            )}
         </>
     );
 }

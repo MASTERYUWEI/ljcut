@@ -27,6 +27,19 @@ static AUDIO_PROCESS: Mutex<Option<Child>> = Mutex::new(None);
 static REC_PATHS: Mutex<Option<RecPaths>> = Mutex::new(None);
 /// 錄影選項（由主視窗設定，overlay 使用）
 static RECORDING_OPTIONS: Mutex<Option<RecOptions>> = Mutex::new(None);
+/// 最近一次錄影的編碼器資訊（給 UI 徽章查詢/顯示）
+static LAST_ENCODER: Mutex<Option<EncoderInfo>> = Mutex::new(None);
+
+/// 影像編碼器狀態：硬體能力（MFTEnumEx）+ 執行期是否真的在用 NVENC（nvidia-smi）。
+#[derive(Debug, Clone, Serialize)]
+pub struct EncoderInfo {
+    /// 本機是否存在硬體 H.264 編碼器（NVENC/QSV/AMF）
+    pub hw: bool,
+    /// 編碼器友善名稱
+    pub name: String,
+    /// 執行期確認：Some(true)=確認 NVENC 運作中；Some(false)=疑似掉回軟體；None=未測/無法判定
+    pub nvenc_active: Option<bool>,
+}
 
 #[derive(Clone)]
 struct RecPaths {
@@ -477,11 +490,27 @@ fn begin_recording(
     }
 
     let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let app_out = app.clone();
     if let Some(out) = child.stdout.take() {
         std::thread::spawn(move || {
             for line in BufReader::new(out).lines().map_while(Result::ok) {
-                if line.trim() == "READY" {
+                let t = line.trim();
+                if t == "READY" {
                     let _ = ready_tx.send(());
+                } else if let Some(rest) = t.strip_prefix("ENCODER\t") {
+                    // 解析 "hw=1\tname=NVIDIA H.264 Encoder MFT"
+                    let mut hw = false;
+                    let mut name = String::new();
+                    for kv in rest.split('\t') {
+                        if let Some(v) = kv.strip_prefix("hw=") {
+                            hw = v == "1";
+                        } else if let Some(v) = kv.strip_prefix("name=") {
+                            name = v.to_string();
+                        }
+                    }
+                    let info = EncoderInfo { hw, name, nvenc_active: None };
+                    *LAST_ENCODER.lock().unwrap() = Some(info.clone());
+                    let _ = app_out.emit("recorder://encoder", info);
                 } else {
                     log::info!("[recorder] {line}");
                 }
@@ -497,8 +526,11 @@ fn begin_recording(
         return Err("錄影程式未就緒（逾時），請查看日誌".into());
     }
 
+    let rec_pid = child.id();
     *RECORDER_PROC.lock().unwrap() = Some(child);
     *AUDIO_PROCESS.lock().unwrap() = audio_child;
+    // 執行期偵測：用 nvidia-smi 查 recorder PID 是否真的在用 NVENC，更新徽章
+    spawn_nvenc_runtime_probe(app.clone(), rec_pid);
     *REC_PATHS.lock().unwrap() = Some(RecPaths {
         video: video_path,
         audio: audio_path,
@@ -946,6 +978,38 @@ fn find_backend_subdir(sub: &str) -> PathBuf {
     PathBuf::from("backend").join(sub)
 }
 
+/// 在檔案總管開啟媒體所在資料夾並選取該檔。
+/// 優先開 app_data/outputs 的原始錄影檔（檔名可讀）；否則開 backend/uploads 的工作副本。
+#[tauri::command]
+pub fn reveal_media(app: AppHandle, filename: String, file_id: String) -> Result<(), String> {
+    let mut target: Option<PathBuf> = None;
+    if let Ok(data_dir) = app.path().app_data_dir() {
+        let p = data_dir.join("outputs").join(&filename);
+        if p.exists() {
+            target = Some(p);
+        }
+    }
+    if target.is_none() && !file_id.is_empty() {
+        let uploads = find_backend_subdir("uploads");
+        if let Ok(entries) = std::fs::read_dir(&uploads) {
+            for e in entries.flatten() {
+                let name = e.file_name().to_string_lossy().to_string();
+                if name.starts_with(&file_id) && !name.ends_with(".wav") {
+                    target = Some(e.path());
+                    break;
+                }
+            }
+        }
+    }
+    let target = target.ok_or("找不到媒體檔案（可能已被自動清理或移動）")?;
+    StdCommand::new("explorer")
+        .arg(format!("/select,{}", target.to_string_lossy()))
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()
+        .map_err(|e| format!("開啟檔案總管失敗: {e}"))?;
+    Ok(())
+}
+
 // ── 自動清理逾期暫存/工作檔 ──
 //
 // 掃描三個目錄、刪除「最後修改超過 max_age_days 天」的檔案：
@@ -1000,4 +1064,66 @@ pub fn cleanup_old_files(app: &AppHandle, max_age_days: u64) {
     } else {
         log::info!("🧹 自動清理：無逾期暫存檔");
     }
+}
+
+
+/// 查詢最近一次錄影的編碼器資訊（給前端徽章；事件可能在前端監聽前就發出，故補一個 pull 介面）。
+#[tauri::command]
+pub fn get_encoder_info() -> Option<EncoderInfo> {
+    LAST_ENCODER.lock().unwrap().clone()
+}
+
+/// 執行期偵測 NVENC 是否真的在運作：用 `nvidia-smi pmon` 取樣 recorder 那個 PID 的 enc 欄。
+/// 即使本機有 NVENC，若編碼 session 被別的程式（OBS 等）占滿，MediaTranscoder 會「靜默」掉回
+/// 軟體編碼；此探針能抓到這種情況，把徽章從綠轉黃。任何失敗都不影響錄影、也不下定論。
+fn spawn_nvenc_runtime_probe(app: AppHandle, pid: u32) {
+    std::thread::spawn(move || {
+        // pmon -c 3：取 3 次（每次 ~1s）樣本，期間我方持續編碼，enc 欄應 > 0
+        let out = StdCommand::new("nvidia-smi")
+            .args(["pmon", "-c", "3"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output();
+        let Ok(out) = out else { return }; // nvidia-smi 不存在 → 略過（非 NVIDIA 卡）
+        if !out.status.success() {
+            return;
+        }
+        let text = String::from_utf8_lossy(&out.stdout);
+        let pid_s = pid.to_string();
+        let mut saw_pid = false;
+        let mut enc_active = false;
+        for line in text.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            // 欄位：gpu pid type sm mem enc dec command
+            let cols: Vec<&str> = line.split_whitespace().collect();
+            if cols.len() < 7 || cols[1] != pid_s {
+                continue;
+            }
+            saw_pid = true;
+            if let Ok(enc) = cols[5].parse::<f32>() {
+                if enc > 0.0 {
+                    enc_active = true;
+                }
+            }
+        }
+        if !saw_pid {
+            return; // 沒抓到該 PID → 不下定論，維持 None
+        }
+        let snapshot = {
+            let mut guard = LAST_ENCODER.lock().unwrap();
+            if let Some(info) = guard.as_mut() {
+                info.nvenc_active = Some(enc_active);
+                Some(info.clone())
+            } else {
+                None
+            }
+        };
+        if let Some(info) = snapshot {
+            let _ = app.emit("recorder://encoder", info);
+        }
+    });
 }

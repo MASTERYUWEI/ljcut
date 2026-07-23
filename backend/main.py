@@ -16,6 +16,7 @@ import uuid
 import shutil
 import threading
 import subprocess
+import asyncio
 from pathlib import Path
 from contextlib import asynccontextmanager
 
@@ -28,6 +29,8 @@ from services.transcribe import TranscribeService
 from services.subtitle import SubtitleService
 from services.ffmpeg_service import FFmpegService
 from services.llm_service import LLMService
+from services.youtube_service import YouTubeService
+from services.thumb_service import ThumbService
 
 # ---------- 設定 ----------
 UPLOAD_DIR = Path("./uploads")
@@ -156,28 +159,52 @@ async def upload_video(file: UploadFile = File(...)):
 
 @app.post("/api/transcribe/{file_id}")
 async def transcribe(file_id: str, language: str = Form(default="zh")):
-    """語音辨識"""
+    """語音辨識 — SSE 串流進度（辨識在背景執行緒跑，避免凍結事件迴圈）"""
     svc = _ensure_model()  # 惰性載入；模型還沒好時會在此阻塞直到就緒
 
-    # 找上傳的檔案
-    matches = list(UPLOAD_DIR.glob(f"{file_id}.*"))
+    # 找上傳的檔案（排除殘留的 .wav）
+    matches = [m for m in UPLOAD_DIR.glob(f"{file_id}.*") if not m.name.endswith(".wav")]
     if not matches:
         raise HTTPException(404, f"找不到檔案: {file_id}")
-
     video_path = str(matches[0])
 
-    # 抽取音頻
-    audio_path = str(UPLOAD_DIR / f"{file_id}.wav")
-    FFmpegService.extract_audio(video_path, audio_path)
+    loop = asyncio.get_running_loop()
+    q: asyncio.Queue = asyncio.Queue()
 
-    # 執行辨識
-    result = svc.transcribe(audio_path, language=language)
+    def push(ev):
+        loop.call_soon_threadsafe(q.put_nowait, ev)
 
-    # 清理暫存音頻
-    if os.path.exists(audio_path) and not video_path.endswith(".wav"):
-        os.remove(audio_path)
+    def on_progress(current: float, total: float):
+        pct = int(min(99, max(0, (current / total * 100) if total else 0)))
+        push({"progress": pct, "current": round(current, 1), "total": round(total, 1)})
 
-    return result
+    def run():
+        audio_path = str(UPLOAD_DIR / f"{file_id}.wav")
+        try:
+            push({"progress": 0, "stage": "extract"})  # 抽取音訊中
+            FFmpegService.extract_audio(video_path, audio_path)
+            result = svc.transcribe(audio_path, language=language, on_progress=on_progress)
+            push({"progress": 100, "done": True, "result": result})
+        except Exception as e:
+            push({"error": str(e)})
+        finally:
+            if os.path.exists(audio_path) and not video_path.endswith(".wav"):
+                try:
+                    os.remove(audio_path)
+                except Exception:
+                    pass
+            push(None)  # 結束哨兵
+
+    threading.Thread(target=run, daemon=True).start()
+
+    async def event_stream():
+        while True:
+            ev = await q.get()
+            if ev is None:
+                break
+            yield f"data: {json.dumps(ev)}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 @app.post("/api/export/srt/{file_id}")
@@ -430,6 +457,129 @@ async def ai_set_key(body: dict = Body(...)):
     result = await LLMService.set_api_key(key)
     print(f"🔑 已更新 GEMINI_API_KEY，可用={result.get('status', {}).get('available')}", flush=True)
     return JSONResponse(result)
+
+
+# ── YouTube 上傳 ──
+# 這些端點刻意用同步 def（FastAPI 丟 threadpool），避免網路呼叫卡住事件迴圈
+
+
+@app.post("/api/ai/titles")
+async def ai_generate_titles(body: dict = Body(default={})):
+    """依逐字稿/大綱產 5 個 YouTube 標題候選"""
+    return await LLMService.generate_titles(body.get("texts", []))
+
+
+@app.post("/api/yt/thumbnails")
+async def yt_generate_thumbnails(body: dict = Body(default={})):
+    """AI 生成 N 款 16:9 封面候選（2.5D 像素風 + 本地標題合成）"""
+    return await ThumbService.generate_candidates(
+        body.get("title", ""), int(body.get("count", 5)),
+        transcript=body.get("transcript", ""),
+    )
+
+
+@app.post("/api/yt/credentials")
+def yt_set_credentials(body: dict = Body(default={})):
+    """儲存 YouTube OAuth 用戶端憑證（空字串 = 清除）"""
+    return YouTubeService.set_credentials(body.get("client_id", ""), body.get("client_secret", ""))
+
+
+@app.get("/api/yt/status")
+def yt_status():
+    """YouTube 連結狀態"""
+    return YouTubeService.status()
+
+
+@app.post("/api/yt/auth/start")
+def yt_auth_start():
+    """啟動 OAuth loopback 授權，回傳要開的網址"""
+    return YouTubeService.start_auth()
+
+
+@app.post("/api/yt/disconnect")
+def yt_disconnect():
+    """解除 YouTube 連結"""
+    return YouTubeService.disconnect()
+
+
+@app.post("/api/yt/upload")
+def yt_upload(body: dict = Body(default={})):
+    """上傳影片到 YouTube（+ 縮圖 + SRT 字幕）— SSE 進度"""
+    video_path = body.get("video_path", "")
+    if not video_path or not os.path.exists(video_path):
+        raise HTTPException(404, f"找不到影片檔: {video_path}")
+
+    # SRT：前端傳入已映射到成品時間軸的 segments
+    segments = body.get("segments") or []
+    srt_path = None
+    if segments:
+        srt_path = str(OUTPUT_DIR / "yt_upload.srt")
+        SubtitleService.segments_to_srt(segments, srt_path)
+
+    # 縮圖：優先用 AI 生成封面檔（outputs/ 內、防路徑跳脫）；否則從成品影片抓幀
+    thumb_path = None
+    tp = body.get("thumbnail_path", "")
+    if tp:
+        cand = (OUTPUT_DIR / Path(tp).name).resolve()
+        if cand.exists() and cand.suffix.lower() in (".jpg", ".jpeg", ".png"):
+            thumb_path = str(cand)
+    t = body.get("thumbnail_time", None)
+    if thumb_path is None and isinstance(t, (int, float)):
+        thumb_path = str(OUTPUT_DIR / "yt_thumb.jpg")
+        subprocess.run(
+            ["ffmpeg", "-y", "-ss", str(max(0.0, float(t))), "-i", video_path,
+             "-frames:v", "1", "-q:v", "2", thumb_path],
+            capture_output=True,
+        )
+        if not os.path.exists(thumb_path):
+            thumb_path = None
+
+    def generate():
+        try:
+            for ev in YouTubeService.upload_with_progress(
+                video_path,
+                title=body.get("title", ""),
+                description=body.get("description", ""),
+                tags=body.get("tags") or [],
+                privacy=body.get("privacy", "private"),
+                thumbnail_path=thumb_path,
+                srt_path=srt_path,
+            ):
+                yield f"data: {json.dumps(ev)}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+@app.post("/api/ai/suspicious")
+async def ai_scan_suspicious(body: dict = Body(default={})):
+    """AI 掃描語意不通順/疑似辨識錯誤的句子"""
+    return await LLMService.scan_suspicious(body.get("texts", []))
+
+
+@app.post("/api/ai/typos")
+async def ai_scan_typos(body: dict = Body(default={})):
+    """AI 掃描字幕錯字，回傳建議取代清單"""
+    return await LLMService.scan_typos(body.get("texts", []))
+
+
+@app.post("/api/ai/health")
+async def ai_health():
+    """金鑰健康度實測：真的敲一次 Gemini generateContent"""
+    return await LLMService.health_check()
+
+
+@app.get("/api/ai/model")
+async def get_ai_model():
+    """目前使用的 Gemini 模型 + 是否有新版 Flash 可用"""
+    return await LLMService.model_info()
+
+
+@app.post("/api/ai/model")
+async def set_ai_model(body: dict = Body(default={})):
+    """切換 Gemini 模型（model 留空 = 自動選最新 Flash）"""
+    return await LLMService.set_model(body.get("model", ""))
 
 
 @app.post("/api/ai/generate")

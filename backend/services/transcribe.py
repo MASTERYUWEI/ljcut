@@ -46,6 +46,7 @@ class TranscribeService:
         language: str = "zh",
         word_timestamps: bool = True,
         vad_filter: bool = True,
+        on_progress=None,
     ) -> dict:
         """
         執行語音辨識
@@ -66,6 +67,13 @@ class TranscribeService:
                 speech_pad_ms=400,               # 語音前後留白 400ms（Silero 預設），確保字幕覆蓋完整語音
             ),
         )
+
+        total = float(getattr(info, "duration", 0) or 0)
+        if on_progress:
+            try:
+                on_progress(0.0, total)
+            except Exception:
+                pass
 
         segments = []
         for seg in segments_gen:
@@ -91,6 +99,12 @@ class TranscribeService:
                 ]
 
             segments.append(segment_data)
+
+            if on_progress:
+                try:
+                    on_progress(float(seg.end), total)
+                except Exception:
+                    pass
 
         return {
             "language": info.language,

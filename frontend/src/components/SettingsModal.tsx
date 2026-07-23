@@ -40,6 +40,88 @@ export function SettingsModal({ settings, setSettings, onClose }: Props) {
         api.getApiKeyInfo().then(setKeyInfo).catch(() => { });
     }, []);
 
+    // ── AI 模型（動態偵測 Google 最新 Flash）──
+    const [modelInfo, setModelInfo] = useState<{ current: string; best: string; update_available: boolean; current_alive: boolean | null } | null>(null);
+    const [switching, setSwitching] = useState(false);
+
+    const loadModelInfo = () => { api.getAiModel().then(setModelInfo).catch(() => { }); };
+    useEffect(() => { loadModelInfo(); }, []);
+
+    // ── 金鑰健康度實測 ──
+    const [testing, setTesting] = useState(false);
+    const [health, setHealth] = useState('');
+
+    const testKey = async () => {
+        setTesting(true);
+        setHealth('');
+        try {
+            const r = await api.checkAiHealth();
+            if (r.ok) {
+                setHealth(`✅ 金鑰正常 — 模型 ${r.model} 實際回應，延遲 ${((r.latency_ms ?? 0) / 1000).toFixed(1)} 秒`);
+                loadModelInfo(); // 若健檢觸發自動換模型，同步顯示
+            } else {
+                setHealth(`❌ ${r.error || '未知錯誤'}${r.detail ? `\n${r.detail}` : ''}`);
+            }
+        } catch (e) { setHealth(`❌ 測試失敗：${e}`); }
+        finally { setTesting(false); }
+    };
+
+    // ── YouTube 連結 ──
+    const [yt, setYt] = useState<{ configured: boolean; connected: boolean; channel?: string; auth_error?: string } | null>(null);
+    const [ytCid, setYtCid] = useState('');
+    const [ytSecret, setYtSecret] = useState('');
+    const [ytBusy, setYtBusy] = useState(false);
+    const [ytMsg, setYtMsg] = useState('');
+
+    const loadYt = () => { api.ytStatus().then(setYt).catch(() => { }); };
+    useEffect(() => { loadYt(); }, []);
+
+    const saveYtCreds = async () => {
+        if (!ytCid.trim() || !ytSecret.trim()) return;
+        setYtBusy(true);
+        setYtMsg('');
+        try {
+            await api.ytSetCredentials(ytCid.trim(), ytSecret.trim());
+            setYtCid(''); setYtSecret('');
+            loadYt();
+            setYtMsg('✅ 憑證已儲存，請按「連結 YouTube 帳號」完成授權');
+        } catch (e) { setYtMsg(`❌ ${e}`); }
+        finally { setYtBusy(false); }
+    };
+
+    const connectYt = async () => {
+        setYtBusy(true);
+        setYtMsg('');
+        try {
+            const r = await api.ytAuthStart();
+            if (!r.ok || !r.auth_url) { setYtMsg(`❌ ${r.error || '啟動授權失敗'}`); return; }
+            const IS_TAURI = !!(window as any).__TAURI_INTERNALS__;
+            if (IS_TAURI) {
+                const { open } = await import('@tauri-apps/plugin-shell');
+                await open(r.auth_url);
+            } else { window.open(r.auth_url, '_blank'); }
+            setYtMsg('🔗 已開啟瀏覽器，請用你的 Google 帳號完成授權…');
+            for (let i = 0; i < 90; i++) {
+                await new Promise(res => setTimeout(res, 2000));
+                const s = await api.ytStatus();
+                if (s.connected) { setYt(s); setYtMsg(`✅ 已連結頻道：${s.channel || ''}`); return; }
+                if (s.auth_error) { setYtMsg(`❌ ${s.auth_error}`); return; }
+            }
+            setYtMsg('⚠️ 等待授權逾時，請重新按「連結」');
+        } catch (e) { setYtMsg(`❌ ${e}`); }
+        finally { setYtBusy(false); }
+    };
+
+    const switchModel = async (target: string) => {
+        setSwitching(true);
+        try {
+            const r = await api.setAiModel(target);
+            if (r.ok) loadModelInfo();
+            else if (r.error) alert(r.error);
+        } catch (e) { alert(`切換失敗: ${e}`); }
+        finally { setSwitching(false); }
+    };
+
     const saveKey = async () => {
         const k = keyInput.trim();
         if (!k) return;
@@ -149,7 +231,85 @@ export function SettingsModal({ settings, setSettings, onClose }: Props) {
                             </button>
                         </>
                     )}
+                    <button className="btn" disabled={testing || !keyInfo.has_key} onClick={testKey}
+                        style={{ justifyContent: 'center' }}
+                        title="實際呼叫一次 Gemini API，確認金鑰真的能拿到回應">
+                        {testing ? '🩺 測試中...' : '🩺 測試金鑰健康度'}
+                    </button>
+                    {health && (
+                        <div style={{ fontSize: 12, whiteSpace: 'pre-wrap', color: health.startsWith('✅') ? '#7cb27c' : '#ff8a80' }}>
+                            {health}
+                        </div>
+                    )}
                     {saveMsg && <div style={{ fontSize: 12, color: '#ccc' }}>{saveMsg}</div>}
+                </div>
+
+                {/* ── AI 模型（Gemini）── */}
+                <div className="style-row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 6 }}>
+                    <label>AI 模型（Gemini）</label>
+                    {modelInfo ? (
+                        <>
+                            <div style={{ fontSize: 13, color: modelInfo.current_alive === false ? '#ff9800' : '#ccc' }}>
+                                目前：<code style={{ background: '#1e1e1e', padding: '2px 6px', borderRadius: 4 }}>{modelInfo.current}</code>
+                                {modelInfo.current_alive === false && '　⚠️ 此模型已被 Google 下架（呼叫時會自動換新）'}
+                            </div>
+                            {modelInfo.update_available ? (
+                                <button className="btn" disabled={switching} onClick={() => switchModel(modelInfo.best)}
+                                    style={{ justifyContent: 'center', color: '#ffd54f' }}
+                                    title="Google 已推出較新的 Flash 模型，點擊切換並儲存">
+                                    {switching ? '切換中...' : `✨ Google 有新模型 ${modelInfo.best} — 點此切換`}
+                                </button>
+                            ) : modelInfo.best ? (
+                                <div style={{ fontSize: 12, color: '#7cb27c' }}>✅ 已是最新的 Flash 模型</div>
+                            ) : (
+                                <div style={{ fontSize: 12, color: '#888' }}>（需先設定有效的 API Key 才能檢查新版）</div>
+                            )}
+                        </>
+                    ) : (
+                        <div style={{ fontSize: 12, color: '#888' }}>模型資訊載入中…</div>
+                    )}
+                </div>
+
+                {/* ── YouTube 上傳連結 ── */}
+                <div className="style-row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 6 }}>
+                    <label>YouTube 上傳</label>
+                    {yt?.connected ? (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
+                            <span style={{ color: '#4caf50' }}>✅ 已連結頻道：{yt.channel || '(讀取中)'}</span>
+                            <button className="btn" style={{ marginLeft: 'auto', padding: '0 10px' }}
+                                onClick={async () => { await api.ytDisconnect(); loadYt(); setYtMsg(''); }}>
+                                解除連結
+                            </button>
+                        </div>
+                    ) : (
+                        <>
+                            {!yt?.configured && (
+                                <>
+                                    <input value={ytCid} onChange={e => setYtCid(e.target.value)}
+                                        placeholder="OAuth 用戶端 ID（xxx.apps.googleusercontent.com）"
+                                        autoComplete="off" spellCheck={false} style={inputStyle} />
+                                    <div style={{ display: 'flex', gap: 6 }}>
+                                        <input value={ytSecret} onChange={e => setYtSecret(e.target.value)}
+                                            placeholder="用戶端密鑰" type="password" autoComplete="off" style={inputStyle} />
+                                        <button className="btn btn-primary" disabled={ytBusy || !ytCid.trim() || !ytSecret.trim()}
+                                            onClick={saveYtCreds} style={{ padding: '0 12px' }}>儲存</button>
+                                    </div>
+                                </>
+                            )}
+                            <button className="btn" disabled={ytBusy || !yt?.configured} onClick={connectYt}
+                                style={{ justifyContent: 'center' }}
+                                title={yt?.configured ? '開啟瀏覽器完成 Google 授權（一次性）' : '請先儲存 OAuth 憑證'}>
+                                {ytBusy ? '⏳ 等待授權中...' : '🔗 連結 YouTube 帳號'}
+                            </button>
+                            {yt?.configured && (
+                                <button className="btn" style={{ justifyContent: 'center', fontSize: 12 }}
+                                    onClick={async () => { await api.ytSetCredentials('', ''); loadYt(); setYtMsg('已清除憑證'); }}>
+                                    重設憑證
+                                </button>
+                            )}
+                        </>
+                    )}
+                    {ytMsg && <div style={{ fontSize: 12, color: ytMsg.startsWith('❌') ? '#ff8a80' : '#ccc', whiteSpace: 'pre-wrap' }}>{ytMsg}</div>}
                 </div>
             </div>
         </div>

@@ -35,8 +35,13 @@ use windows::Win32::Graphics::Dxgi::{
     IDXGIOutputDuplication, IDXGIResource, DXGI_ERROR_ACCESS_LOST, DXGI_ERROR_WAIT_TIMEOUT,
     DXGI_OUTDUPL_FRAME_INFO, DXGI_OUTDUPL_POINTER_SHAPE_INFO,
 };
-use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
+use windows::Win32::System::Com::{CoInitializeEx, CoTaskMemFree, COINIT_MULTITHREADED};
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON, VK_RBUTTON};
+use windows::Win32::Media::MediaFoundation::{
+    IMFActivate, MFMediaType_Video, MFTEnumEx, MFT_CATEGORY_VIDEO_ENCODER, MFT_ENUM_FLAG_HARDWARE,
+    MFT_ENUM_FLAG_SORTANDFILTER, MFT_FRIENDLY_NAME_Attribute, MFT_REGISTER_TYPE_INFO,
+    MFVideoFormat_H264,
+};
 
 use windows_capture::encoder::{
     AudioSettingsBuilder, ContainerSettingsBuilder, VideoEncoder, VideoSettingsBuilder,
@@ -46,6 +51,63 @@ use windows_capture::encoder::{
 fn fail(msg: &str) -> ! {
     eprintln!("ERROR: {msg}");
     std::process::exit(1);
+}
+
+/// 用 Media Foundation 列舉「硬體」H.264 編碼器（MFTEnumEx + HARDWARE 旗標）。
+/// 回傳 (是否存在硬體編碼器, 友善名稱)。任何失敗都回 (false, 軟體說明)，絕不影響錄影。
+///
+/// 說明：windows-capture 的 VideoEncoder 底層是 WinRT MediaTranscoder 且已開啟硬體加速，
+/// 只要本機存在硬體 H.264 MFT（如 NVENC），它就會用；此函式即在確認該前提是否成立。
+fn detect_hw_h264_encoder() -> (bool, String) {
+    let sw = || (false, "軟體 (Media Foundation / CPU)".to_string());
+    unsafe {
+        let out_type = MFT_REGISTER_TYPE_INFO {
+            guidMajorType: MFMediaType_Video,
+            guidSubtype: MFVideoFormat_H264,
+        };
+        let mut activates: *mut Option<IMFActivate> = std::ptr::null_mut();
+        let mut count: u32 = 0;
+        if MFTEnumEx(
+            MFT_CATEGORY_VIDEO_ENCODER,
+            MFT_ENUM_FLAG_HARDWARE | MFT_ENUM_FLAG_SORTANDFILTER,
+            None,
+            Some(&out_type),
+            &mut activates,
+            &mut count,
+        )
+        .is_err()
+            || activates.is_null()
+            || count == 0
+        {
+            return sw();
+        }
+
+        let slice = std::slice::from_raw_parts_mut(activates, count as usize);
+        // 讀第一個（已 SORTANDFILTER，偏好硬體優先）的友善名稱
+        let mut name = String::new();
+        if let Some(act) = slice[0].as_ref() {
+            let mut p = windows::core::PWSTR::null();
+            let mut len: u32 = 0;
+            if act
+                .GetAllocatedString(&MFT_FRIENDLY_NAME_Attribute, &mut p, &mut len)
+                .is_ok()
+                && !p.is_null()
+            {
+                name = p.to_string().unwrap_or_default();
+                CoTaskMemFree(Some(p.0 as *const _));
+            }
+        }
+        // 釋放每個 IMFActivate（take→drop 會 Release）與 CoTaskMem 陣列本身
+        for a in slice.iter_mut() {
+            let _ = a.take();
+        }
+        CoTaskMemFree(Some(activates as *const _));
+
+        if name.is_empty() {
+            name = "硬體 H.264 編碼器".to_string();
+        }
+        (true, name)
+    }
 }
 
 /// 把 "#RRGGBB" / "RRGGBB" 轉成 BGR（給 blend 用）；解析失敗回傳 default。
@@ -576,6 +638,12 @@ fn main() {
     unsafe {
         let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
     }
+
+    // 偵測本機硬體 H.264 編碼器（NVENC/QSV/AMF），結果回報上層顯示在 UI 徽章。
+    // 用 tab 分隔的結構化行，上層 stdout reader 解析；READY 之前先送出。
+    let (hw_enc, enc_name) = detect_hw_h264_encoder();
+    println!("ENCODER\thw={}\tname={}", if hw_enc { 1 } else { 0 }, enc_name);
+    let _ = std::io::stdout().flush();
 
     // ── 建立 DXGI 桌面複製（在擁有目標螢幕的顯示卡上）──
     let (device, context, output) =
