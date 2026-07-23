@@ -10,7 +10,12 @@ load_dotenv()
 
 # API Key 可在執行期由 UI 更新（set_api_key），並寫回 backend/.env 持久化。
 _api_key = os.getenv("GEMINI_API_KEY", "")
-_ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
+# 打包模式（LJCUT_DATA_DIR）時 .env 放使用者資料夾；開發模式維持 backend/.env
+_ENV_PATH = (
+    Path(os.getenv("LJCUT_DATA_DIR")) / ".env"
+    if os.getenv("LJCUT_DATA_DIR")
+    else Path(__file__).resolve().parent.parent / ".env"
+)
 # 模型 ID 不寫死：Google 會汰換模型（gemini-2.0-flash 已於 2026 下架、回 404）。
 # 啟動時讀 .env 的 GEMINI_MODEL；呼叫若遇模型 404 會自動查 ListModels 換最新 Flash 並持久化。
 _model = os.getenv("GEMINI_MODEL", "").strip() or "gemini-2.5-flash"

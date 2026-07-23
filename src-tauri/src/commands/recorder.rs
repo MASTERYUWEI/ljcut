@@ -959,6 +959,10 @@ pub async fn stop_recording(app: AppHandle) -> Result<String, String> {
 }
 
 fn find_backend_subdir(sub: &str) -> PathBuf {
+    // 發行模式：資料目錄由 lib.rs 指到使用者可寫的 app_data/backend
+    if let Ok(base) = std::env::var("LJCUT_DATA_DIR") {
+        return PathBuf::from(base).join(sub);
+    }
     if let Ok(exe) = std::env::current_exe() {
         let mut dir = exe.parent().map(|p| p.to_path_buf());
         for _ in 0..6 {

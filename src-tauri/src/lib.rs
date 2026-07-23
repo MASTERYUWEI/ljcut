@@ -10,6 +10,8 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_log::Builder::default().build())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
@@ -42,6 +44,28 @@ pub fn run() {
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(data_dir.join("uploads")).ok();
             std::fs::create_dir_all(data_dir.join("outputs")).ok();
+
+            // ── 發行版（安裝包）支援 ──
+            // 1) 把 exe 目錄與 bundle-res 前置到 PATH：內建的 ffmpeg/ffprobe 對本程式與
+            //    所有子程序（含 Python 後端、錄音 ffmpeg）都可見；開發機沒有這些檔就等於沒動。
+            // 2) 偵測到打包後端（bundle-res/backend/ljcut-backend.exe）→ 資料目錄改到
+            //    使用者可寫的 app_data/backend（Program Files 不可寫）。
+            if let Ok(exe) = std::env::current_exe() {
+                if let Some(dir) = exe.parent() {
+                    let res = dir.join("bundle-res");
+                    let old_path = std::env::var("PATH").unwrap_or_default();
+                    std::env::set_var(
+                        "PATH",
+                        format!("{};{};{}", res.display(), dir.display(), old_path),
+                    );
+                    if res.join("backend").join("ljcut-backend.exe").exists() {
+                        let bdata = data_dir.join("backend");
+                        std::fs::create_dir_all(&bdata).ok();
+                        std::env::set_var("LJCUT_DATA_DIR", &bdata);
+                        log::info!("📦 發行模式：backend 資料目錄 {}", bdata.display());
+                    }
+                }
+            }
 
             // 啟動 Python sidecar（FastAPI）
             let handle = app.handle().clone();

@@ -537,6 +537,29 @@ export default function App() {
         return () => { cancelled = true; if (unlisten) unlisten(); };
     }, []);
 
+    // ── 自動檢查更新（發行版；開發模式 check 會失敗並靜默略過）──
+    useEffect(() => {
+        if (!IS_TAURI) return;
+        const t = setTimeout(async () => {
+            try {
+                const { check } = await import('@tauri-apps/plugin-updater');
+                const update = await check();
+                if (update) {
+                    const yes = window.confirm(
+                        `🔄 LJCUT 有新版本 v${update.version}（目前 v${update.currentVersion}）\n\n`
+                        + `${update.body || ''}\n\n現在下載並安裝？（完成後自動重啟）`
+                    );
+                    if (yes) {
+                        await update.downloadAndInstall();
+                        const { relaunch } = await import('@tauri-apps/plugin-process');
+                        await relaunch();
+                    }
+                }
+            } catch { /* 開發模式或離線：靜默 */ }
+        }, 3000);
+        return () => clearTimeout(t);
+    }, []);
+
     // ── 從媒體庫拖放到時間軸：建立 clip ──
     const handleDropToTimeline = useCallback((e: React.DragEvent) => {
         e.preventDefault();

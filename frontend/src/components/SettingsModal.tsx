@@ -112,6 +112,38 @@ export function SettingsModal({ settings, setSettings, onClose }: Props) {
         finally { setYtBusy(false); }
     };
 
+    // ── 版本與更新 ──
+    const [appVer, setAppVer] = useState('');
+    const [updBusy, setUpdBusy] = useState(false);
+    const [updMsg, setUpdMsg] = useState('');
+
+    useEffect(() => {
+        (async () => {
+            try {
+                const { getVersion } = await import('@tauri-apps/api/app');
+                setAppVer(await getVersion());
+            } catch { /* 非 Tauri */ }
+        })();
+    }, []);
+
+    const checkUpdate = async () => {
+        setUpdBusy(true);
+        setUpdMsg('');
+        try {
+            const { check } = await import('@tauri-apps/plugin-updater');
+            const update = await check();
+            if (!update) { setUpdMsg('✅ 已是最新版本'); return; }
+            const yes = window.confirm(`發現新版本 v${update.version}（目前 v${update.currentVersion}），現在下載並安裝？`);
+            if (yes) {
+                setUpdMsg('⬇️ 下載更新中，完成後會自動重啟…');
+                await update.downloadAndInstall();
+                const { relaunch } = await import('@tauri-apps/plugin-process');
+                await relaunch();
+            }
+        } catch (e) { setUpdMsg(`❌ 檢查失敗：${e}（開發模式無更新功能）`); }
+        finally { setUpdBusy(false); }
+    };
+
     const switchModel = async (target: string) => {
         setSwitching(true);
         try {
@@ -310,6 +342,20 @@ export function SettingsModal({ settings, setSettings, onClose }: Props) {
                         </>
                     )}
                     {ytMsg && <div style={{ fontSize: 12, color: ytMsg.startsWith('❌') ? '#ff8a80' : '#ccc', whiteSpace: 'pre-wrap' }}>{ytMsg}</div>}
+                </div>
+
+                {/* ── 版本與更新 ── */}
+                <div className="style-row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 6 }}>
+                    <label>版本</label>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
+                        <span style={{ color: '#ccc' }}>LJCUT v{appVer || '—'}</span>
+                        <button className="btn" disabled={updBusy} onClick={checkUpdate}
+                            style={{ marginLeft: 'auto', padding: '0 12px' }}
+                            title="向 GitHub Releases 檢查是否有新版本">
+                            {updBusy ? '⏳ 檢查中...' : '🔄 檢查更新'}
+                        </button>
+                    </div>
+                    {updMsg && <div style={{ fontSize: 12, color: updMsg.startsWith('❌') ? '#ff8a80' : '#7cb27c' }}>{updMsg}</div>}
                 </div>
             </div>
         </div>

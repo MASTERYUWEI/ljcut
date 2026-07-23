@@ -47,3 +47,11 @@ Revit教學.mp4
 
 # ── 根目錄測試錄影/素材 ──
 /*.mp4
+
+# ── 發行打包暫存 ──
+src-tauri/binaries/
+src-tauri/bundle-res/
+backend/build/
+backend/dist/
+backend/*.spec
+frontend/tsconfig.tsbuildinfo

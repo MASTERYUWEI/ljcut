@@ -177,7 +177,9 @@ def _cover_1280(img: Image.Image) -> Image.Image:
 
 
 def _out_dir() -> Path:
-    d = Path(__file__).resolve().parent.parent / "outputs"
+    import os as _os
+    base = _os.getenv("LJCUT_DATA_DIR")
+    d = (Path(base) if base else Path(__file__).resolve().parent.parent) / "outputs"
     d.mkdir(parents=True, exist_ok=True)
     return d
 

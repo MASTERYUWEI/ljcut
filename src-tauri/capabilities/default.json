@@ -22,6 +22,8 @@
     "core:window:allow-current-monitor",
     "core:window:allow-inner-position",
     "core:window:allow-inner-size",
+    "updater:default",
+    "process:default",
     "dialog:default",
     "dialog:allow-open",
     "dialog:allow-save",

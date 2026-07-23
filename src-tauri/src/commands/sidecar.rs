@@ -132,25 +132,33 @@ pub fn start_sidecar(app: &AppHandle) {
         return;
     }
 
-    let backend_dir = find_backend_dir();
-    let python = venv_python(&backend_dir);
     let port = pick_free_port();
 
-    log::info!(
-        "🐍 啟動 sidecar: {} -m uvicorn main:app --port {} (cwd={})",
-        python.display(),
-        port,
-        backend_dir.display()
-    );
+    // 打包模式：exe 旁 bundle-res/backend/ljcut-backend.exe（PyInstaller 凍結後端）
+    let bundled_exe = std::env::current_exe()
+        .ok()
+        .and_then(|e| {
+            e.parent()
+                .map(|d| d.join("bundle-res").join("backend").join("ljcut-backend.exe"))
+        })
+        .filter(|p| p.exists());
 
-    let mut cmd = Command::new(&python);
-    cmd.current_dir(&backend_dir)
-        .env("LJCUT_PARENT_PID", std::process::id().to_string())
-        // 強制 Python 以 UTF-8 輸出：stdout 被導向 pipe 時 Python 預設用系統編碼(cp950)，
-        // 會讓含 emoji/中文的 print 觸發 UnicodeEncodeError，連帶使模型載入執行緒崩潰。
-        .env("PYTHONUTF8", "1")
-        .env("PYTHONIOENCODING", "utf-8")
-        .args([
+    let mut cmd = if let Some(exe) = &bundled_exe {
+        log::info!("🐍 啟動 sidecar (bundled): {} --port {}", exe.display(), port);
+        let mut c = Command::new(exe);
+        c.args(["--port", &port.to_string()]);
+        c
+    } else {
+        let backend_dir = find_backend_dir();
+        let python = venv_python(&backend_dir);
+        log::info!(
+            "🐍 啟動 sidecar: {} -m uvicorn main:app --port {} (cwd={})",
+            python.display(),
+            port,
+            backend_dir.display()
+        );
+        let mut c = Command::new(&python);
+        c.current_dir(&backend_dir).args([
             "-m",
             "uvicorn",
             "main:app",
@@ -160,7 +168,14 @@ pub fn start_sidecar(app: &AppHandle) {
             &port.to_string(),
             "--log-level",
             "info",
-        ])
+        ]);
+        c
+    };
+    cmd.env("LJCUT_PARENT_PID", std::process::id().to_string())
+        // 強制 Python 以 UTF-8 輸出：stdout 被導向 pipe 時 Python 預設用系統編碼(cp950)，
+        // 會讓含 emoji/中文的 print 觸發 UnicodeEncodeError，連帶使模型載入執行緒崩潰。
+        .env("PYTHONUTF8", "1")
+        .env("PYTHONIOENCODING", "utf-8")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
@@ -210,7 +225,7 @@ pub fn start_sidecar(app: &AppHandle) {
             log::info!("✅ sidecar 已啟動，port={port}");
         }
         Err(e) => {
-            log::error!("❌ 啟動 sidecar 失敗: {e}（python={}）", python.display());
+            log::error!("❌ 啟動 sidecar 失敗: {e}");
         }
     }
 }
