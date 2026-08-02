@@ -1,6 +1,36 @@
 """語音辨識服務 — 使用 MR Breeze ASR 25（台灣繁體中文優化）"""
 
-from faster_whisper import WhisperModel
+import os
+from pathlib import Path
+
+
+def _register_cuda_dlls():
+    """把 venv 內 nvidia pip 套件的 CUDA DLL 目錄註冊進搜尋路徑。
+
+    ctranslate2 只把自己的套件目錄 add_dll_directory，不會找 pip 裝的
+    nvidia-cublas/cudnn（cublas64_12.dll 等），系統 PATH 又沒有 CUDA Toolkit 時，
+    模型 init 會成功（懶載入）、但一開始推論就炸
+    「Library cublas64_12.dll is not found」。這裡在 import ctranslate2 前補註冊。
+    """
+    try:
+        import nvidia  # nvidia-cublas-cu12 / nvidia-cudnn-cu12 的命名空間套件
+        for base in nvidia.__path__:
+            for sub in ("cublas", "cudnn"):
+                d = Path(base) / sub / "bin"
+                if d.is_dir():
+                    try:
+                        os.add_dll_directory(str(d))
+                    except Exception:
+                        pass
+                    os.environ["PATH"] = str(d) + os.pathsep + os.environ.get("PATH", "")
+                    print(f"🔗 已註冊 CUDA DLL 目錄: {d}", flush=True)
+    except Exception as e:
+        print(f"⚠️ CUDA DLL 目錄註冊略過: {e}", flush=True)
+
+
+_register_cuda_dlls()
+
+from faster_whisper import WhisperModel  # noqa: E402（需在 DLL 註冊後 import）
 
 
 class TranscribeService:
@@ -20,6 +50,7 @@ class TranscribeService:
         - 直接輸出繁體中文，不需要 OpenCC 轉換
         - float16: 3090 支援，省 VRAM
         """
+        self.model_size = model_size
         print(f"📦 模型: {model_size}")
         # 優先嘗試 CUDA(float16)，失敗自動退回 CPU(int8)，避免無 GPU/驅動異常時整個服務啟動失敗
         try:
@@ -38,9 +69,28 @@ class TranscribeService:
                 compute_type="int8",
             )
             self.device = "cpu"
-        self.model_size = model_size
 
     def transcribe(
+        self,
+        audio_path: str,
+        language: str = "zh",
+        word_timestamps: bool = True,
+        vad_filter: bool = True,
+        on_progress=None,
+    ) -> dict:
+        """執行辨識；CUDA 在推論途中掛掉（缺 cublas/cudnn 等）時自動退回 CPU 重試一次。"""
+        try:
+            return self._transcribe_impl(audio_path, language, word_timestamps, vad_filter, on_progress)
+        except RuntimeError as e:
+            msg = str(e)
+            if self.device == "cuda" and any(k in msg.lower() for k in ("cublas", "cudnn", "cuda")):
+                print(f"⚠️ CUDA 推論失敗（{msg[:100]}），改用 CPU(int8) 重試", flush=True)
+                self.model = WhisperModel(self.model_size, device="cpu", compute_type="int8")
+                self.device = "cpu"
+                return self._transcribe_impl(audio_path, language, word_timestamps, vad_filter, on_progress)
+            raise
+
+    def _transcribe_impl(
         self,
         audio_path: str,
         language: str = "zh",

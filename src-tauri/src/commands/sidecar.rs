@@ -134,14 +134,20 @@ pub fn start_sidecar(app: &AppHandle) {
 
     let port = pick_free_port();
 
-    // 打包模式：exe 旁 bundle-res/backend/ljcut-backend.exe（PyInstaller 凍結後端）
-    let bundled_exe = std::env::current_exe()
-        .ok()
-        .and_then(|e| {
-            e.parent()
-                .map(|d| d.join("bundle-res").join("backend").join("ljcut-backend.exe"))
-        })
-        .filter(|p| p.exists());
+    // 打包模式：exe 旁 bundle-res/backend/ljcut-backend.exe（PyInstaller 凍結後端）。
+    // 注意：`tauri dev` 會把 bundle-res 資源複製到 target/debug/，debug build 必須
+    // 強制走 venv（否則 dev 誤用凍結版 CPU 後端 → CUDA 缺庫、程式碼過期）。
+    let bundled_exe = if cfg!(debug_assertions) {
+        None
+    } else {
+        std::env::current_exe()
+            .ok()
+            .and_then(|e| {
+                e.parent()
+                    .map(|d| d.join("bundle-res").join("backend").join("ljcut-backend.exe"))
+            })
+            .filter(|p| p.exists())
+    };
 
     let mut cmd = if let Some(exe) = &bundled_exe {
         log::info!("🐍 啟動 sidecar (bundled): {} --port {}", exe.display(), port);

@@ -3,6 +3,57 @@
 from pathlib import Path
 
 
+import re as _re
+
+# ── 重點字特效標記：⟦pop|big|fire:文字⟧（前端選字插入）──
+#   pop  = 句子出現時彈出（縮放動畫）
+#   big  = 放大 + 金黃色粗體
+#   fire = 火焰風格字（橘紅漸層 + 光暈 + 顏色閃爍）
+# CC/SRT 輸出一律剝除標記只留純文字；燒入(ASS)時轉成對應的 override 動畫標籤。
+_FX_RE = _re.compile(r"⟦(pop|big|fire):([^⟧]*)⟧")
+
+
+def fx_strip(text: str) -> str:
+    """剝除特效標記，只留內文（給 SRT/CC/純文字用）。"""
+    return _FX_RE.sub(lambda m: m.group(2), text or "")
+
+
+def _fx_tags(kind: str, ass_font_size: int) -> str:
+    """回傳該特效的 ASS override 開頭標籤（結尾一律 \\r 重置回行樣式）。"""
+    BS = "\\"  # 反斜線常數，避免任何轉義層污染 ASS 標籤
+    if kind == "pop":
+        # 出現時 40% → 130% → 100% 彈出
+        return (
+            "{" + BS + "fscx40" + BS + "fscy40"
+            + BS + "t(0,140," + BS + "fscx130" + BS + "fscy130)"
+            + BS + "t(140,300," + BS + "fscx100" + BS + "fscy100)}"
+        )
+    if kind == "big":
+        big = int(ass_font_size * 1.5)
+        # 放大 + 金黃 (#FFD700 → BGR 00D7FF) + 粗體
+        return "{" + BS + f"fs{big}" + BS + "b1" + BS + "c&H00D7FF&}"
+    if kind == "fire":
+        # 橘(#FF6600)基底、暗紅描邊、光暈模糊、金黃↔橘紅閃爍
+        return (
+            "{" + BS + "b1" + BS + "c&H0066FF&" + BS + "3c&H1420B4&" + BS + "blur2"
+            + BS + "t(0,220," + BS + "c&H00D7FF&)"
+            + BS + "t(220,440," + BS + "c&H0045FF&)"
+            + BS + "t(440,660," + BS + "c&H00D7FF&)"
+            + BS + "t(660,900," + BS + "c&H0066FF&)}"
+        )
+    return ""
+
+
+def fx_to_ass(text: str, ass_font_size: int) -> str:
+    """把標記轉成 ASS 行內動畫；未知標記剝除保底。"""
+    def repl(m):
+        tags = _fx_tags(m.group(1), ass_font_size)
+        if not tags:
+            return m.group(2)
+        return tags + m.group(2) + "{\\r}"
+    return _FX_RE.sub(repl, text or "")
+
+
 class SubtitleService:
     @staticmethod
     def format_timestamp(seconds: float) -> str:
@@ -29,7 +80,7 @@ class SubtitleService:
         for i, seg in enumerate(segments, 1):
             start = SubtitleService.format_timestamp(seg["start"])
             end = SubtitleService.format_timestamp(seg["end"])
-            text = seg.get("text", "").strip()
+            text = fx_strip(seg.get("text", "")).strip()
             lines.append(f"{i}")
             lines.append(f"{start} --> {end}")
             lines.append(text)
@@ -123,7 +174,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         for seg in segments:
             start = SubtitleService.format_ass_timestamp(seg["start"])
             end = SubtitleService.format_ass_timestamp(seg["end"])
-            text = seg.get("text", "").strip().replace("\n", "\\N")
+            text = fx_to_ass(seg.get("text", "").strip(), ass_font_size).replace("\n", "\\N")
             ass_content += f"Dialogue: 0,{start},{end},Default,,0,0,0,,{text}\n"
 
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
@@ -213,7 +264,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
                 start_ts = SubtitleService.format_ass_timestamp(s)
                 end_ts = SubtitleService.format_ass_timestamp(e)
-                text = seg.get("text", "").strip().replace("\n", "\\N")
+                text = fx_to_ass(seg.get("text", "").strip(), ass_font_size).replace("\n", "\\N")
                 ass_content += f"Dialogue: 0,{start_ts},{end_ts},Default,,0,0,0,,{text}\n"
 
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)

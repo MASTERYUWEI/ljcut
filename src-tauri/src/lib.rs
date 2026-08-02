@@ -58,7 +58,7 @@ pub fn run() {
                         "PATH",
                         format!("{};{};{}", res.display(), dir.display(), old_path),
                     );
-                    if res.join("backend").join("ljcut-backend.exe").exists() {
+                    if !cfg!(debug_assertions) && res.join("backend").join("ljcut-backend.exe").exists() {
                         let bdata = data_dir.join("backend");
                         std::fs::create_dir_all(&bdata).ok();
                         std::env::set_var("LJCUT_DATA_DIR", &bdata);
