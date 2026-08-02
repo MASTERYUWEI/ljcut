@@ -4,7 +4,7 @@ import { useRef, useCallback, useState, useEffect, useLayoutEffect, useMemo } fr
 import { useStore } from './store';
 import { api, onApiReady } from './api';
 import type { MediaItem, TimelineClip, Segment, AppSettings, RecOpts, MicDevice } from './types';
-import { formatTime, formatTimestamp, generateRulerTicks, findSnapTime, LABEL_W, stripFx } from './utils';
+import { formatTime, formatTimestamp, generateRulerTicks, findSnapTime, LABEL_W } from './utils';
 import { SettingsModal } from './components/SettingsModal';
 import { RecordingSettingsModal } from './components/RecordingSettingsModal';
 import { SpeedMenu } from './components/SpeedMenu';
@@ -851,80 +851,6 @@ export default function App() {
         finally { clearInterval(elapsedTimer); setIsTranscribing(false); setTransProg(null); }
     }, [fileId, language, setClipSegments, setIsTranscribing, splitLongCues, subtitleStyle.maxCharsPerCue, timelineClips, activeClipId, mediaItems]);
 
-    // ── 預覽 overlay 的特效渲染：標記 → 帶 CSS 動畫的 span（近似燒入效果）──
-    const overlayCueKeyRef = useRef<string>('');
-
-    const fxToOverlayHtml = useCallback((t: string) => {
-        const esc = (x: string) => x.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-        const re = /⟦(pop|big|fire):([^⟧]*)⟧/g;
-        let out = '';
-        let last = 0;
-        let m: RegExpExecArray | null;
-        while ((m = re.exec(t))) {
-            out += esc(t.slice(last, m.index));
-            out += `<span class="fx-ov fx-ov-${m[1]}">${esc(m[2])}</span>`;
-            last = m.index + m[0].length;
-        }
-        out += esc(t.slice(last));
-        return out;
-    }, []);
-
-    /** 單一入口更新 overlay：只在「換句」時重設 innerHTML，讓彈出動畫每句觸發一次不閃爍 */
-    const setOverlayCue = useCallback((el: HTMLDivElement, seg: Segment | null) => {
-        if (!seg) {
-            overlayCueKeyRef.current = '';
-            el.style.display = 'none';
-            return;
-        }
-        el.style.display = '';
-        const key = `${seg.id}|${seg.text}`;
-        if (overlayCueKeyRef.current === key) return;
-        overlayCueKeyRef.current = key;
-        el.innerHTML = fxToOverlayHtml(seg.text);
-    }, [fxToOverlayHtml]);
-
-    // ── 重點字特效：選字 → 插入 ⟦pop|big|fire:文字⟧ 標記（燒入時轉 ASS 動畫）──
-    const cueSelRef = useRef<{ segId: number; start: number; end: number } | null>(null);
-
-    const applyCueFx = useCallback((kind: 'pop' | 'big' | 'fire') => {
-        const sel = cueSelRef.current;
-        if (!sel || sel.start === sel.end) { alert('請先在字幕輸入框內「選取」要強調的字，再點特效'); return; }
-        const seg = segments.find(s2 => s2.id === sel.segId);
-        if (!seg) return;
-        const raw = seg.text;
-        const inner = stripFx(raw.slice(sel.start, sel.end));
-        if (!inner.trim()) return;
-        updateSegment(sel.segId, { text: raw.slice(0, sel.start) + `⟦${kind}:${inner}⟧` + raw.slice(sel.end) });
-        cueSelRef.current = null;
-    }, [segments, updateSegment]);
-
-    const clearCueFx = useCallback(() => {
-        if (activeSegmentId == null) return;
-        const seg = segments.find(s2 => s2.id === activeSegmentId);
-        if (!seg) return;
-        updateSegment(activeSegmentId, { text: stripFx(seg.text) });
-    }, [segments, activeSegmentId, updateSegment]);
-
-    /** 清單顯示：把標記渲染成帶色 span（編輯框仍顯示原始標記，方便手改） */
-    const renderFxText = useCallback((t: string) => {
-        const parts: React.ReactNode[] = [];
-        const re = /⟦(pop|big|fire):([^⟧]*)⟧/g;
-        let last = 0;
-        let m: RegExpExecArray | null;
-        while ((m = re.exec(t))) {
-            if (m.index > last) parts.push(t.slice(last, m.index));
-            const labels: Record<string, string> = { pop: '彈出', big: '放大', fire: '火焰' };
-            parts.push(
-                <span key={m.index} className={`fx-mark fx-${m[1]}`} title={`特效：${labels[m[1]]}（燒入時生效）`}>
-                    {m[2]}
-                </span>
-            );
-            last = m.index + m[0].length;
-        }
-        if (last < t.length) parts.push(t.slice(last));
-        return parts.length ? parts : t;
-    }, []);
-
     // ── 收集時間軸全部字幕（時間映射到時間軸；複製/匯出共用邏輯）──
     const buildTimelineSegments = useCallback((): Segment[] => {
         const track0Clips = timelineClips
@@ -936,7 +862,7 @@ export default function App() {
                 const s = (seg.start - clip.trimStart) / clip.speed + clip.startTime;
                 const e = (seg.end - clip.trimStart) / clip.speed + clip.startTime;
                 if (e <= 0) continue;
-                all.push({ ...seg, id: all.length, start: Math.max(s, 0), end: e, text: stripFx(seg.text) });
+                all.push({ ...seg, id: all.length, start: Math.max(s, 0), end: e });
             }
         }
         return all;
@@ -1068,7 +994,7 @@ export default function App() {
                 const s = (seg.start - clip.trimStart) / clip.speed + clip.startTime;
                 const e = (seg.end - clip.trimStart) / clip.speed + clip.startTime;
                 if (e <= 0) continue;
-                allSegments.push({ ...seg, id: allSegments.length, start: Math.max(s, 0), end: e, text: stripFx(seg.text) });
+                allSegments.push({ ...seg, id: allSegments.length, start: Math.max(s, 0), end: e });
             }
         }
 
@@ -1836,11 +1762,16 @@ export default function App() {
                 if (overlay) {
                     if (clip.segments.length > 0) {
                         const actualMediaTime = v.currentTime;
-                        const activeSeg = clip.segments.find(s => actualMediaTime >= s.start && actualMediaTime <= s.end) ?? null;
-                        setOverlayCue(overlay, activeSeg);
-                        // 同步字幕列表高亮（節流：只在切換 segment 時觸發）
-                        if (activeSeg && activeSeg.id !== useStore.getState().activeSegmentId) {
-                            setActiveSegment(activeSeg.id);
+                        const activeSeg = clip.segments.find(s => actualMediaTime >= s.start && actualMediaTime <= s.end);
+                        if (activeSeg) {
+                            overlay.textContent = activeSeg.text;
+                            overlay.style.display = '';
+                            // 同步字幕列表高亮（節流：只在切換 segment 時觸發）
+                            if (activeSeg.id !== useStore.getState().activeSegmentId) {
+                                setActiveSegment(activeSeg.id);
+                            }
+                        } else {
+                            overlay.style.display = 'none';
                         }
                     } else {
                         overlay.style.display = 'none';
@@ -1933,8 +1864,13 @@ export default function App() {
             : currentTime;
         const overlaySegs = overlayClip?.segments ?? segments;
         const activeSeg = overlaySegs.find(s => mediaTimeForOverlay >= s.start && mediaTimeForOverlay <= s.end);
-        setOverlayCue(overlay, activeSeg ?? null);
-    }, [isPlaying, currentTime, timelineClips, segments, setOverlayCue]);
+        if (activeSeg) {
+            overlay.textContent = activeSeg.text;
+            overlay.style.display = '';
+        } else {
+            overlay.style.display = 'none';
+        }
+    }, [isPlaying, currentTime, timelineClips, segments]);
 
     // ── 波形繪製（filmstrip 模式）──
     // 把「整段媒體」的波形畫成一張固定寬度的底片(canvas)，每個 clip 用 overflow:hidden 當視窗、
@@ -2538,33 +2474,18 @@ export default function App() {
                                                 {formatTimestamp(seg.start)} → {formatTimestamp(seg.end)}
                                             </div>
                                             {seg.id === activeSegmentId && !selectedSegIds.has(seg.id) ? (
-                                                <>
-                                                    <textarea value={seg.text}
-                                                        onChange={(e) => updateSegment(seg.id, { text: e.target.value })}
-                                                        onKeyDown={(e) => {
-                                                            if (e.key === 'Enter' && !e.shiftKey) {
-                                                                e.preventDefault();
-                                                                const pos = (e.target as HTMLTextAreaElement).selectionStart;
-                                                                handleSplitCue(seg.id, pos);
-                                                            }
-                                                        }}
-                                                        onSelect={(e) => {
-                                                            const ta = e.target as HTMLTextAreaElement;
-                                                            cueSelRef.current = { segId: seg.id, start: ta.selectionStart, end: ta.selectionEnd };
-                                                        }}
-                                                        onClick={(e) => e.stopPropagation()} rows={2} />
-                                                    <div className="fx-toolbar" onClick={(e) => e.stopPropagation()}>
-                                                        <span className="fx-hint" title="在上方輸入框選取文字後點特效；特效只在「燒入字幕」匯出時生效，CC/SRT 會自動還原純文字">
-                                                            選字強調:
-                                                        </span>
-                                                        <button className="btn fx-btn" onClick={() => applyCueFx('pop')} title="出現時彈出（縮放動畫）">💥 彈出</button>
-                                                        <button className="btn fx-btn" onClick={() => applyCueFx('big')} title="放大 + 金黃粗體">🔠 放大</button>
-                                                        <button className="btn fx-btn" onClick={() => applyCueFx('fire')} title="火焰風格字（橘紅光暈閃爍）">🔥 火焰</button>
-                                                        <button className="btn fx-btn" onClick={clearCueFx} title="移除此句所有特效標記">✕ 清除</button>
-                                                    </div>
-                                                </>
+                                                <textarea value={seg.text}
+                                                    onChange={(e) => updateSegment(seg.id, { text: e.target.value })}
+                                                    onKeyDown={(e) => {
+                                                        if (e.key === 'Enter' && !e.shiftKey) {
+                                                            e.preventDefault();
+                                                            const pos = (e.target as HTMLTextAreaElement).selectionStart;
+                                                            handleSplitCue(seg.id, pos);
+                                                        }
+                                                    }}
+                                                    onClick={(e) => e.stopPropagation()} rows={2} />
                                             ) : (
-                                                <div className="text">{renderFxText(seg.text)}</div>
+                                                <div className="text">{seg.text}</div>
                                             )}
                                         </div>
                                     </div>

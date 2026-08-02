@@ -45,11 +45,3 @@ export function findSnapTime(time: number, segments: { start: number; end: numbe
     }
     return closest;
 }
-
-// ── 重點字特效標記 ⟦pop|big|fire:文字⟧ ──
-export const FX_RE = /⟦(pop|big|fire):([^⟧]*)⟧/g;
-
-/** 剝除特效標記，只留內文（CC/SRT/AI 輸入用；燒入時由後端轉 ASS 動畫） */
-export function stripFx(t: string): string {
-    return (t || '').replace(FX_RE, '$2');
-}
