@@ -21,6 +21,8 @@ export interface MediaInfo {
     width?: number;
     height?: number;
     fps?: number;
+    frame_rate?: string;
+    time_base?: string;
     video_codec?: string;
     audio_codec?: string;
     sample_rate?: number;
@@ -34,6 +36,7 @@ export interface MediaItem {
     info: MediaInfo;
     waveformPeaks: number[];
     thumbnailUrl?: string;  // 影片首幀縮圖
+    transcript?: TranscribeResult; // 未經字幕編輯的原始辨識結果；來源時間（秒）
 }
 
 // ── 時間軸 Clip ──

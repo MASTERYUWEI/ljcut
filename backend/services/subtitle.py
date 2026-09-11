@@ -202,14 +202,16 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             offset = float(clip_info.get("time_offset", 0))
             speed = float(clip_info.get("speed", 1.0))
             trim_start = float(clip_info.get("trim_start", 0))
+            trim_end = float(clip_info.get("trim_end", float('inf')))
 
             for seg in segs:
                 # 字幕時間 = (媒體時間 - trimStart) / speed + 累計偏移
-                s = (seg["start"] - trim_start) / speed + offset
-                e = (seg["end"] - trim_start) / speed + offset
-                if e <= 0:
+                source_start = max(seg["start"], trim_start)
+                source_end = min(seg["end"], trim_end)
+                if source_end <= source_start:
                     continue
-                s = max(s, 0)
+                s = (source_start - trim_start) / speed + offset
+                e = (source_end - trim_start) / speed + offset
 
                 start_ts = SubtitleService.format_ass_timestamp(s)
                 end_ts = SubtitleService.format_ass_timestamp(e)

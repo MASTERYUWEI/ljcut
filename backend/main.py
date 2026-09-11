@@ -31,6 +31,7 @@ from services.ffmpeg_service import FFmpegService
 from services.llm_service import LLMService
 from services.youtube_service import YouTubeService
 from services.thumb_service import ThumbService
+from services.control import LocalControl
 
 # ---------- 設定 ----------
 UPLOAD_DIR = Path("./uploads")
@@ -107,6 +108,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="LJCUT API", version="0.1.0", lifespan=lifespan)
+local_control = LocalControl(UPLOAD_DIR)
+app.include_router(local_control.router)
 
 # CORS — 允許前端 dev server
 app.add_middleware(
@@ -331,6 +334,7 @@ async def export_timeline(body: dict = Body(default={})):
             "time_offset": cumulative_offset,
             "speed": speed,
             "trim_start": trim_start,
+            "trim_end": trim_end,
         })
 
         cumulative_offset += output_duration
@@ -631,4 +635,3 @@ async def ai_polish(body: dict = Body(...)):
     print(f"✨ AI Polish: segments={len(segments)}", flush=True)
     polished = await LLMService.polish_subtitles(segments)
     return JSONResponse({"segments": polished})
-

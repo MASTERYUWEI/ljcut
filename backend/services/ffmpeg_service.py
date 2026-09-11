@@ -1,9 +1,36 @@
 """FFmpeg 服務 — 影片處理（含 NVENC 硬體加速）"""
 
 import json
+import os
 import subprocess
 from fractions import Fraction
 from pathlib import Path
+
+# No console windows when the desktop sidecar performs background media work.
+_PROCESS_FLAGS = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+
+
+def _watch_cancel(proc, cancel_event):
+    """Cancel only the FFmpeg process owned by this export, including stalled output."""
+    if cancel_event is None:
+        return
+    import threading
+    def watch():
+        while proc.poll() is None:
+            if cancel_event.wait(0.1):
+                if proc.poll() is None:
+                    try:
+                        if os.name == 'nt':
+                            # Installed FFmpeg may be a launcher (e.g. Chocolatey).
+                            # Kill its own child tree as well, never unrelated encoders.
+                            subprocess.run(['taskkill', '/PID', str(proc.pid), '/T', '/F'],
+                                capture_output=True, creationflags=_PROCESS_FLAGS, timeout=10)
+                        else:
+                            proc.kill()
+                    except ProcessLookupError:
+                        pass
+                return
+    threading.Thread(target=watch, daemon=True).start()
 
 
 def _parse_frame_rate(fr: str) -> float:
@@ -29,7 +56,7 @@ class FFmpegService:
             file_path,
         ]
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30, creationflags=_PROCESS_FLAGS)
             data = json.loads(result.stdout)
 
             info = {
@@ -42,6 +69,8 @@ class FFmpegService:
                     info["width"] = stream.get("width", 0)
                     info["height"] = stream.get("height", 0)
                     info["fps"] = _parse_frame_rate(stream.get("r_frame_rate", "0/1"))
+                    info["frame_rate"] = stream.get("avg_frame_rate", "0/1")
+                    info["time_base"] = stream.get("time_base", "")
                     info["video_codec"] = stream.get("codec_name", "")
                 elif stream["codec_type"] == "audio":
                     info["audio_codec"] = stream.get("codec_name", "")
@@ -76,7 +105,7 @@ class FFmpegService:
             "-af", "aresample=async=1,apad=pad_dur=1",  # 填充空隙 + 尾音 padding
             output_path,
         ]
-        subprocess.run(cmd, capture_output=True, timeout=300, check=True)
+        subprocess.run(cmd, capture_output=True, timeout=300, check=True, creationflags=_PROCESS_FLAGS)
         return output_path
 
     @staticmethod
@@ -172,7 +201,7 @@ class FFmpegService:
 
         proc = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            universal_newlines=True, encoding="utf-8", errors="replace",
+            universal_newlines=True, encoding="utf-8", errors="replace", creationflags=_PROCESS_FLAGS,
         )
 
         # 另開 thread 排空 stderr，避免 pipe buffer 滿造成 deadlock
@@ -218,6 +247,7 @@ class FFmpegService:
         use_nvenc: bool = True,
         video_width: int = 1920,
         video_height: int = 1080,
+        cancel_event=None,
     ):
         """
         多 clip 串接匯出 — yield 進度 dict
@@ -233,8 +263,12 @@ class FFmpegService:
         import threading
         import time
 
-        temp_dir = Path(output_path).parent / "_temp_concat"
-        temp_dir.mkdir(parents=True, exist_ok=True)
+        if cancel_event is not None and cancel_event.is_set():
+            raise RuntimeError('Export cancelled')
+        if not clips:
+            raise ValueError('No timeline clips')
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        temp_dir = Path(tempfile.mkdtemp(prefix='_temp_concat_', dir=Path(output_path).parent)).resolve()
         temp_files: list[str] = []
         total_clips = len(clips)
         total_duration = sum(c.get("output_duration", 0) for c in clips)
@@ -243,12 +277,14 @@ class FFmpegService:
         target_fps = 30
         try:
             fps_list = []
-            for c in clips:
+            for source in dict.fromkeys(c['video_path'] for c in clips):
+                if cancel_event is not None and cancel_event.is_set():
+                    raise RuntimeError('Export cancelled')
                 pr = subprocess.run(
                     ["ffprobe", "-v", "error", "-select_streams", "v:0",
                      "-show_entries", "stream=avg_frame_rate", "-of", "default=nk=1:nw=1",
-                     c["video_path"]],
-                    capture_output=True, timeout=30)
+                     source],
+                    capture_output=True, timeout=30, creationflags=_PROCESS_FLAGS)
                 raw = pr.stdout.decode("utf-8", "ignore").strip()
                 if "/" in raw:
                     n, d = raw.split("/")
@@ -277,22 +313,26 @@ class FFmpegService:
         try:
             # ── Step 1: 逐 clip 產生標準化暫存檔 ──
             for idx, clip in enumerate(clips):
+                if cancel_event is not None and cancel_event.is_set():
+                    raise RuntimeError('Export cancelled')
                 video_path = clip["video_path"]
                 trim_start = float(clip.get("trim_start", 0))
                 trim_end = float(clip.get("trim_end", 0))
                 speed = float(clip.get("speed", 1.0))
                 clip_dur = trim_end - trim_start
 
-                temp_out = str(temp_dir / f"clip_{idx}.mp4")
+                # PCM avoids adding AAC encoder priming at every edit boundary.
+                temp_out = str(temp_dir / f"clip_{idx}.mov")
                 temp_files.append(temp_out)
 
                 cmd = ["ffmpeg", "-y"]
+                cmd.append('-nostdin')
                 # 裁切
                 if trim_start > 0:
                     cmd += ["-ss", str(trim_start)]
                 cmd += ["-i", video_path]
                 if clip_dur > 0:
-                    cmd += ["-t", str(clip_dur)]
+                    cmd += ["-t", str(clip_dur / speed)]
 
                 # 統一解析度 + 變速 + 重置 PTS + 統一 fps（concat 要求各段參數一致，
                 # 否則 fps/timebase 不同會造成影像錯位、白畫面凍結直到時間戳追上）
@@ -322,8 +362,8 @@ class FFmpegService:
                 cmd += [
                     "-r", str(target_fps),
                     "-fps_mode", "cfr",  # 強制固定影格率輸出
-                    "-c:v", "libx264", "-preset", "fast", "-crf", "18",
-                    "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
+                    "-c:v", "libx264", "-preset", "fast", "-crf", "18", "-bf", "0",
+                    "-c:a", "pcm_s16le", "-ar", "48000", "-ac", "2",
                     "-pix_fmt", "yuv420p",
                     "-video_track_timescale", "90000",  # 統一時間基，concat 才不會錯位
                     "-avoid_negative_ts", "make_zero",
@@ -338,8 +378,9 @@ class FFmpegService:
                 band_end = 60.0 * (idx + 1) / total_clips
                 proc = subprocess.Popen(
                     cmd_run, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                    universal_newlines=True, encoding="utf-8", errors="replace",
+                    universal_newlines=True, encoding="utf-8", errors="replace", creationflags=_PROCESS_FLAGS,
                 )
+                _watch_cancel(proc, cancel_event)
                 cerr: list[str] = []
                 cth = threading.Thread(
                     target=lambda: cerr.append(proc.stderr.read()) if proc.stderr else None,
@@ -364,10 +405,12 @@ class FFmpegService:
                         break
                 proc.wait()
                 cth.join(timeout=5)
+                proc.stdout.close()
+                proc.stderr.close()
                 if proc.returncode != 0:
                     err = cerr[0] if cerr else ""
                     print(f"❌ Clip {idx+1} 失敗:\n{err}")
-                    raise subprocess.CalledProcessError(proc.returncode, cmd_run)
+                    raise RuntimeError(f'片段 {idx+1} 編碼失敗（exit {proc.returncode}）: {err[-2000:]}')
 
                 processed += out_dur
                 yield {"progress": int(band_end), "stage": f"準備片段 {idx+1}/{total_clips}",
@@ -381,7 +424,7 @@ class FFmpegService:
                     escaped = tf.replace("\\", "/").replace("'", "'\\''")
                     f.write(f"file '{escaped}'\n")
 
-            concat_out = str(temp_dir / "concat_merged.mp4")
+            concat_out = str(temp_dir / "concat_merged.mov")
             cmd_concat = [
                 "ffmpeg", "-y",
                 "-f", "concat", "-safe", "0",
@@ -391,25 +434,24 @@ class FFmpegService:
                 concat_out,
             ]
             print(f"🔗 Concat: {' '.join(cmd_concat)}")
-            result = subprocess.run(cmd_concat, capture_output=True, timeout=600)
-            if result.returncode != 0:
-                stderr = result.stderr.decode("utf-8", errors="replace")
+            concat_proc = subprocess.Popen(cmd_concat, stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=_PROCESS_FLAGS)
+            _watch_cancel(concat_proc, cancel_event)
+            try:
+                _, concat_stderr = concat_proc.communicate(timeout=600)
+            except subprocess.TimeoutExpired:
+                concat_proc.kill()
+                concat_proc.communicate()
+                raise
+            if concat_proc.returncode != 0:
+                stderr = concat_stderr.decode("utf-8", errors="replace")
                 print(f"❌ Concat 失敗:\n{stderr}")
-                raise subprocess.CalledProcessError(result.returncode, cmd_concat, stderr=result.stderr)
+                raise RuntimeError(f'片段串接失敗（exit {concat_proc.returncode}）: {stderr[-2000:]}')
 
             yield {"progress": 70, "stage": "片段已串接", "eta_seconds": calc_eta(processed)}
 
             # 無字幕（所有 clip 都沒辨識字幕）→ 直接輸出串接結果，跳過燒字幕步驟
-            import shutil as _sh
             ass_p = Path(ass_path)
             has_subs = ass_p.exists() and "Dialogue:" in ass_p.read_text(encoding="utf-8-sig", errors="ignore")
-            if not has_subs:
-                if Path(output_path).exists():
-                    Path(output_path).unlink()
-                _sh.move(concat_out, output_path)
-                yield {"progress": 100, "eta_seconds": 0}
-                print(f"✅ 多 clip 匯出完成（無字幕）: {output_path}")
-                return
 
             # ── Step 3: 燒入字幕 ──
             ass_abs = str(Path(ass_path).resolve())
@@ -427,10 +469,10 @@ class FFmpegService:
                 "-i", concat_out,
                 "-progress", "pipe:1",
                 "-nostats",
-                "-avoid_negative_ts", "make_zero",
-                "-vf", vf_sub,
-                *codec_args,
+                *(["-vf", vf_sub, *codec_args] if has_subs else ["-c:v", "copy"]),
                 "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
+                "-af", f"aresample=async=1,apad=whole_dur={total_duration}",
+                "-t", str(total_duration), "-movflags", "+faststart",
                 output_path,
             ]
             print(f"🎬 Burn: {' '.join(cmd_burn)}")
@@ -438,8 +480,9 @@ class FFmpegService:
 
             proc = subprocess.Popen(
                 cmd_burn, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                universal_newlines=True, encoding="utf-8", errors="replace",
+                universal_newlines=True, encoding="utf-8", errors="replace", creationflags=_PROCESS_FLAGS,
             )
+            _watch_cancel(proc, cancel_event)
 
             stderr_data: list[str] = []
             def _drain_stderr():
@@ -468,10 +511,12 @@ class FFmpegService:
 
             proc.wait()
             stderr_thread.join(timeout=5)
+            proc.stdout.close()
+            proc.stderr.close()
             if proc.returncode != 0:
                 err_msg = stderr_data[0] if stderr_data else ""
                 print(f"❌ 燒入失敗:\n{err_msg}")
-                raise subprocess.CalledProcessError(proc.returncode, cmd_burn)
+                raise RuntimeError(f'字幕燒錄失敗（exit {proc.returncode}）: {err_msg[-2000:]}')
 
             yield {"progress": 100, "eta_seconds": 0}
             print(f"✅ 多 clip 匯出完成: {output_path}")
@@ -504,7 +549,7 @@ class FFmpegService:
             "-of", "csv=p=0",
             file_path,
         ]
-        probe_result = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=30)
+        probe_result = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=30, creationflags=_PROCESS_FLAGS)
         duration = float(probe_result.stdout.strip())
         total_samples = int(duration * samples_per_second)
         if total_samples <= 0:
@@ -522,7 +567,7 @@ class FFmpegService:
             "-f", "s16le",
             "pipe:1",
         ]
-        result = subprocess.run(cmd, capture_output=True, timeout=300)
+        result = subprocess.run(cmd, capture_output=True, timeout=300, creationflags=_PROCESS_FLAGS)
         raw = result.stdout
 
         # Step 3: 解析 PCM 並計算 peak（用浮點比例映射，避免整數除法累積誤差）

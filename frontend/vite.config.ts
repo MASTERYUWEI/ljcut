@@ -14,7 +14,7 @@ export default defineConfig({
     server: {
         port: 5173,
         strictPort: true,
-        host: true,
+        host: '127.0.0.1',
         // Web-only dev mode: proxy 轉發到 Python 後端
         proxy: {
             '/api': {

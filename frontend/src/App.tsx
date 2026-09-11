@@ -10,6 +10,10 @@ import { RecordingSettingsModal } from './components/RecordingSettingsModal';
 import { SpeedMenu } from './components/SpeedMenu';
 import { ExportProgress } from './components/ExportProgress';
 import { YouTubeUploadModal } from './components/YouTubeUploadModal';
+import { ProjectControl } from './components/ProjectControl';
+import { pushUndo, undo, redo, projectData } from './editSession';
+import { clippedSegments, splitClip, timelineSegments, toSourceTime, toTimelineTime, validateProject } from './editCore';
+import { registerPreviewReader } from './controlClient';
 
 export default function App() {
     // 雙緩衝：兩個 <video> 疊在一起，永遠只有一個顯示(active)，另一個(standby)預載下一段。
@@ -270,7 +274,6 @@ export default function App() {
         getDuration,
         addMedia, removeMedia, updateMedia,
         addClip, updateClip, removeClip, setClipSpeed,
-        restoreTimeline,
         setClipSegments,
         setSegments, updateSegment, setActiveSegment,
         setSubtitleStyle,
@@ -285,19 +288,12 @@ export default function App() {
     const hasTimeline = timelineClips.length > 0;
 
     // ── Undo 歷史堆疊（記錄整個時間軸：片段 + 各片段字幕 + 選取）──
-    const undoStack = useRef<{ clips: TimelineClip[]; activeClipId: string | null }[]>([]);
-    const pushUndo = useCallback(() => {
-        // 深拷貝 clips（含各自 segments），避免之後 mutate 影響快照
-        undoStack.current.push({
-            clips: timelineClips.map(c => ({ ...c, segments: c.segments.map(s => ({ ...s })) })),
-            activeClipId,
-        });
-        if (undoStack.current.length > 50) undoStack.current.shift();
-    }, [timelineClips, activeClipId]);
     const handleUndo = useCallback(() => {
-        const prev = undoStack.current.pop();
-        if (prev) restoreTimeline(prev.clips, prev.activeClipId);
-    }, [restoreTimeline]);
+        try { undo(); } catch { /* 沒有歷史 */ }
+    }, []);
+    const handleRedo = useCallback(() => {
+        try { redo(); } catch { /* 沒有歷史 */ }
+    }, []);
 
     const pixelsPerSecond = 10 * zoom;
     const timelineWidth = duration > 0 ? duration * pixelsPerSecond : 0;
@@ -843,6 +839,8 @@ export default function App() {
             const result = await api.transcribe(targetFileId, language, (pct, cur, total) => {
                 setTransProg({ pct, cur: cur ?? 0, total: total ?? 0 });
             });
+            pushUndo();
+            updateMedia(targetFileId, { transcript: structuredClone(result) });
             // 自動 cue splitting
             const split = splitLongCues(result.segments, subtitleStyle.maxCharsPerCue);
             // 寫入到選中的 clip
@@ -853,19 +851,7 @@ export default function App() {
 
     // ── 收集時間軸全部字幕（時間映射到時間軸；複製/匯出共用邏輯）──
     const buildTimelineSegments = useCallback((): Segment[] => {
-        const track0Clips = timelineClips
-            .filter(c => c.trackIndex === 0)
-            .sort((a, b) => a.startTime - b.startTime);
-        const all: Segment[] = [];
-        for (const clip of track0Clips) {
-            for (const seg of (clip.segments ?? [])) {
-                const s = (seg.start - clip.trimStart) / clip.speed + clip.startTime;
-                const e = (seg.end - clip.trimStart) / clip.speed + clip.startTime;
-                if (e <= 0) continue;
-                all.push({ ...seg, id: all.length, start: Math.max(s, 0), end: e });
-            }
-        }
-        return all;
+        return timelineSegments(timelineClips);
     }, [timelineClips]);
 
     // ── 一鍵複製字幕（純文字 / SRT 格式）──
@@ -986,17 +972,7 @@ export default function App() {
         if (track0Clips.length === 0 || !fileId) return;
 
         // 合併所有 clip 的字幕，加上時間軸偏移
-        const allSegments: Segment[] = [];
-        for (const clip of track0Clips) {
-            const clipSegs = clip.segments ?? [];
-            for (const seg of clipSegs) {
-                // 媒體時間 → 時間軸時間: (mediaTime - trimStart) / speed + clip.startTime
-                const s = (seg.start - clip.trimStart) / clip.speed + clip.startTime;
-                const e = (seg.end - clip.trimStart) / clip.speed + clip.startTime;
-                if (e <= 0) continue;
-                allSegments.push({ ...seg, id: allSegments.length, start: Math.max(s, 0), end: e });
-            }
-        }
+        const allSegments = timelineSegments(track0Clips);
 
         if (allSegments.length === 0) {
             alert('沒有字幕資料可匯出');
@@ -1034,54 +1010,33 @@ export default function App() {
         setExportEta(null);
         setExportStage('準備中');
         try {
+            validateProject(projectData(), true);
             const v = videoRef.current;
             const videoW = v?.videoWidth || 1920;
             const videoH = v?.videoHeight || 1080;
 
             let result: { outputPath: string } | null = null;
 
-            if (track0Clips.length === 1) {
-                // ── 單 clip：走舊 API（向後相容）──
-                const clip = track0Clips[0];
+            // 單段與多段共用相同的時間軸輸出流程
+            const clipsPayload = track0Clips.map(clip => {
                 const media = mediaItems.find(m => m.id === clip.mediaId);
-                const burnFileId = media?.id ?? fileId;
-                const burnSegments = burnSubs ? (clip.segments ?? segments) : [];
-                const burnSpeed = clip.speed ?? 1;
-                const burnDuration = clip.trimEnd - clip.trimStart;
-                if (!burnFileId) { alert('找不到影片'); return; }
-                const mediaName = media?.filename?.replace(/\.[^.]+$/, '') ?? 'output';
-                const defaultFileName = `${mediaName}_subtitled.mp4`;
+                return {
+                    fileId: media?.id ?? clip.mediaId,
+                    trimStart: clip.trimStart,
+                    trimEnd: clip.trimEnd,
+                    speed: clip.speed,
+                    segments: burnSubs ? (clip.segments ?? []) : [],
+                };
+            });
+            const defaultFileName = 'timeline_output.mp4';
 
-                result = await api.exportVideo(
-                    burnFileId, burnSegments,
-                    subtitleStyle as unknown as Record<string, unknown>,
-                    burnSpeed, burnDuration, defaultFileName,
-                    clip.trimStart, clip.trimEnd,
-                    videoW, videoH,
-                    (pct) => setExportProgress(pct),
-                );
-            } else {
-                // ── 多 clip：走新 timeline API ──
-                const clipsPayload = track0Clips.map(clip => {
-                    const media = mediaItems.find(m => m.id === clip.mediaId);
-                    return {
-                        fileId: media?.id ?? clip.mediaId,
-                        trimStart: clip.trimStart,
-                        trimEnd: clip.trimEnd,
-                        speed: clip.speed,
-                        segments: burnSubs ? (clip.segments ?? []) : [],
-                    };
-                });
-                const defaultFileName = 'timeline_output.mp4';
-
-                result = await api.exportTimeline(
-                    clipsPayload,
-                    subtitleStyle as unknown as Record<string, unknown>,
-                    defaultFileName,
-                    videoW, videoH,
-                    (pct, stage, eta) => { setExportProgress(pct); setExportStage(stage ?? ''); setExportEta(eta ?? null); },
-                );
-            }
+            result = await api.exportTimeline(
+                clipsPayload,
+                subtitleStyle as unknown as Record<string, unknown>,
+                defaultFileName,
+                videoW, videoH,
+                (pct, stage, eta) => { setExportProgress(pct); setExportStage(stage ?? ''); setExportEta(eta ?? null); },
+            );
 
             if (result) {
                 setExportProgress(100);
@@ -1321,6 +1276,23 @@ export default function App() {
         setCurrentTime(tlPos); // store timeline pos for React
     }, [setCurrentTime, findClipAtTime, loadClipIntoVideo, isPlaying]);
 
+    const previewRequest = useStore(s => s.previewRequest);
+    useEffect(() => {
+        if (!previewRequest.serial) return;
+        vid0Ref.current?.pause();
+        vid1Ref.current?.pause();
+        seekTo(previewRequest.time);
+        // A request is consumed once; playback and manual scrubbing keep their existing flow.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [previewRequest.serial]);
+    useEffect(() => {
+        registerPreviewReader(() => ({ sourceTime: videoRef.current?.currentTime ?? -1,
+            ready: (videoRef.current?.readyState ?? 0) >= 2 && !videoRef.current?.seeking,
+            paused: videoRef.current?.paused ?? true,
+            subtitle: subtitleOverlayRef.current?.style.display === 'none' ? '' : subtitleOverlayRef.current?.textContent ?? '' }));
+        return () => registerPreviewReader(undefined);
+    }, []);
+
     // ── 拖放 ──
     const handleDrop = useCallback((e: React.DragEvent) => {
         e.preventDefault();
@@ -1460,9 +1432,10 @@ export default function App() {
     }, [leftWidth, rightWidth, timelineHeight]);
 
     // ── CUE 邊緣拖拉（調整 start/end） ──
-    const handleCueEdgeDrag = useCallback((e: React.MouseEvent, segId: number, edge: 'left' | 'right') => {
+    const handleCueEdgeDrag = useCallback((e: React.MouseEvent, clipId: string, segId: number, edge: 'left' | 'right') => {
         e.preventDefault();
         e.stopPropagation();
+        setActiveClipId(clipId);
         setIsDraggingCue(true);
         pushUndo();
 
@@ -1482,8 +1455,8 @@ export default function App() {
 
             // 吸附（在時間軸座標空間）
             const snapThreshold = 8 / pps;
-            const curSegments = useStore.getState().segments;
-            const snapped = findSnapTime(tlTime, curSegments, snapThreshold);
+            const curSegments = useStore.getState().timelineClips.find(c => c.id === clipId)?.segments ?? [];
+            const snapped = findSnapTime(tlTime, timelineSegments(useStore.getState().timelineClips), snapThreshold);
             if (snapped !== null) {
                 setSnapTime(snapped);
                 tlTime = snapped;
@@ -1493,23 +1466,21 @@ export default function App() {
 
             // 找到字幕所屬的 clip，將時間軸時間轉換為媒體時間
             const state = useStore.getState();
-            const ownerClip = state.timelineClips.find(c =>
-                c.trackIndex === 0 && c.segments.some(s => s.id === segId)
-            );
+            const ownerClip = state.timelineClips.find(c => c.id === clipId);
             if (!ownerClip) return;
 
             // 時間軸時間 → 媒體時間: mediaTime = (tlTime - clip.startTime) * speed
-            const mediaTime = (tlTime - ownerClip.startTime) * ownerClip.speed;
+            const mediaTime = toSourceTime(ownerClip, tlTime);
             const mediaDuration = ownerClip.trimEnd; // 媒體最大時間
 
             const seg = curSegments.find(s => s.id === segId);
             if (!seg) return;
             if (edge === 'left') {
                 const newStart = Math.min(mediaTime, seg.end - 0.1);
-                updateSegment(segId, { start: Math.max(ownerClip.trimStart, newStart) });
+                state.updateClipSegment(clipId, segId, { start: Math.max(ownerClip.trimStart, newStart) });
             } else {
                 const newEnd = Math.max(mediaTime, seg.start + 0.1);
-                updateSegment(segId, { end: Math.min(mediaDuration, newEnd) });
+                state.updateClipSegment(clipId, segId, { end: Math.min(mediaDuration, newEnd) });
             }
         };
         const onUp = () => {
@@ -1677,10 +1648,10 @@ export default function App() {
         const onKeyDown = (e: KeyboardEvent) => {
             const tag = (e.target as HTMLElement).tagName;
             // Ctrl+Z 復原（不在 textarea/input 時）
-            if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
+            if ((e.ctrlKey || e.metaKey) && ['z', 'y'].includes(e.key.toLowerCase())) {
                 if (tag === 'TEXTAREA' || tag === 'INPUT') return;
                 e.preventDefault();
-                handleUndo();
+                if (e.shiftKey || e.key.toLowerCase() === 'y') handleRedo(); else handleUndo();
                 return;
             }
             // 空白鍵 播放/暫停
@@ -1691,7 +1662,7 @@ export default function App() {
         };
         window.addEventListener('keydown', onKeyDown);
         return () => window.removeEventListener('keydown', onKeyDown);
-    }, [togglePlay, handleUndo]);
+    }, [togglePlay, handleUndo, handleRedo]);
 
     // ── 60fps 純 DOM 更新（wall-clock timeline 引擎） ──
     useEffect(() => {
@@ -1862,7 +1833,7 @@ export default function App() {
         const mediaTimeForOverlay = overlayClip
             ? overlayClip.trimStart + (currentTime - overlayClip.startTime) * overlayClip.speed
             : currentTime;
-        const overlaySegs = overlayClip?.segments ?? segments;
+        const overlaySegs = overlayClip?.segments ?? [];
         const activeSeg = overlaySegs.find(s => mediaTimeForOverlay >= s.start && mediaTimeForOverlay <= s.end);
         if (activeSeg) {
             overlay.textContent = activeSeg.text;
@@ -1946,6 +1917,7 @@ export default function App() {
                     <button className="btn" onClick={() => setShowSettings(true)} title="設定" style={{ padding: '6px 10px' }}>⚙</button>
                 </div>
             </header>
+            <ProjectControl />
 
             {/* 錄影設定 Modal */}
             {showRecSettings && (
@@ -2048,7 +2020,7 @@ export default function App() {
                                                         } catch (err) { alert(`開啟資料夾失敗: ${err}`); }
                                                     }} title="開啟檔案所在資料夾">📂</button>
                                                 )}
-                                                <button className="media-remove" onClick={(e) => { e.stopPropagation(); removeMedia(item.id); }} title="從媒體庫移除（不會刪除磁碟上的檔案）">×</button>
+                                                <button className="media-remove" onClick={(e) => { e.stopPropagation(); pushUndo(); removeMedia(item.id); }} title="從媒體庫移除（不會刪除磁碟上的檔案）">×</button>
                                             </div>
                                         ))}
                                     </div>
@@ -2144,7 +2116,7 @@ export default function App() {
                         )}
 
                         {/* 字幕即時預覽 overlay */}
-                        {primaryMedia && segments.length > 0 && (() => {
+                        {primaryMedia && timelineClips.some(c => c.segments.length > 0) && (() => {
                             // 字幕文字與顯示/隱藏改由 tick(播放中) 與 paused-overlay effect(暫停時)
                             // 以 imperative 方式驅動；這裡不再用 React state 設定，避免與 tick 兩邊搶寫造成閃爍。
                             const bgAlpha = subtitleStyle.bgEnabled ? subtitleStyle.bgOpacity / 100 : 0;
@@ -2319,8 +2291,8 @@ export default function App() {
                                     <div className="track-label" style={{ width: LABEL_W }}>💬 字幕</div>
                                     <div className="track-content" style={{ width: timelineWidth }}>
                                         {timelineClips.filter(c => c.trackIndex === 0 && c.segments.length > 0).map(clip =>
-                                            clip.segments.map((seg) => {
-                                                const left = ((seg.start - clip.trimStart) / clip.speed + clip.startTime) * pixelsPerSecond;
+                                            clippedSegments(clip.segments, clip.trimStart, clip.trimEnd).map((seg) => {
+                                                const left = toTimelineTime(clip, seg.start) * pixelsPerSecond;
                                                 const width = Math.max(((seg.end - seg.start) / clip.speed) * pixelsPerSecond, 2);
                                                 return (
                                                     <div
@@ -2336,10 +2308,10 @@ export default function App() {
                                                         title={`${formatTimestamp(seg.start)} → ${formatTimestamp(seg.end)}\n${seg.text}`}
                                                     >
                                                         <div className="cue-handle cue-handle-left"
-                                                            onMouseDown={(e) => handleCueEdgeDrag(e, seg.id, 'left')} />
+                                                            onMouseDown={(e) => handleCueEdgeDrag(e, clip.id, seg.id, 'left')} />
                                                         <span className="clip-text">{seg.text}</span>
                                                         <div className="cue-handle cue-handle-right"
-                                                            onMouseDown={(e) => handleCueEdgeDrag(e, seg.id, 'right')} />
+                                                            onMouseDown={(e) => handleCueEdgeDrag(e, clip.id, seg.id, 'right')} />
                                                     </div>
                                                 );
                                             })
@@ -2475,6 +2447,7 @@ export default function App() {
                                             </div>
                                             {seg.id === activeSegmentId && !selectedSegIds.has(seg.id) ? (
                                                 <textarea value={seg.text}
+                                                    onFocus={pushUndo}
                                                     onChange={(e) => updateSegment(seg.id, { text: e.target.value })}
                                                     onKeyDown={(e) => {
                                                         if (e.key === 'Enter' && !e.shiftKey) {
@@ -2525,27 +2498,12 @@ export default function App() {
             return;
         }
         // 時間軸時間 → 媒體時間（segments 的 start/end 為媒體時間）
-        const mediaTime = clip.trimStart + (T - clip.startTime) * clip.speed;
-        const segs = clip.segments ?? [];
-        const leftSegs = segs.filter(s => s.start < mediaTime).map(s => ({ ...s, end: Math.min(s.end, mediaTime) }));
-        const rightSegs = segs.filter(s => s.end > mediaTime).map(s => ({ ...s, start: Math.max(s.start, mediaTime) }));
+        const [left, right] = splitClip(clip, toSourceTime(clip, T), crypto.randomUUID());
         pushUndo();
         // 左段：縮到切點
-        updateClip(clip.id, {
-            trimEnd: mediaTime,
-            duration: (mediaTime - clip.trimStart) / clip.speed,
-            segments: leftSegs,
-        });
+        updateClip(clip.id, left);
         // 右段：新片段（共用同一 mediaId）
-        addClip({
-            ...clip,
-            id: crypto.randomUUID(),
-            startTime: T,
-            trimStart: mediaTime,
-            trimEnd: clip.trimEnd,
-            duration: (clip.trimEnd - mediaTime) / clip.speed,
-            segments: rightSegs,
-        });
+        addClip(right);
         setSpeedMenu(null);
     }, [timelineClips, updateClip, addClip, pushUndo]);
 

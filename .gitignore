@@ -2,6 +2,8 @@
 .env
 .env.local
 .env.*.local
+.ljcut-control.json
+.ljcut-control.tmp
 
 # ── Node / React ──
 node_modules/

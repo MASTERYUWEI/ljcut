@@ -1,5 +1,7 @@
 # LJCUT — 螢幕錄影 + AI 字幕剪輯工具
 
+本機剪輯命令第一階段的原始碼盤點、使用方式與驗收限制，見 [docs/local-control.md](docs/local-control.md)。
+
 Tauri 桌面應用（Rust + React），用於**螢幕錄影**、**中文字幕辨識**（faster-whisper）、**非破壞性影片剪輯**與**字幕燒製**。
 
 ## 🎯 功能概覽

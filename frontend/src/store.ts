@@ -33,6 +33,7 @@ interface AppState {
     // 播放
     currentTime: number;
     isPlaying: boolean;
+    previewRequest: { time: number; serial: number };
 
     // 狀態
     isUploading: boolean;
@@ -99,6 +100,7 @@ const initialState = {
     subtitleStyle: { ...defaultStyle } as SubtitleStyle,
     currentTime: 0,
     isPlaying: false,
+    previewRequest: { time: 0, serial: 0 },
     isUploading: false,
     isTranscribing: false,
     language: 'zh',
@@ -145,6 +147,7 @@ export const useStore = create<AppState>((set, get) => ({
     addClip: (clip) => set((s) => ({ timelineClips: [...s.timelineClips, clip] })),
     updateClip: (id, patch) => set((s) => ({
         timelineClips: s.timelineClips.map(c => c.id === id ? { ...c, ...patch } : c),
+        segments: s.activeClipId === id && patch.segments ? patch.segments : s.segments,
     })),
     removeClip: (id) => set((s) => ({
         timelineClips: s.timelineClips.filter(c => c.id !== id),
