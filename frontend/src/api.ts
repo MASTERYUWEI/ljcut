@@ -286,7 +286,7 @@ export const api = {
 
     /** 多 clip 時間軸匯出（含字幕）— 含存檔對話框 + 進度回報 */
     async exportTimeline(
-        clips: { fileId: string; trimStart: number; trimEnd: number; speed: number; segments: Segment[]; captionSegments: Segment[]; bookend?: string; transitionIn?: import('./types').TimelineClip['transitionIn'] }[],
+        clips: { fileId: string; trimStart: number; trimEnd: number; speed: number; segments: Segment[]; captionSegments: Segment[]; bookend?: string; transitionIn?: import('./types').TimelineClip['transitionIn']; zooms?: import('./zoom').ZoomRegion[] }[],
         style: Record<string, unknown>,
         defaultFileName: string,
         videoWidth: number,
@@ -315,6 +315,7 @@ export const api = {
                     caption_segments: c.captionSegments,
                     bookend: c.bookend,
                     transition_in: c.transitionIn,
+                    zooms: c.zooms ?? [],
                     trim_start: c.trimStart,
                     trim_end: c.trimEnd,
                     speed: c.speed,
@@ -561,6 +562,14 @@ export const api = {
     },
 
     /** 取得影片首幀縮圖 URL */
+    /** LJ Cut 錄影的滑鼠點擊 → 自動縮放建議；沒有游標紀錄時回 null */
+    async zoomSuggestions(fileId: string): Promise<{ suggestions: { start: number; end: number; x: number; y: number; scale: number; clicks: number }[]; clicks: unknown[] } | null> {
+        const res = await fetch(`${resolvedBase}/api/zoom-suggestions/${encodeURIComponent(fileId)}`);
+        if (res.status === 404) return null;
+        if (!res.ok) throw new Error(`自動縮放建議失敗：HTTP ${res.status}`);
+        return res.json();
+    },
+
     getThumbnailUrl(fileId: string): string {
         return `${resolvedBase}/api/thumbnail/${fileId}`;
     },

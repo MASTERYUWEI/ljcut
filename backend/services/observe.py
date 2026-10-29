@@ -35,24 +35,61 @@ def fmt_time(t: float) -> str:
     return f"{int(m)}:{s:05.2f}"
 
 
+def zoom_window(x: float, y: float, scale: float) -> tuple[float, float, float, float]:
+    """放大後實際看到的範圍（畫面比例 x0,y0,x1,y1），中心夾在畫面內，與 zoom.zoom_at 一致。"""
+    half = 0.5 / scale
+    cx, cy = min(1 - half, max(half, x)), min(1 - half, max(half, y))
+    return cx - half, cy - half, cx + half, cy + half
+
+
+def _draw_grid(tile, font):
+    d = ImageDraw.Draw(tile)
+    w, h = tile.size
+    for i in range(1, 10):
+        x, y = w * i / 10, h * i / 10
+        d.line([(x, 0), (x, h)], fill=(0, 255, 255), width=1)
+        d.line([(0, y), (w, y)], fill=(0, 255, 255), width=1)
+        d.text((x + 2, h - font.size - 4), f".{i}", fill=(0, 255, 255), font=font, stroke_width=2, stroke_fill=(0, 0, 0))
+        d.text((2, y + 2), f".{i}", fill=(0, 255, 255), font=font, stroke_width=2, stroke_fill=(0, 0, 0))
+
+
 def contact_sheet(media: Path, times: list[float], out: Path, labels: list[str] | None = None,
-                  thumb_width: int = 384, cols: int = 4) -> dict:
-    """指定時間點各抓一格，拼成一張附時間標籤的縮圖網格。"""
+                  thumb_width: int = 384, cols: int = 4, grid: bool = False,
+                  zooms: list | None = None, zoom_mode: str = "box") -> dict:
+    """指定時間點各抓一格，拼成一張附時間標籤的縮圖網格。
+
+    grid=True 疊上 10% 座標格線（給 AI 判斷放大中心 x/y）；
+    zooms[i] = {x,y,scale} 時，zoom_mode="box" 畫出放大範圍框，"crop" 直接顯示放大後的畫面（從原解析度裁切）。
+    """
     if not times:
         raise ValueError("至少需要 1 個時間點")
     if len(times) > 24:
         raise ValueError("一次最多 24 個時間點")
     font = _font(max(14, thumb_width // 18))
     tiles = []
+    small = _font(max(11, thumb_width // 32))
     for i, t in enumerate(times):
+        zoom = zooms[i] if zooms and i < len(zooms) else None
+        full_res = bool(zoom) and zoom_mode == "crop"
         r = _run(["ffmpeg", "-v", "error", "-ss", f"{max(0.0, t):.3f}", "-i", str(media),
-                  "-frames:v", "1", "-vf", f"scale={thumb_width}:-2", "-f", "image2pipe",
+                  "-frames:v", "1", *([] if full_res else ["-vf", f"scale={thumb_width}:-2"]), "-f", "image2pipe",
                   "-vcodec", "png", "-"])
         if r.returncode != 0 or not r.stdout:
             tile = Image.new("RGB", (thumb_width, thumb_width * 9 // 16), (40, 40, 40))
         else:
             from io import BytesIO
             tile = Image.open(BytesIO(r.stdout)).convert("RGB")
+        if zoom:
+            x0, y0, x1, y1 = zoom_window(float(zoom["x"]), float(zoom["y"]), float(zoom["scale"]))
+            w, h = tile.size
+            if full_res:
+                tile = tile.crop((round(x0 * w), round(y0 * h), round(x1 * w), round(y1 * h)))
+                tile = tile.resize((thumb_width, round(thumb_width * h / w)), Image.LANCZOS)
+            else:
+                ImageDraw.Draw(tile).rectangle([x0 * w, y0 * h, x1 * w - 1, y1 * h - 1], outline=(255, 50, 50),
+                                               width=max(2, w // 200))
+        if grid:
+            _draw_grid(tile, small)
         d = ImageDraw.Draw(tile)
         text = labels[i] if labels and i < len(labels) else fmt_time(t)
         bbox = d.textbbox((0, 0), text, font=font)

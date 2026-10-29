@@ -33,6 +33,7 @@ from services.llm_service import LLMService
 from services.youtube_service import YouTubeService
 from services.control import LocalControl
 from services import publication as publication_service
+from services import zoom as zoom_service
 
 # ---------- 設定 ----------
 UPLOAD_DIR = Path("./uploads")
@@ -312,6 +313,10 @@ async def export_timeline(body: dict = Body(default={})):
         trim_end = float(clip.get("trim_end", 0))
         speed = float(clip.get("speed", 1.0))
         segments = clip.get("segments", [])
+        try:
+            zoom_service.sanitize(clip.get("zooms"))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
 
         # 找影片檔
         matches = list(UPLOAD_DIR.glob(f"{file_id}.*"))
@@ -330,6 +335,7 @@ async def export_timeline(body: dict = Body(default={})):
             "speed": speed,
             "output_duration": output_duration,
             "transition_in": clip.get('transition_in'),
+            "zooms": clip.get('zooms') or [],
         })
 
         # 字幕資訊（含時間偏移）
@@ -450,9 +456,22 @@ def _build_proxy(file_id: str, src: str) -> None:
     _proxy_jobs[file_id] = "failed"
 
 
+@app.get("/api/zoom-suggestions/{file_id}")
+async def zoom_suggestions(file_id: str):
+    """LJ Cut 錄影的滑鼠點擊 → 自動縮放建議（來源秒數）。沒有游標紀錄回 404。"""
+    track = zoom_service.load_track(UPLOAD_DIR, file_id)
+    if track is None:
+        raise HTTPException(404, "此素材沒有游標紀錄（只有 LJ Cut 錄影會記錄滑鼠點擊）")
+    matches = [m for m in UPLOAD_DIR.glob(f"{file_id}.*") if m.suffix.lower() != ".wav"]
+    if not matches:
+        raise HTTPException(404, f"找不到檔案: {file_id}")
+    duration = (await asyncio.to_thread(FFmpegService.get_media_info, str(matches[0]))).get("duration", 0)
+    return zoom_service.track_report(track, duration)
+
+
 @app.get("/api/proxy/{file_id}")
 async def get_proxy(file_id: str):
-    if not re.fullmatch(r"[0-9a-f]{12}", file_id):
+    if not re.fullmatch(r"[0-9a-f-]{12}", file_id):
         raise HTTPException(400, "無效的 file_id")
     return _proxy_status(file_id)
 
@@ -460,7 +479,7 @@ async def get_proxy(file_id: str):
 @app.post("/api/proxy/{file_id}")
 async def ensure_proxy(file_id: str):
     """需要時於背景產生代理檔；短片或低解析度回 skip（直接用原檔）"""
-    if not re.fullmatch(r"[0-9a-f]{12}", file_id):
+    if not re.fullmatch(r"[0-9a-f-]{12}", file_id):
         raise HTTPException(400, "無效的 file_id")
     st = _proxy_status(file_id)
     if st["status"] != "none":

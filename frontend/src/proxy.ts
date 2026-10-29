@@ -25,7 +25,7 @@ async function ensure(id: string) {
 export function previewSrc(media: MediaItem): string {
     const hit = ready.get(media.id);
     if (hit) return hit;
-    if (!requested.has(media.id) && /^[0-9a-f]{12}$/.test(media.id)) {
+    if (!requested.has(media.id) && /^[0-9a-f-]{12}$/.test(media.id)) {
         requested.add(media.id);
         void ensure(media.id);
     }

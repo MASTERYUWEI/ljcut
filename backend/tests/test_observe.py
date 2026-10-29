@@ -42,6 +42,32 @@ class ObserveTests(unittest.TestCase):
     def post(self, path, body, auth=True):
         return self.client.post('/api/control' + path, json=body, headers=self.headers if auth else {})
 
+    def test_cursor_track_import_report_and_zoom_frames(self):
+        import json, shutil
+        ws = self.root / 'workspace'
+        shutil.copyfile(self.uploads / 'fixture01.mp4', ws / 'rec.mp4')
+        (ws / 'rec.mp4.cursor.json').write_text(json.dumps({'version': 1, 'width': 320, 'height': 180, 'fps': 30,
+            'samples': [[0, 10, 10, 1]], 'clicks': [[3.0, 240, 45, 1], [3.5, 250, 50, 1], [4.0, 900, 50, 1]]}), encoding='utf-8')
+        media = self.post('/media', {'path': 'rec.mp4'}).json()
+        self.assertTrue(media['cursorTrack'])
+        self.assertTrue((self.uploads / 'cursor' / f"{media['id']}.json").is_file())
+        rep = self.post('/observe/cursor', {'mediaId': media['id']}).json()
+        self.assertEqual([c['t'] for c in rep['clicks']], [3.0, 3.5])          # 錄影範圍外的點擊不算
+        self.assertEqual(rep['clicks'][0]['x'], 0.75)
+        self.assertEqual(len(rep['suggestions']), 1)
+        self.assertEqual(rep['suggestions'][0]['start'], 2.2)
+        self.assertEqual(self.post('/observe/cursor', {'mediaId': 'fixture01'}).json()['detail']['code'], 'NO_CURSOR_TRACK')
+        (ws / 'rec.mp4.cursor.json').unlink()
+        self.assertFalse(self.post('/media', {'path': 'rec.mp4'}).json()['cursorTrack'])   # 沒有軌跡檔
+        # 格線＋放大檢視：crop 模式從原解析度裁切
+        res = self.post('/observe/frames', {'mediaId': 'fixture01', 'times': [1, 1], 'cols': 2, 'thumbWidth': 200,
+                                            'grid': True, 'zooms': [{'x': .9, 'y': .1, 'scale': 2}, None], 'zoomMode': 'crop'})
+        self.assertEqual(res.status_code, 200, res.text)
+        sheet = Image.open(ws / res.json()['path']).convert('RGB')
+        self.assertEqual(sheet.size[0], 404)
+        bad = self.post('/observe/frames', {'mediaId': 'fixture01', 'times': [1], 'zooms': [{'x': 3, 'y': 0, 'scale': 2}]})
+        self.assertEqual(bad.json()['detail']['code'], 'INVALID_PARAM')
+
     def test_requires_token(self):
         self.assertEqual(self.post('/observe/silences', {'mediaId': 'fixture01'}, auth=False).status_code, 401)
 

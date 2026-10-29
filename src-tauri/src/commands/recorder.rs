@@ -880,6 +880,14 @@ pub async fn stop_recording(app: AppHandle) -> Result<String, String> {
     if !mux_av(&paths.video, paths.audio.as_deref(), &final_path) {
         let _ = std::fs::copy(&paths.video, &final_path);
     }
+    // 游標軌跡（錄影子程序寫在暫存影片旁）：搬到成品旁保存，匯入時再複製一份給 LJ Cut
+    let raw_cursor = PathBuf::from(format!("{}.cursor.json", paths.video.display()));
+    let kept_cursor = PathBuf::from(format!("{}.cursor.json", final_path.display()));
+    if raw_cursor.exists() {
+        if std::fs::copy(&raw_cursor, &kept_cursor).is_ok() {
+            let _ = std::fs::remove_file(&raw_cursor);
+        }
+    }
     let _ = std::fs::remove_file(&paths.video);
     if let Some(a) = &paths.audio {
         let _ = std::fs::remove_file(a);
@@ -916,6 +924,14 @@ pub async fn stop_recording(app: AppHandle) -> Result<String, String> {
         let dest = backend_uploads.join(format!("{file_id}.mp4"));
         std::fs::copy(&final_path, &dest).map_err(|e| format!("複製錄影檔失敗: {e}"))?;
         log::info!("✅ 錄影檔已複製到: {}", dest.display());
+        // 游標軌跡放子資料夾，避免被 uploads/{id}.* 的搜尋誤當成影片
+        if kept_cursor.exists() {
+            let cursor_dir = backend_uploads.join("cursor");
+            let _ = std::fs::create_dir_all(&cursor_dir);
+            if let Err(e) = std::fs::copy(&kept_cursor, cursor_dir.join(format!("{file_id}.json"))) {
+                log::warn!("複製游標軌跡失敗: {e}");
+            }
+        }
 
         let dest_str = dest.to_string_lossy().to_string();
         let info = ffmpeg_service::get_media_info(&dest_str).unwrap_or_else(|e| {
@@ -1033,6 +1049,7 @@ pub fn cleanup_old_files(app: &AppHandle, max_age_days: u64) {
     }
     dirs.push(find_backend_subdir("uploads"));
     dirs.push(find_backend_subdir("uploads").join("proxies")); // 預覽代理檔
+    dirs.push(find_backend_subdir("uploads").join("cursor")); // 游標軌跡
     dirs.push(find_backend_subdir("outputs"));
 
     let mut removed = 0u32;

@@ -274,6 +274,7 @@ body {
     radial-gradient(ellipse at center, rgba(20, 20, 30, 0.5) 0%, var(--bg-crust) 100%);
   position: relative;
   min-height: 0;
+  overflow: hidden; /* 畫面縮放時不溢出到其他面板 */
 }
 
 .cover-picker { font-size: 13px; }
@@ -2316,4 +2317,57 @@ body {
   color: var(--fg-subtext0, #999);
   cursor: pointer;
   user-select: none;
+}
+
+/* ── 縮放軌 ── */
+.zoom-track-label {
+  flex-direction: column;
+  gap: 2px;
+}
+.zoom-track-actions {
+  display: flex;
+  gap: 3px;
+}
+.zoom-mini-btn {
+  min-width: 18px;
+  height: 16px;
+  padding: 0 4px;
+  font-size: 11px;
+  line-height: 14px;
+  border: 1px solid rgba(250, 179, 135, 0.45);
+  border-radius: 3px;
+  background: rgba(250, 179, 135, 0.12);
+  color: var(--fg-text, #cdd6f4);
+  cursor: pointer;
+}
+.zoom-mini-btn:hover:not(:disabled) {
+  background: rgba(250, 179, 135, 0.3);
+}
+.zoom-mini-btn:disabled {
+  opacity: 0.4;
+  cursor: wait;
+}
+.zoom-clip {
+  background: linear-gradient(180deg, rgba(250, 179, 135, 0.28), rgba(250, 179, 135, 0.12));
+  border: 1px solid rgba(250, 179, 135, 0.55);
+  border-radius: 4px;
+  color: #fab387;
+  font-size: 10px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 4px;
+  overflow: hidden;
+}
+.zoom-clip.selected {
+  border-color: #fab387;
+  box-shadow: 0 0 0 1px #fab387 inset;
+  overflow: visible;
+  z-index: 3;
+}
+.zoom-clip-tools {
+  display: flex;
+  gap: 2px;
+  margin-left: auto;
 }

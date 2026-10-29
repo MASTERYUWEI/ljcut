@@ -23,6 +23,7 @@ from .subtitle import SubtitleService
 from .transitions import validate_transitions
 from . import publication as publications
 from . import observe
+from . import zoom as zoom_service
 
 
 def fail(code, message, status=400):
@@ -39,6 +40,10 @@ def project_payload(p):
     for m in p['mediaItems']:
         if not isinstance(m, dict) or not isinstance(m.get('id'), str) or m['id'] in ids or not isinstance(m.get('url'), str):
             fail('INVALID_MEDIA', '素材 ID 必須唯一且包含有效 URL')
+        try:
+            zoom_service.sanitize(m.get('zooms'))
+        except ValueError as error:
+            fail('INVALID_ZOOM', str(error))
         ids.add(m['id'])
     clip_ids = set()
     for c in p['timelineClips']:
@@ -378,8 +383,14 @@ class LocalControl:
             mid = uuid.uuid4().hex[:12]
             dest = self.uploads / (mid + source.suffix.lower())
             await asyncio.to_thread(shutil.copyfile, source, dest)
+            # LJ Cut 錄影旁的游標軌跡一起帶進來（自動縮放用）；放子資料夾，避免被 {id}.* 搜尋誤抓
+            track = source.with_name(source.name + '.cursor.json')
+            has_cursor = track.is_file() and zoom_service.load_track_file(track) is not None
+            if has_cursor:
+                (self.uploads / 'cursor').mkdir(exist_ok=True)
+                await asyncio.to_thread(shutil.copyfile, track, self.uploads / 'cursor' / f'{mid}.json')
             return {"id": mid, "filename": source.name, "url": '/uploads/' + dest.name,
-                    "info": info, "waveformPeaks": []}
+                    "info": info, "waveformPeaks": [], "cursorTrack": has_cursor}
 
         # ── 觀察工具（唯讀，不需編輯器在線）：給 AI 看畫面、聽停頓 ──
         def media_file(body):
@@ -409,14 +420,37 @@ class LocalControl:
             labels = body.get("labels") if isinstance(body.get("labels"), list) else None
             width = int(num(body, "thumbWidth", 384, 160, 960))
             cols = int(num(body, "cols", 4, 1, 8))
+            zooms = body.get("zooms")
+            if zooms is not None:
+                ok = isinstance(zooms, list) and all(z is None or (isinstance(z, dict) and all(
+                    isinstance(z.get(k), (int, float)) and not isinstance(z.get(k), bool) for k in ("x", "y", "scale"))
+                    and 0 <= z["x"] <= 1 and 0 <= z["y"] <= 1 and 1 <= z["scale"] <= 4) for z in zooms)
+                if not ok:
+                    fail("INVALID_PARAM", "zooms 需為 {x,y,scale} 或 null 的陣列（x/y 0–1、倍率 1–4）")
+            mode = body.get("zoomMode", "box")
+            if mode not in ("box", "crop"):
+                fail("INVALID_PARAM", "zoomMode 需為 box 或 crop")
             out = self.root / "observe" / f"frames-{uuid.uuid4().hex[:10]}.jpg"
             try:
                 res = await asyncio.to_thread(observe.contact_sheet, src, [float(t) for t in times], out,
-                                              [str(x) for x in labels] if labels else None, width, cols)
+                                              [str(x) for x in labels] if labels else None, width, cols,
+                                              body.get("grid") is True, zooms, mode)
             except ValueError as e:
                 fail("INVALID_PARAM", str(e))
             res["path"] = out.relative_to(self.root).as_posix()
             return res
+
+        @r.post('/observe/cursor')
+        async def observe_cursor(request: Request, body: dict = Body(...)):
+            """錄影時記下的滑鼠點擊（來源秒數、畫面比例座標）與自動縮放建議。"""
+            self.authorize(request)
+            src = media_file(body)
+            mid = body.get("mediaId") or ""
+            track = zoom_service.load_track(self.uploads, mid) if mid else None
+            if track is None:
+                fail("NO_CURSOR_TRACK", "此素材沒有游標紀錄（只有 LJ Cut 錄影會記錄）；請改用 ljcut_frames 加 grid 判斷位置", 404)
+            duration = (await asyncio.to_thread(FFmpegService.get_media_info, str(src))).get("duration", 0)
+            return zoom_service.track_report(track, duration)
 
         @r.post('/observe/silences')
         async def observe_silences(request: Request, body: dict = Body(...)):
@@ -518,6 +552,7 @@ class LocalControl:
             project = project_payload(body.get('project'))
             medias = {m['id']: self.media_path(m) for m in project.get('mediaItems', [])}
             infos = {mid: await asyncio.to_thread(FFmpegService.get_media_info, str(path)) for mid, path in medias.items()}
+            zooms_by_media = {m['id']: m.get('zooms') or [] for m in project.get('mediaItems', [])}
             clips = []
             subtitle_clips = []
             offset = 0.0
@@ -536,7 +571,8 @@ class LocalControl:
                 if abs(c['duration'] - length) > 1e-6:
                     fail('INVALID_RANGE', '片段長度不一致')
                 clips.append({"video_path": str(medias[c['mediaId']]), "trim_start": start,
-                              "trim_end": end, "speed": speed, "output_duration": length, "transition_in": c.get('transitionIn')})
+                              "trim_end": end, "speed": speed, "output_duration": length, "transition_in": c.get('transitionIn'),
+                              "zooms": zooms_by_media.get(c['mediaId'], [])})
                 subtitle_clips.append({"segments": c['segments'], "trim_start": start, "trim_end": end,
                                        "speed": speed, "time_offset": offset, "bookend": c.get('bookend')})
                 offset += length

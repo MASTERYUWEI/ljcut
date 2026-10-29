@@ -47,6 +47,24 @@ LJ Cut 重開後不必重啟 MCP。
 `move_clip {clipId,toIndex}`、`delete_clip {clipId}`、`edit_subtitle {clipId,segmentId,text}`、`delete_subtitle {clipId,segmentId}` 需 `clipId`。
 片頭片尾位置固定（`BOOKEND_LOCKED`）。螢幕教學中的安靜段常是操作過程，優先考慮 `set_speed` 而非刪除。
 
+## 畫面縮放（zoom in／平移）
+
+- **資料**：縮放區段存在素材上（`MediaItem.zooms`，來源秒數）：`{id, start, end, x, y, scale, ease?}`，
+  x/y 為放大中心（畫面比例 0–1）、倍率 1.1–4、進出場緩動預設 0.4 秒；同一素材不可重疊。
+  剪掉或加速片段時縮放跟著內容走，存檔／復原／版本號沿用既有機制。
+- **剪輯指令**：`add_zoom`（省略 mediaId 時依 start 所在片段決定素材）、`edit_zoom`、`delete_zoom`，走同一條 dry-run → 確認 → apply。
+- **預覽**：常駐迴圈依每個 `<video>` 的素材與 currentTime 套 CSS transform，並以 clip-path 只顯示原畫面範圍。
+- **匯出**：`backend/services/zoom.py` 產生 `scale(eval=frame)` → `crop` 濾鏡，從原檔解析度放大（小字清楚），
+  以 `-filter_script:v` 讀入，區段再多也不受命令列長度限制。公式與 `frontend/src/zoom.ts` 相同；數值在後端重新驗證。
+- **游標軌跡**：LJ Cut 錄影會在影片旁寫 `<影片>.cursor.json`（每 0.1 秒游標位置、每次點擊；錄影範圍內的實際像素）。
+  錄影匯入時複製到 `uploads/cursor/{id}.json`；從工作區匯入（`ljcut_import`）時若旁邊有同名軌跡檔也會帶入。
+  自動縮放建議：時間相近（2.5 秒內）且位置接近的點擊歸一組，區段 = 第一次點擊前 0.8 秒到最後一次後 1.6 秒，
+  中心取平均位置，倍率依點擊分佈 1.5–2.2 倍。
+- **MCP**：`ljcut_cursor`（點擊＋建議，輸出可直接當 `ljcut_plan` 的 operations）、`ljcut_check_zooms`（原畫面紅框＋放大後畫面）、
+  `ljcut_frames grid=true`（0.1 格線，給沒有游標紀錄的素材判斷位置）。
+- **介面**：時間軸「🔍 縮放」軌：＋ 在播放頭加 3 秒 2 倍、✨ 依滑鼠點擊自動加入；點選區段後 −／+ 調倍率、× 刪除，
+  Shift+點預覽畫面設定放大中心（已放大時會換算回原畫面座標）。
+
 ## 相關改動
 
 - **長輪詢**：編輯器以 `/poll {wait:8}` 等待命令，後端有命令立即回應。過去靠 300ms 計時器，

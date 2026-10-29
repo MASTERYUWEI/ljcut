@@ -112,6 +112,8 @@ def t_status(_):
         res = f"{info.get('width', '-')}x{info.get('height', '-')}" if info.get("width") else "音訊"
         has = f"已辨識 {len(tr[m['id']]['segments'])} 句" if tr.get(m["id"]) else "未辨識"
         lines.append(f"  {m['id']}  {m['filename']}  {r2(info.get('duration', 0))}s  {res}  {has}")
+        for z in m.get("zooms") or []:
+            lines.append(f"      縮放 {z['id']}  src {r2(z['start'])}–{r2(z['end'])}  中心({z['x']},{z['y']})  {z['scale']}x")
     lines.append("時間軸片段（依順序）：")
     for i, c in enumerate(clips_sorted(s)):
         tag = f" [{c['bookend']}]" if c.get("bookend") else ""
@@ -155,8 +157,11 @@ def t_frames(a):
     blocks = []
     for mid, pts in groups.items():
         res = client().request("/observe/frames", {"mediaId": mid, "times": [p[0] for p in pts],
-                                                    "labels": [p[1] for p in pts], "cols": a.get("cols", 4)})
-        blocks += [text_block(f"{media_name(s, mid)}：{len(pts)} 格"), image_block(res["path"])]
+                                                    "labels": [p[1] for p in pts], "cols": a.get("cols", 4),
+                                                    "grid": bool(a.get("grid", False)),
+                                                    **({"thumbWidth": 640} if a.get("grid") else {})})
+        note = "（青色格線每格 0.1，左上為 0,0；縮放中心 x/y 直接讀格線）" if a.get("grid") else ""
+        blocks += [text_block(f"{media_name(s, mid)}：{len(pts)} 格{note}"), image_block(res["path"])]
     return blocks
 
 
@@ -315,6 +320,55 @@ def t_check_cuts(a):
     return blocks
 
 
+def t_cursor(a):
+    """錄影時記下的滑鼠點擊與自動縮放建議（只有 LJ Cut 錄影有）。"""
+    s = state()
+    mid = a.get("mediaId") or main_media_id(s)
+    rep_ = client().request("/observe/cursor", {"mediaId": mid})
+    sugg = rep_["suggestions"]
+    ops = [{"type": "add_zoom", "mediaId": mid, "start": z["start"], "end": z["end"], "x": z["x"], "y": z["y"],
+            "scale": z["scale"]} for z in sugg]
+    lines = [f"{media_name(s, mid)}：錄影範圍 {rep_['width']}x{rep_['height']}，{len(rep_['clicks'])} 次點擊（來源秒數、畫面比例座標）"]
+    lines += [f"  {c['t']}s  ({c['x']},{c['y']})  {c['button']}" for c in rep_["clicks"][:80]]
+    if len(rep_["clicks"]) > 80:
+        lines.append(f"  …其餘 {len(rep_['clicks']) - 80} 次省略")
+    lines.append(f"自動縮放建議 {len(sugg)} 段（依點擊分組；可直接交給 ljcut_plan，或先刪改不需要的段落）：")
+    return [text_block("\n".join(lines)), text_block({"operations": ops})]
+
+
+def t_check_zooms(a):
+    """每個縮放區段取中間一格：左=原畫面＋紅框（放大範圍），右=實際放大後的畫面。"""
+    s = state()
+    items = []
+    for m in s["mediaItems"]:
+        for z in m.get("zooms") or []:
+            mid_t = (z["start"] + z["end"]) / 2
+            shown = [c for c in clips_sorted(s) if c["mediaId"] == m["id"] and c["trimStart"] <= mid_t < c["trimEnd"]]
+            tl = f"tl {r2(to_tl(shown[0], mid_t))}" if shown else "已被剪掉"
+            items.append((m["id"], z, mid_t, tl))
+    if not items:
+        return [text_block("目前沒有縮放區段。")]
+    off = int(a.get("offset", 0))
+    page = items[off: off + int(a.get("max", 6))]
+    blocks = [text_block(f"縮放 {off + 1}–{off + len(page)} / {len(items)}")]
+    by_media = {}
+    for mid, z, t, tl in page:
+        by_media.setdefault(mid, []).append((t, z, tl))
+    for mid, pts in by_media.items():
+        times = [t for t, _, _ in pts]
+        zooms = [{"x": z["x"], "y": z["y"], "scale": z["scale"]} for _, z, _ in pts]
+        # 紅框與放大畫面是不同模式，分兩張拼圖（同順序）
+        res_box = client().request("/observe/frames", {"mediaId": mid, "times": times, "zooms": zooms, "zoomMode": "box",
+                                                        "labels": [f"{z['id'][:8]} {tl}" for _, z, tl in pts],
+                                                        "cols": 3, "thumbWidth": 400})
+        res_crop = client().request("/observe/frames", {"mediaId": mid, "times": times, "zooms": zooms, "zoomMode": "crop",
+                                                         "labels": [f"{z['id'][:8]} {z['scale']}x" for _, z, _ in pts],
+                                                         "cols": 3, "thumbWidth": 400})
+        blocks += [text_block(f"{media_name(s, mid)}：原畫面＋紅框（放大範圍）"), image_block(res_box["path"]),
+                   text_block("同順序：成品看到的放大畫面"), image_block(res_crop["path"])]
+    return blocks
+
+
 # ───────────────────────── 工具宣告 ─────────────────────────
 NUM = {"type": "number"}
 OPS_DOC = (
@@ -327,6 +381,9 @@ OPS_DOC = (
     "- move_clip {toIndex}：把片段移到時間軸第 N 個位置（片頭片尾固定）\n"
     "- delete_clip：刪除整個片段\n"
     "- add_subtitle {start,end,text} / edit_subtitle {segmentId,text} / delete_subtitle {segmentId}\n"
+    "- add_zoom {start,end,x,y,scale,ease?}：畫面放大（x/y 為放大中心，畫面比例 0–1；scale 1.1–4，教學常用 1.6–2.2；"
+    "ease 進出場秒數預設 0.4）。存在素材上，之後剪片會跟著內容走；同一素材的區段不可重疊\n"
+    "- edit_zoom {zoomId, start?,end?,x?,y?,scale?,ease?} / delete_zoom {zoomId}\n"
     "需要 clipId 的操作若要指向同批剛分割出的新片段，先 dry-run 一次取得新 clipId。"
 )
 TOOLS = [
@@ -336,7 +393,8 @@ TOOLS = [
      {"clipId": {"type": "string", "description": "只看某個片段（選填）"}}, [], t_transcript),
     ("ljcut_frames", "看畫面：指定時間點各抓一格拼成一張圖。domain=timeline 用時間軸秒數（預設），source 用素材秒數。最多 24 點。",
      {"times": {"type": "array", "items": NUM}, "domain": {"type": "string", "enum": ["timeline", "source"]},
-      "mediaId": {"type": "string"}, "cols": NUM}, ["times"], t_frames),
+      "mediaId": {"type": "string"}, "cols": NUM,
+      "grid": {"type": "boolean", "description": "疊上 0.1 間距座標格線，判斷縮放中心時用"}}, ["times"], t_frames),
     ("ljcut_overview", "整支素材平均取樣 N 格（預設 12）的縮圖拼圖，快速了解影片在做什麼。", {"mediaId": {"type": "string"}, "count": NUM}, [], t_overview),
     ("ljcut_silences", "列出素材的靜音區間（來源秒數）。注意：螢幕教學安靜時常是操作過程，不要直接刪。",
      {"mediaId": {"type": "string"}, "noiseDb": NUM, "minSilence": NUM}, [], t_silences),
@@ -350,6 +408,10 @@ TOOLS = [
     ("ljcut_apply", "套用 ljcut_plan 的結果。必須先把變更摘要給使用者並取得明確同意，userConfirmed 才能填 true。一批 = 一次 undo。",
      {"dryRunId": {"type": "string"}, "userConfirmed": {"type": "boolean"}}, ["dryRunId", "userConfirmed"], t_apply),
     ("ljcut_check_cuts", "檢查剪接：每個片段接縫前後各取一格畫面，看接得順不順。", {"max": NUM, "offset": NUM}, [], t_check_cuts),
+    ("ljcut_cursor", "讀取 LJ Cut 錄影時記下的滑鼠點擊（來源秒數、畫面比例座標），並給自動縮放建議（可直接當 ljcut_plan 的 operations）。"
+     "沒有游標紀錄的素材請用 ljcut_frames grid=true 自己判斷位置。", {"mediaId": {"type": "string"}}, [], t_cursor),
+    ("ljcut_check_zooms", "檢查縮放：每個縮放區段中間一格：一張原畫面＋紅框、一張放大後實際畫面，確認放大的位置對不對、字看不看得清楚。",
+     {"max": NUM, "offset": NUM}, [], t_check_zooms),
     ("ljcut_undo", "復原上一批變更（與 LJ Cut 介面共用 Ctrl+Z 堆疊）。", {}, [], t_undo),
     ("ljcut_redo", "重做。", {}, [], t_redo),
     ("ljcut_preview", "讓 LJ Cut 播放器跳到時間軸某秒並暫停（使用者畫面會跟著動）。", {"time": NUM}, ["time"], t_preview),
@@ -386,6 +448,8 @@ def handle(msg):
                     "serverInfo": {"name": "ljcut", "version": "0.3.0"},
                     "instructions": "LJ Cut 影片剪輯器。流程：ljcut_status → ljcut_transcript / ljcut_overview / ljcut_frames 理解內容 → "
                                     "ljcut_plan 試算 → 摘要給使用者確認 → ljcut_apply → ljcut_check_cuts 驗證 → ljcut_export。"
+                                    "畫面放大：LJ Cut 錄影先用 ljcut_cursor 取得依點擊的建議，其他素材用 ljcut_frames grid=true 判斷位置；"
+                                    "add_zoom 試算套用後用 ljcut_check_zooms 確認位置。"
                                     "刪除與加速都要使用者確認；靜音不等於可刪。"})
     elif method == "ping":
         reply(mid, {})

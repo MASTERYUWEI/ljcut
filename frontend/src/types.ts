@@ -1,3 +1,4 @@
+import type { ZoomRegion } from './zoom';
 /* ── LJCUT 類型定義 ── */
 
 export interface Segment {
@@ -37,6 +38,7 @@ export interface MediaItem {
     waveformPeaks: number[];
     thumbnailUrl?: string;  // 影片首幀縮圖
     transcript?: TranscribeResult; // 未經字幕編輯的原始辨識結果；來源時間（秒）
+    zooms?: ZoomRegion[];   // 畫面縮放區段；來源時間（秒），見 zoom.ts
 }
 
 // ── 時間軸 Clip ──

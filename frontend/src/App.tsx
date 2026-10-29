@@ -5,6 +5,7 @@ import { useStore } from './store';
 import { api, onApiReady } from './api';
 import type { MediaItem, TimelineClip, Segment, AppSettings, RecOpts, MicDevice } from './types';
 import { previewSrc, hasSrc } from './proxy';
+import { zoomAt, type ZoomRegion } from './zoom';
 import { formatTime, formatTimestamp, generateRulerTicks, findSnapTime, LABEL_W, splitLongCues as splitLongCuesUtil } from './utils';
 import { SettingsModal } from './components/SettingsModal';
 import { RecordingSettingsModal } from './components/RecordingSettingsModal';
@@ -12,7 +13,7 @@ import { SpeedMenu } from './components/SpeedMenu';
 import { ExportProgress } from './components/ExportProgress';
 import { YouTubeUploadModal } from './components/YouTubeUploadModal';
 import { ProjectControl } from './components/ProjectControl';
-import { pushUndo, undo, redo, projectData } from './editSession';
+import { pushUndo, undo, redo, projectData, dryRun, applyPlan, readState } from './editSession';
 import { clippedSegments, splitClip, timelineSegments, toSourceTime, toTimelineTime, validateProject } from './editCore';
 import { registerPreviewReader } from './controlClient';
 import { transitionVisual } from './transitions';
@@ -987,6 +988,7 @@ export default function App() {
                     captionSegments: clip.segments ?? [],
                     bookend: clip.bookend,
                     transitionIn: clip.transitionIn,
+                    zooms: media?.zooms ?? [],
                 };
             });
             const defaultFileName = 'timeline_output.mp4';
@@ -1067,7 +1069,8 @@ export default function App() {
                     video.style.inset = 'auto';
                     video.style.left = '50%';
                     video.style.top = '50%';
-                    video.style.transform = 'translate(-50%, -50%)';
+                    // 畫面縮放迴圈會在這個置中之後接上自己的放大；已是置中開頭就不覆寫
+                    if (!video.style.transform.startsWith('translate(-50%, -50%)')) video.style.transform = 'translate(-50%, -50%)';
                     video.style.backgroundColor = '#000';
                 }
             }
@@ -1786,6 +1789,124 @@ export default function App() {
         };
     }, [isPlaying, pixelsPerSecond, duration, timelineClips, goToClip, primeStandby, syncRulerScroll, setCurrentTime, setIsPlaying, setActiveSegment, updateTransition]);
 
+    // ── 畫面縮放編輯（介面）：與 AI 同一條 dry-run → apply 路徑，一次操作 = 一筆 undo ──
+    const [selectedZoomId, setSelectedZoomId] = useState<string | null>(null);
+    const [zoomBusy, setZoomBusy] = useState(false);
+    const runZoomOps = useCallback((operations: Record<string, unknown>[]) => {
+        try {
+            const s = readState();
+            const v = { sessionId: s.sessionId, projectId: s.projectId, expectedRevision: s.revision };
+            const draft = dryRun({ ...v, timeUnit: 'seconds', operations: operations.map(o => ({ trackId: 'video-main', timeDomain: 'source', ...o })) } as never);
+            applyPlan({ ...v, dryRunId: draft.dryRunId, confirmed: true });
+            return draft.changes as { zoomId?: string }[];
+        } catch (e) {
+            alert(`縮放操作失敗：${e instanceof Error ? e.message : String(e)}`);
+            return null;
+        }
+    }, []);
+    const selectedZoom = useMemo(() => {
+        for (const m of mediaItems) {
+            const z = m.zooms?.find(z => z.id === selectedZoomId);
+            if (z) return { media: m, zoom: z };
+        }
+        return null;
+    }, [mediaItems, selectedZoomId]);
+    const addZoomAtPlayhead = useCallback(() => {
+        const t = timelinePosRef.current;
+        const clip = timelineClips.find(c => c.trackIndex === 0 && !c.bookend && t >= c.startTime && t < c.startTime + c.duration);
+        const media = clip && mediaItems.find(m => m.id === clip.mediaId);
+        if (!clip || !media) { alert('請把播放頭移到要放大的片段上'); return; }
+        if (!media.info.width) { alert('純音訊素材不能縮放'); return; }
+        const start = Math.round(toSourceTime(clip, t) * 100) / 100;
+        const end = Math.min(media.info.duration, start + 3);
+        const changes = runZoomOps([{ type: 'add_zoom', mediaId: media.id, start, end, x: 0.5, y: 0.5, scale: 2 }]);
+        if (changes?.[0]?.zoomId) setSelectedZoomId(changes[0].zoomId);
+    }, [timelineClips, mediaItems, runZoomOps]);
+    const autoZoom = useCallback(async () => {
+        const ids = [...new Set(timelineClips.filter(c => c.trackIndex === 0 && !c.bookend).map(c => c.mediaId))];
+        if (!ids.length) return;
+        setZoomBusy(true);
+        try {
+            const ops: Record<string, unknown>[] = [];
+            let tracked = 0;
+            for (const id of ids) {
+                const media = mediaItems.find(m => m.id === id);
+                const rep = await api.zoomSuggestions(id);
+                if (!rep || !media) continue;
+                tracked++;
+                const taken = media.zooms ?? [];
+                for (const z of rep.suggestions) {
+                    if (taken.some(o => z.start < o.end && z.end > o.start)) continue; // 不覆蓋已有的縮放
+                    ops.push({ type: 'add_zoom', mediaId: id, start: z.start, end: z.end, x: z.x, y: z.y, scale: z.scale });
+                }
+            }
+            if (!tracked) { alert('這些素材沒有游標紀錄。自動縮放只支援用 LJ Cut 錄的影片（錄影時會記下滑鼠點擊）。'); return; }
+            if (!ops.length) { alert('沒有新的縮放建議（沒有點擊，或建議的時段已有縮放）。'); return; }
+            if (runZoomOps(ops)) alert(`已依滑鼠點擊加入 ${ops.length} 段縮放，可按 Ctrl+Z 復原。`);
+        } catch (e) {
+            alert(e instanceof Error ? e.message : String(e));
+        } finally { setZoomBusy(false); }
+    }, [timelineClips, mediaItems, runZoomOps]);
+    // Shift+點預覽畫面：把選取的縮放中心設到點擊位置（已放大時會換算回原畫面座標）
+    const setZoomCenterFromClick = useCallback((e: React.MouseEvent<HTMLVideoElement>) => {
+        if (!selectedZoom) return false;
+        // 兩個 <video> 疊放，點到的可能是隱藏的待命元素；一律用正在顯示的那個換算
+        const v = getActiveVideo(), box = videoContainerRef.current;
+        if (!v || !box || !v.videoWidth) return false;
+        const rect = box.getBoundingClientRect();
+        const W = rect.width, H = rect.height, aspect = v.videoWidth / v.videoHeight;
+        const fw = W / H > aspect ? H * aspect : W, fh = W / H > aspect ? H : W / aspect;
+        const cur = hasSrc(v, previewSrc(selectedZoom.media)) ? zoomAt(selectedZoom.media.zooms, v.currentTime) : { scale: 1, x: 0.5, y: 0.5 };
+        const px = cur.x + (e.clientX - rect.left - W / 2) / (cur.scale * fw);
+        const py = cur.y + (e.clientY - rect.top - H / 2) / (cur.scale * fh);
+        if (px < 0 || px > 1 || py < 0 || py > 1) return true;
+        runZoomOps([{ type: 'edit_zoom', zoomId: selectedZoom.zoom.id, x: Math.round(px * 1000) / 1000, y: Math.round(py * 1000) / 1000 }]);
+        return true;
+    }, [selectedZoom, runZoomOps, getActiveVideo]);
+
+    // ── 畫面縮放預覽：常駐迴圈，依每個 <video> 自己的素材與 currentTime 套 CSS transform ──
+    // 與匯出同一套公式（zoom.ts ↔ backend/services/zoom.py）；播放、暫停、拖拉播放頭都適用。
+    const zoomMediaRef = useRef(mediaItems);
+    zoomMediaRef.current = mediaItems;
+    useEffect(() => {
+        let raf = 0;
+        const applied = new WeakMap<HTMLVideoElement, string>();
+        const tick = () => {
+            for (const v of [vid0Ref.current, vid1Ref.current]) {
+                if (!v) continue;
+                // updateTransition 會把 <video> 縮成主畫面大小並以 translate(-50%,-50%) 置中；放大接在置中之後
+                const base = v.style.left === '50%' ? 'translate(-50%, -50%)' : '';
+                const media = zoomMediaRef.current.find(m => m.zooms?.length && hasSrc(v, previewSrc(m)));
+                const z = media ? zoomAt(media.zooms, v.currentTime) : null;
+                let transform = base, clip = '';
+                if (z && z.scale > 1.0005 && v.videoWidth && v.videoHeight && v.clientWidth && v.clientHeight) {
+                    // 元素內以 object-fit: contain 顯示，畫面框置中於元素
+                    const W = v.clientWidth, H = v.clientHeight;
+                    const aspect = v.videoWidth / v.videoHeight;
+                    const fw = W / H > aspect ? H * aspect : W, fh = W / H > aspect ? H : W / aspect;
+                    const s = z.scale, tx = -s * (z.x - 0.5) * fw, ty = -s * (z.y - 0.5) * fh;
+                    transform = `${base} translate(${tx}px, ${ty}px) scale(${s})`.trim();
+                    // 只顯示原畫面範圍：把畫面框反推回元素座標當 clip-path（clip-path 會跟著 transform 一起變換）
+                    const back = (q: number, half: number, t: number) => half + (q - half - t) / s;
+                    const l = back((W - fw) / 2, W / 2, tx), r = back((W + fw) / 2, W / 2, tx);
+                    const t = back((H - fh) / 2, H / 2, ty), b = back((H + fh) / 2, H / 2, ty);
+                    clip = `inset(${t}px ${W - r}px ${H - b}px ${l}px)`;
+                }
+                // 與目前樣式比對（其他程式也會寫 transform），有差才寫
+                const key = transform + '|' + clip;
+                if (applied.get(v) !== key || !v.style.transform.startsWith(base)) {
+                    v.style.transform = transform;
+                    v.style.clipPath = clip;
+                    v.style.borderRadius = clip ? '0' : '';
+                    applied.set(v, key);
+                }
+            }
+            raf = requestAnimationFrame(tick);
+        };
+        raf = requestAnimationFrame(tick);
+        return () => cancelAnimationFrame(raf);
+    }, []);
+
     // ── 閒置（未播放）時在 active 元素顯示目前播放頭所在片段的畫面 ──
     // （雙緩衝後 video 不再有宣告式 src，需在此補上靜止預覽幀；播放中由 tick/swap 管理，不介入）
     useEffect(() => {
@@ -2095,7 +2216,7 @@ export default function App() {
                                         if (active && active.id !== activeSegmentId) setActiveSegment(active.id);
                                     }}
                                     onEnded={handleVideoEnded}
-                                    onClick={togglePlay} style={{ cursor: 'pointer' }} />
+                                    onClick={(e) => { if (e.shiftKey && setZoomCenterFromClick(e)) return; togglePlay(); }} style={{ cursor: 'pointer' }} />
                                 <video ref={setVid1} className="dbl-video"
                                     onTimeUpdate={(e) => {
                                         if (isPlaying) return;
@@ -2105,7 +2226,7 @@ export default function App() {
                                         if (active && active.id !== activeSegmentId) setActiveSegment(active.id);
                                     }}
                                     onEnded={handleVideoEnded}
-                                    onClick={togglePlay} style={{ cursor: 'pointer' }} />
+                                    onClick={(e) => { if (e.shiftKey && setZoomCenterFromClick(e)) return; togglePlay(); }} style={{ cursor: 'pointer' }} />
                             </>
                         ) : (
                             <div className="video-placeholder">
@@ -2290,6 +2411,47 @@ export default function App() {
                                         )}
                                     </div>
                                 </div>
+
+                                {/* 縮放軌：區段存在素材上（來源秒數），依各片段換算到時間軸顯示 */}
+                                {mediaItems.some(m => m.info.width) && (
+                                    <div className="track zoom-track">
+                                        <div className="track-label zoom-track-label" style={{ width: LABEL_W }}>
+                                            <span>🔍 縮放</span>
+                                            <span className="zoom-track-actions">
+                                                <button className="zoom-mini-btn" title="在播放頭加入 3 秒、2 倍的縮放（選取後 Shift+點預覽畫面設定放大位置）"
+                                                    onClick={(e) => { e.stopPropagation(); addZoomAtPlayhead(); }}>＋</button>
+                                                <button className="zoom-mini-btn" title="依錄影時的滑鼠點擊自動加入縮放（限 LJ Cut 錄影）" disabled={zoomBusy}
+                                                    onClick={(e) => { e.stopPropagation(); void autoZoom(); }}>✨</button>
+                                            </span>
+                                        </div>
+                                        <div className="track-content" style={{ width: timelineWidth }}>
+                                            {timelineClips.filter(c => c.trackIndex === 0).flatMap(clip => {
+                                                const media = mediaItems.find(m => m.id === clip.mediaId);
+                                                return (media?.zooms ?? []).filter((z: ZoomRegion) => z.start < clip.trimEnd && z.end > clip.trimStart).map((z: ZoomRegion) => {
+                                                    const a = Math.max(z.start, clip.trimStart), b = Math.min(z.end, clip.trimEnd);
+                                                    const left = toTimelineTime(clip, a) * pixelsPerSecond;
+                                                    const width = Math.max(((b - a) / clip.speed) * pixelsPerSecond, 3);
+                                                    const selected = z.id === selectedZoomId;
+                                                    return (
+                                                        <div key={`${clip.id}-${z.id}`} className={`track-clip zoom-clip ${selected ? 'selected' : ''}`}
+                                                            style={{ left, width }}
+                                                            onClick={(e) => { e.stopPropagation(); setSelectedZoomId(z.id); seekTo(toTimelineTime(clip, Math.min(b - 0.01, (z.start + z.end) / 2))); }}
+                                                            title={`放大 ${z.scale}x　中心 (${z.x}, ${z.y})\n${formatTimestamp(z.start)} → ${formatTimestamp(z.end)}（素材時間）\n選取後 Shift+點預覽畫面可改放大位置`}>
+                                                            <span className="clip-text">{z.scale}x</span>
+                                                            {selected && (
+                                                                <span className="zoom-clip-tools" onClick={(e) => e.stopPropagation()}>
+                                                                    <button className="zoom-mini-btn" title="縮小倍率" onClick={() => runZoomOps([{ type: 'edit_zoom', zoomId: z.id, scale: Math.max(1.1, Math.round((z.scale - 0.25) * 100) / 100) }])}>−</button>
+                                                                    <button className="zoom-mini-btn" title="放大倍率" onClick={() => runZoomOps([{ type: 'edit_zoom', zoomId: z.id, scale: Math.min(4, Math.round((z.scale + 0.25) * 100) / 100) }])}>+</button>
+                                                                    <button className="zoom-mini-btn" title="刪除這段縮放" onClick={() => { if (runZoomOps([{ type: 'delete_zoom', zoomId: z.id }])) setSelectedZoomId(null); }}>×</button>
+                                                                </span>
+                                                            )}
+                                                        </div>
+                                                    );
+                                                });
+                                            })}
+                                        </div>
+                                    </div>
+                                )}
 
                                 {/* 字幕軌 */}
                                 <div className="track">

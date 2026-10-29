@@ -1,6 +1,7 @@
 import type { MediaItem, Segment, TimelineClip } from './types';
 import type { SubtitleStyle } from './store';
 import { TRANSITIONS, type TransitionKind } from './transitions';
+import { checkZooms, type ZoomRegion } from './zoom';
 
 export const TRACKS = [{ id: 'video-main', index: 0, kind: 'video-with-audio' as const },
     { id: 'subtitles-main', index: 1, kind: 'clip-subtitles' as const }];
@@ -67,6 +68,8 @@ export function validateProject(p: ProjectData, continuous = false): void {
         requireEdit(typeof m.id === 'string' && !mediaIds.has(m.id) && typeof m.url === 'string'
             && typeof m.filename === 'string' && Array.isArray(m.waveformPeaks)
             && m.info && finite(m.info.duration) && m.info.duration > 0, 'INVALID_MEDIA', '素材 ID 或長度無效');
+        const zoomError = checkZooms(m.zooms, m.info.duration);
+        requireEdit(!zoomError, 'INVALID_ZOOM', zoomError!);
         mediaIds.add(m.id);
     }
     const ids = new Set<string>();
@@ -113,7 +116,7 @@ export function validateProject(p: ProjectData, continuous = false): void {
 
 export type EditOperation = {
     type: 'ripple_delete' | 'add_subtitle' | 'split' | 'set_speed' | 'move_clip'
-        | 'delete_clip' | 'edit_subtitle' | 'delete_subtitle';
+        | 'delete_clip' | 'edit_subtitle' | 'delete_subtitle' | 'add_zoom' | 'edit_zoom' | 'delete_zoom';
     /** 省略時依來源秒數（start / at）自動找片段；同批前面的操作分割過也能正確定位 */
     clipId?: string;
     /** 省略 clipId 時可指定素材，避免同一來源時間出現在多個片段 */
@@ -132,6 +135,12 @@ export type EditOperation = {
     /** edit_subtitle / delete_subtitle：片段內字幕 ID */
     segmentId?: number;
     text?: string;
+    /** add_zoom / edit_zoom：放大中心（0–1）、倍率、緩動秒數；edit_zoom / delete_zoom 用 zoomId 指定 */
+    x?: number;
+    y?: number;
+    scale?: number;
+    ease?: number;
+    zoomId?: string;
     review?: 'confirmed' | 'needs_review';
     reason?: string;
 };
@@ -208,6 +217,48 @@ export function evaluateBookends(project: ProjectData, intro: MediaItem | undefi
     validateProject(next, true);
     return { next, changes, beforeDuration, afterDuration: durationOf(next.timelineClips) };
 }
+/** 縮放操作：區段存在素材上（來源秒數）。新增時依 start 所在片段決定素材，可用 mediaId 指定。 */
+function applyZoomOp(next: ProjectData, op: EditOperation, id: () => string): object {
+    let media: ProjectData['mediaItems'][number] | undefined;
+    let zoom: ZoomRegion | undefined;
+    if (op.type === 'add_zoom') {
+        requireEdit(finite(op.start) && finite(op.end), 'INVALID_RANGE', 'add_zoom 需提供來源秒數 start、end');
+        let mediaId = op.mediaId ?? (op.clipId ? next.timelineClips.find(c => c.id === op.clipId)?.mediaId : undefined);
+        if (!mediaId) {
+            const ids = [...new Set(next.timelineClips.filter(c => !c.bookend && op.start! >= c.trimStart && op.start! < c.trimEnd)
+                .map(c => c.mediaId))];
+            requireEdit(ids.length > 0, 'CLIP_NOT_FOUND', `沒有片段包含來源時間 ${op.start}`);
+            requireEdit(ids.length === 1, 'CLIP_AMBIGUOUS', `來源時間 ${op.start} 出現在多個素材，請指定 mediaId：${ids.join('、')}`);
+            mediaId = ids[0];
+        }
+        media = next.mediaItems.find(m => m.id === mediaId);
+        requireEdit(media, 'MEDIA_NOT_FOUND', `找不到素材 ${mediaId}`);
+        requireEdit(media.info.width && media.info.height, 'UNSUPPORTED_MEDIA', '純音訊素材不能縮放');
+        zoom = { id: id(), start: op.start, end: op.end, x: op.x ?? 0.5, y: op.y ?? 0.5, scale: op.scale ?? 2,
+            ...(op.ease !== undefined ? { ease: op.ease } : {}) };
+        media.zooms = [...(media.zooms ?? []), zoom].sort((a, b) => a.start - b.start);
+    } else {
+        requireEdit(typeof op.zoomId === 'string', 'ZOOM_REQUIRED', `${op.type} 需提供 zoomId`);
+        media = next.mediaItems.find(m => m.zooms?.some(z => z.id === op.zoomId));
+        requireEdit(media, 'ZOOM_NOT_FOUND', `找不到縮放 ${op.zoomId}`);
+        const before = media.zooms!.find(z => z.id === op.zoomId)!;
+        if (op.type === 'delete_zoom') {
+            media.zooms = media.zooms!.filter(z => z.id !== op.zoomId);
+            return { type: op.type, zoomId: before.id, mediaId: media.id, removed: before };
+        }
+        zoom = { ...before };
+        for (const k of ['start', 'end', 'x', 'y', 'scale', 'ease'] as const) if (op[k] !== undefined) zoom[k] = op[k];
+        media.zooms = media.zooms!.map(z => z.id === zoom!.id ? zoom! : z).sort((a, b) => a.start - b.start);
+    }
+    const error = checkZooms(media.zooms, media.info.duration);
+    requireEdit(!error, 'INVALID_ZOOM', error!);
+    const visible = next.timelineClips.filter(c => c.mediaId === media!.id && c.trimStart < zoom!.end && c.trimEnd > zoom!.start)
+        .map(c => [toTimelineTime(c, Math.max(c.trimStart, zoom!.start)), toTimelineTime(c, Math.min(c.trimEnd, zoom!.end))]);
+    return { type: op.type, zoomId: zoom.id, mediaId: media.id, source: [zoom.start, zoom.end],
+        center: [zoom.x, zoom.y], scale: zoom.scale, timeline: visible,
+        ...(visible.length ? {} : { warning: '此區段目前不在時間軸上（已被剪掉），不會出現在成品' }) };
+}
+
 /** 依操作的來源時間找出唯一包含它的片段（不含片頭片尾）。 */
 function locateClip(clips: TimelineClip[], op: EditOperation): TimelineClip {
     const point = op.type === 'split';
@@ -232,6 +283,10 @@ export function evaluatePlan(project: ProjectData, revision: number, plan: EditP
     for (const op of plan.operations) {
         requireEdit(op && op.trackId === 'video-main' && op.timeDomain === 'source', 'INVALID_TIME_DOMAIN', '需指定 video-main 與 source 時間');
         requireEdit(op.review !== 'needs_review', 'REVIEW_REQUIRED', '待確認段落不可套用，請先人工確認');
+        if (op.type === 'add_zoom' || op.type === 'edit_zoom' || op.type === 'delete_zoom') {
+            changes.push(applyZoomOp(next, op, id));
+            continue;
+        }
         const c = op.clipId ? next.timelineClips.find(c => c.id === op.clipId) : locateClip(next.timelineClips, op);
         requireEdit(c, 'CLIP_NOT_FOUND', `找不到片段 ${op.clipId}`);
         if (op.type === 'split') {

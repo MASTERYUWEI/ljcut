@@ -164,6 +164,8 @@ struct Capturer {
     prev_lbtn: bool,
     prev_rbtn: bool,
     ripples: Vec<(i32, i32, Instant)>, // 點擊漣漪：輸出座標 x,y + 起始時間
+    // 游標軌跡紀錄（給 LJ Cut 自動縮放）：點擊時間、螢幕座標（游標尖端）、按鍵 1=左 2=右
+    click_log: Vec<(Instant, i32, i32, u8)>,
 }
 
 impl Capturer {
@@ -215,20 +217,31 @@ impl Capturer {
                 }
             }
 
-            // 偵測滑鼠點擊（按下瞬間在游標尖端產生漣漪）
-            if self.click_fx {
+            // 偵測滑鼠點擊：一律記錄（給自動縮放），開啟點擊特效時才畫漣漪
+            {
                 let tip_x = self.cursor_x + self.cursor_hotspot_x;
                 let tip_y = self.cursor_y + self.cursor_hotspot_y;
-                let l = (GetAsyncKeyState(VK_LBUTTON.0 as i32) as u16 & 0x8000) != 0;
-                let r = (GetAsyncKeyState(VK_RBUTTON.0 as i32) as u16 & 0x8000) != 0;
-                if (l && !self.prev_lbtn) || (r && !self.prev_rbtn) {
-                    self.ripples.push((tip_x, tip_y, Instant::now()));
+                // 0x8000 = 目前按著；0x0001 = 上次查詢後曾按過（抓得到兩次查詢之間就放開的快速輕點）
+                let ls = GetAsyncKeyState(VK_LBUTTON.0 as i32) as u16;
+                let rs = GetAsyncKeyState(VK_RBUTTON.0 as i32) as u16;
+                let l = ls & 0x8000 != 0;
+                let r = rs & 0x8000 != 0;
+                let pressed_l = !self.prev_lbtn && (l || ls & 1 != 0);
+                let pressed_r = !self.prev_rbtn && (r || rs & 1 != 0);
+                if pressed_l || pressed_r {
+                    let now = Instant::now();
+                    self.click_log.push((now, tip_x, tip_y, if pressed_l { 1 } else { 2 }));
+                    if self.click_fx {
+                        self.ripples.push((tip_x, tip_y, now));
+                    }
                 }
                 self.prev_lbtn = l;
                 self.prev_rbtn = r;
                 // 清掉已結束的漣漪
-                self.ripples
-                    .retain(|(_, _, t)| t.elapsed().as_secs_f32() < 0.45);
+                if self.click_fx {
+                    self.ripples
+                        .retain(|(_, _, t)| t.elapsed().as_secs_f32() < 0.45);
+                }
             }
 
             let resource = match res {
@@ -612,6 +625,48 @@ fn create_staging(device: &ID3D11Device, w: u32, h: u32) -> windows::core::Resul
     Ok(tex.unwrap())
 }
 
+/// 寫出 `<輸出檔>.cursor.json`：錄影範圍內的游標取樣與點擊（影片秒數、像素）。
+/// 失敗只記警告，不影響錄影本身。
+fn write_cursor_track(
+    out: &str,
+    w: u32,
+    h: u32,
+    fps: u32,
+    start: Instant,
+    samples: &[(f64, i32, i32, bool)],
+    clicks: &[(Instant, i32, i32, u8)],
+    origin: (i32, i32),
+) {
+    let mut json = format!(
+        "{{\"version\":1,\"width\":{w},\"height\":{h},\"fps\":{fps},\"samples\":["
+    );
+    for (i, (t, sx, sy, vis)) in samples.iter().enumerate() {
+        if i > 0 {
+            json.push(',');
+        }
+        json.push_str(&format!("[{t:.3},{sx},{sy},{}]", if *vis { 1 } else { 0 }));
+    }
+    json.push_str("],\"clicks\":[");
+    let mut first = true;
+    for (at, cx, cy, button) in clicks {
+        let Some(d) = at.checked_duration_since(start) else { continue };
+        if !first {
+            json.push(',');
+        }
+        first = false;
+        json.push_str(&format!(
+            "[{:.3},{},{},{button}]",
+            d.as_secs_f64(),
+            cx - origin.0,
+            cy - origin.1
+        ));
+    }
+    json.push_str("]}");
+    if let Err(e) = std::fs::write(format!("{out}.cursor.json"), json) {
+        eprintln!("游標軌跡寫入失敗: {e}");
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 8 {
@@ -712,6 +767,7 @@ fn main() {
         prev_lbtn: false,
         prev_rbtn: false,
         ripples: Vec::new(),
+        click_log: Vec::new(),
     };
 
     // ── 建立編碼器（H.264 / MP4，音訊關閉；沿用 windows-capture 的硬體編碼器）──
@@ -781,6 +837,10 @@ fn main() {
     let frame_ns: u128 = 1_000_000_000u128 / fps as u128;
     let start = Instant::now();
     let mut idx: u64 = 0;
+    // 游標軌跡：約每 0.1 秒取樣一次（影片秒數、錄影範圍內座標、是否可見）
+    let sample_every = (fps as u64 / 10).max(1);
+    let mut samples: Vec<(f64, i32, i32, bool)> = Vec::new();
+    cap.click_log.clear(); // 預熱期間的點擊不算
 
     while !stop.load(Ordering::Relaxed) {
         let target_ns = (idx as u128) * frame_ns;
@@ -806,6 +866,15 @@ fn main() {
             }
         }
 
+        if idx % sample_every == 0 {
+            samples.push((
+                idx as f64 / fps as f64,
+                cap.cursor_x + cap.cursor_hotspot_x - x as i32,
+                cap.cursor_y + cap.cursor_hotspot_y - y as i32,
+                cap.cursor_visible,
+            ));
+        }
+
         // 送出這一格（新畫面或重送上一張）→ 保證每一格都填滿
         let ts = ((idx as i128) * 10_000_000i128 / fps as i128) as i64;
         if let Err(e) = encoder.send_frame_buffer(&out_buf, ts) {
@@ -824,6 +893,7 @@ fn main() {
     encoder
         .finish()
         .unwrap_or_else(|e| fail(&format!("編碼收尾失敗: {e}")));
+    write_cursor_track(&out, w, h, fps, start, &samples, &cap.click_log, (x as i32, y as i32));
     println!("DONE");
     let _ = std::io::stdout().flush();
 }

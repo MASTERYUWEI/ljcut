@@ -206,3 +206,41 @@ test('omitted clipId locates the clip by source time, even after earlier ops spl
     assert.throws(() => evaluatePlan(twice, 0, { ...plan(), operations: [op({ type: 'split', at: 4 })] } as any, () => 'x'), { code: 'CLIP_AMBIGUOUS' });
     assert.throws(() => evaluatePlan(project(), 0, { ...plan(), operations: [op({ type: 'delete_clip' })] } as any, () => 'x'), { code: 'CLIP_REQUIRED' });
 });
+
+test('zoom: easing math, add/edit/delete ops, media-level storage survives ripple, validation', async () => {
+    const { zoomAt } = await import('../src/zoom');
+    const z = [{ id: 'z', start: 2, end: 6, x: 0.9, y: 0.1, scale: 2, ease: 0.5 }];
+    assert.deepEqual(zoomAt(z, 1), { scale: 1, x: 0.5, y: 0.5 });
+    assert.equal(zoomAt(z, 2.25).scale, 1.5);                 // 緩動中點
+    const hold = zoomAt(z, 4);
+    assert.equal(hold.scale, 2);
+    assert.deepEqual([hold.x, hold.y], [0.75, 0.25]);          // 夾在畫面內：放大 2 倍時中心最多到 0.25/0.75
+    assert.equal(zoomAt(z, 6).scale, 1);                       // 右開區間
+    assert.equal(zoomAt([{ ...z[0], end: 2.6 }], 2.3).scale, 2); // 短區段緩動縮成一半長度
+
+    const p:any = project(); p.mediaItems[0].info.width = 1920; p.mediaItems[0].info.height = 1080;
+    const op = (o:any) => ({ trackId: 'video-main' as const, timeDomain: 'source' as const, ...o });
+    const ids = (() => { let i = 0; return () => `id${i++}`; })();
+    const d = evaluatePlan(p, 0, { ...plan(), operations: [
+        op({ type: 'add_zoom', start: 5, end: 7, x: 0.2, y: 0.3, scale: 2.5 }),
+        op({ type: 'ripple_delete', start: 1, end: 3 }),
+    ] } as any, ids);
+    const zooms = d.next.mediaItems[0].zooms!;
+    assert.deepEqual(zooms.map(z => [z.start, z.end, z.x, z.y, z.scale]), [[5, 7, 0.2, 0.3, 2.5]]);
+    assert.deepEqual((d.changes[0] as any).timeline, [[5, 7]]);
+    assert.equal(p.mediaItems[0].zooms, undefined);            // 輸入不變
+    const zid = zooms[0].id;
+    const e = evaluatePlan(d.next, 0, { ...plan(), operations: [op({ type: 'edit_zoom', zoomId: zid, scale: 3, end: 7.5 })] } as any, ids);
+    assert.deepEqual([e.next.mediaItems[0].zooms![0].scale, e.next.mediaItems[0].zooms![0].end], [3, 7.5]);
+    const del = evaluatePlan(e.next, 0, { ...plan(), operations: [op({ type: 'delete_zoom', zoomId: zid })] } as any, ids);
+    assert.deepEqual(del.next.mediaItems[0].zooms, []);
+    const bad = (o:any, code:string) => assert.throws(() => evaluatePlan(d.next, 0, { ...plan(), operations: [op(o)] } as any, ids), { code });
+    bad({ type: 'add_zoom', start: 6, end: 7.5 }, 'INVALID_ZOOM');          // 與既有區段重疊
+    bad({ type: 'add_zoom', start: 0.1, end: 0.3 }, 'INVALID_ZOOM');        // 太短
+    bad({ type: 'add_zoom', start: 0, end: 1, scale: 9 }, 'INVALID_ZOOM');
+    bad({ type: 'add_zoom', start: 0, end: 1, x: 2 }, 'INVALID_ZOOM');
+    bad({ type: 'edit_zoom', zoomId: 'nope', scale: 2 }, 'ZOOM_NOT_FOUND');
+    bad({ type: 'add_zoom', start: 1.5, end: 2.5 }, 'CLIP_NOT_FOUND');      // 1–3 已被剪掉
+    const audio:any = project();
+    assert.throws(() => evaluatePlan(audio, 0, { ...plan(), operations: [op({ type: 'add_zoom', start: 1, end: 2 })] } as any, ids), { code: 'UNSUPPORTED_MEDIA' });
+});

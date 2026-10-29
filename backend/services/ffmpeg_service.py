@@ -43,6 +43,8 @@ def _parse_frame_rate(fr: str) -> float:
         return 0.0
 
 
+from . import zoom as zoom_service
+
 class FFmpegService:
     @staticmethod
     def get_media_info(file_path: str) -> dict:
@@ -333,7 +335,8 @@ class FFmpegService:
                 if trim_start > 0:
                     cmd += ["-ss", str(trim_start)]
                 cmd += ["-i", video_path]
-                has_audio = bool(FFmpegService.get_media_info(video_path).get('audio_codec'))
+                media_info = FFmpegService.get_media_info(video_path)
+                has_audio = bool(media_info.get('audio_codec'))
                 if not has_audio:
                     cmd += ['-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=48000']
                 cmd += ['-map', '0:v:0', '-map', '0:a:0' if has_audio else '1:a:0']
@@ -344,16 +347,28 @@ class FFmpegService:
                 # 否則 fps/timebase 不同會造成影像錯位、白畫面凍結直到時間戳追上）
                 # setpts=(PTS-STARTPTS)/speed：把每段起點歸零，順便套變速（speed=1 即純歸零）
                 speed_expr = f"(PTS-STARTPTS)/{speed}" if speed != 1.0 else "PTS-STARTPTS"
+                fit_step = [f"scale={video_width}:{video_height}:force_original_aspect_ratio=decrease"]
+                zooms = zoom_service.overlapping(clip.get("zooms"), trim_start, trim_end)
+                if zooms and media_info.get('width') and media_info.get('height'):
+                    # 畫面縮放：從原檔解析度直接放大再裁切，放大後的小字仍清楚
+                    fit_w, fit_h = zoom_service.fit_size(media_info['width'], media_info['height'], video_width, video_height)
+                    fit_step = zoom_service.zoom_filters(zooms, trim_start, speed, fit_w, fit_h)
                 vf_parts = [
                     f"setpts={speed_expr}",
-                    f"scale={video_width}:{video_height}:force_original_aspect_ratio=decrease",
+                    *fit_step,
                     f"pad={video_width}:{video_height}:(ow-iw)/2:(oh-ih)/2:black",
                     "setsar=1",
                     f"fps={target_fps}",  # 統一影格率 → 強制 CFR
                 ]
                 transition_video, transition_audio = transition_filters(clips, idx)
                 vf_parts.extend(transition_video)
-                cmd += ["-vf", ",".join(vf_parts)]
+                if zooms:
+                    # 縮放表達式可能很長：寫成檔案讀入，避開 Windows 命令列 32K 字元上限
+                    vf_file = temp_dir / f"clip_{idx}.vf.txt"
+                    vf_file.write_text(",".join(vf_parts), encoding="utf-8")
+                    cmd += ["-filter_script:v", str(vf_file)]
+                else:
+                    cmd += ["-vf", ",".join(vf_parts)]
 
                 # 音訊：重置 PTS（+ 變速）並統一格式
                 af_parts = ["asetpts=PTS-STARTPTS"]
