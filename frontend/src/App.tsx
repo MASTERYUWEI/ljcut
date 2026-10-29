@@ -24,7 +24,7 @@ import { AiStatus } from './components/AiStatus';
 import { OverlayInspector } from './components/OverlayInspector';
 import { notify, toast, humanizeError } from './toast';
 import { useDialog } from './useDialog';
-import { pushUndo, undo, redo, projectData, dryRun, applyPlan, readState, history as editHistory, contentKey, sameContent, requestPreview } from './editSession';
+import { pushUndo, undo, redo, projectData, dryRun, applyPlan, readState, history as editHistory, contentKey, sameContent, requestPreview, peekHistory } from './editSession';
 import { clippedSegments, splitClip, timelineSegments, toSourceTime, toTimelineTime, validateProject } from './editCore';
 import { registerPreviewReader } from './controlClient';
 import { transitionVisual } from './transitions';
@@ -134,13 +134,15 @@ export default function App() {
     const runOpsRef = useRef<(ops: Record<string, unknown>[], what: string) => unknown>(() => null);
     const [showReplace, setShowReplace] = useState(false);
     const [retranscribeArmed, setRetranscribeArmed] = useState(false);
-    const [overlayExpanded, setOverlayExpanded] = useState(false);
+    const [overlayExpanded, setOverlayExpanded] = useState(() => { try { return localStorage.getItem('ljcut-overlay-expanded') !== '0'; } catch { return true; } });
+    useEffect(() => { try { localStorage.setItem('ljcut-overlay-expanded', overlayExpanded ? '1' : '0'); } catch { /* 無法記住不影響 */ } }, [overlayExpanded]);
     const [rightTab, setRightTab] = useState<'props' | 'subs'>('props');
     const [leftCollapsed, setLeftCollapsed] = useState(() => { try { return localStorage.getItem('ljcut-left-collapsed') === '1'; } catch { return false; } });
     useEffect(() => { try { localStorage.setItem('ljcut-left-collapsed', leftCollapsed ? '1' : '0'); } catch { /* 無法記住不影響 */ } }, [leftCollapsed]);
     // I／O 標記：一次剪掉一段時間軸（時間軸秒數）
     const [marks, setMarks] = useState<{ in: number | null; out: number | null }>({ in: null, out: null });
     const marksRef = useRef(marks); marksRef.current = marks;
+    const cutRangeRef = useRef<() => void>(() => { });
     const liveRef = useRef<HTMLSpanElement>(null);
     const announce = (text: string) => { if (liveRef.current) { liveRef.current.textContent = ''; setTimeout(() => { if (liveRef.current) liveRef.current.textContent = text; }, 30); } };
     const [exportDone, setExportDone] = useState<string | null>(null);
@@ -1723,6 +1725,7 @@ export default function App() {
         toast('info', `已剪掉 ${formatTime(a)}–${formatTime(b)}（${(b - a).toFixed(1)} 秒）`, [{ label: '復原', run: handleUndo }], { key: 'history' });
         announce(`已剪掉 ${(b - a).toFixed(1)} 秒`);
     }, [timelineClips, seekTo, handleUndo]);
+    cutRangeRef.current = cutMarkedRange;
 
     // ── 合併已選取的相鄰 CUE（active + Ctrl 選取合計） ──
     const mergeIds = useMemo(() => {
@@ -1987,7 +1990,7 @@ export default function App() {
             applyPlan({ ...v, dryRunId: draft.dryRunId, confirmed: true });
             return draft.changes as { zoomId?: string }[];
         } catch (e) {
-            notify(`${what}失敗：${e instanceof Error ? e.message : String(e)}`);
+            notify(`${what}失敗：${(e instanceof Error ? e.message : String(e)).replace(/疊加層/g, '標註')}`);
             return null;
         }
     }
@@ -2480,7 +2483,7 @@ export default function App() {
                 <ProjectFileButtons />
                 <AiStatus />
                 <div className="header-actions">
-                    <button className="btn" onClick={() => setShowRecSettings(true)}><CircleDot aria-hidden />螢幕錄影</button>
+                    <button className="btn" onClick={() => setShowRecSettings(true)} title="螢幕錄影" aria-label="螢幕錄影"><CircleDot aria-hidden /><span className="btn-label">螢幕錄影</span></button>
                     {/* 匯出影片：只要時間軸上有片段就能匯出（純剪輯、無字幕也可） */}
                     {hasTimeline && (<>
                         <span className="header-sep" aria-hidden />
@@ -2494,7 +2497,7 @@ export default function App() {
                         }} disabled={isBurning} aria-disabled={!lastExport || undefined}
                             aria-label={exportStale ? '上傳到 YouTube（成品較舊）' : '上傳到 YouTube'}
                             title={!lastExport ? '請先匯出影片，再上傳 YouTube' : exportStale ? `匯出後專案又改過，這支成品不含之後的修改\n${lastExport}` : `上傳最近匯出的成品到 YouTube\n${lastExport}`}>
-                            <Upload aria-hidden />YouTube{exportStale && <span className="stale-tag">成品較舊</span>}
+                            <Upload aria-hidden /><span className="btn-label">YouTube</span>{exportStale && <span className="stale-tag">成品較舊</span>}
                         </button>
                     </>)}
                     <span className="header-sep" aria-hidden />
@@ -2553,10 +2556,10 @@ export default function App() {
                 <aside className={`panel-left ${leftCollapsed ? 'collapsed' : ''}`} style={{ width: leftCollapsed ? 44 : leftWidth }} aria-label="媒體與辨識">
                     {leftCollapsed ? (
                         <div className="left-rail">
-                            <button className="btn btn-icon" onClick={() => setLeftCollapsed(false)} aria-label="展開左欄" title="展開左欄"><PanelLeftOpen aria-hidden /></button>
-                            <button className="btn btn-icon" onClick={() => { setLeftTab('media'); setLeftCollapsed(false); }} aria-label="媒體" title="媒體"><Film aria-hidden /></button>
-                            <button className="btn btn-icon" onClick={() => { setLeftTab('subtitle'); setLeftCollapsed(false); }} aria-label="字幕辨識" title="字幕辨識"><Captions aria-hidden /></button>
-                            <button className="btn btn-icon" onClick={() => fileInputRef.current?.click()} aria-label="匯入影片" title="匯入影片"><Upload aria-hidden /></button>
+                            <button className="btn btn-icon" onClick={() => setLeftCollapsed(false)} aria-label="展開左欄" title="展開左欄"><PanelLeftOpen aria-hidden /><span className="rail-label">展開</span></button>
+                            <button className="btn btn-icon" onClick={() => { setLeftTab('media'); setLeftCollapsed(false); }} aria-label="媒體" title="媒體"><Film aria-hidden /><span className="rail-label">媒體</span></button>
+                            <button className="btn btn-icon" onClick={() => { setLeftTab('subtitle'); setLeftCollapsed(false); }} aria-label="字幕辨識" title="字幕辨識"><Captions aria-hidden /><span className="rail-label">字幕</span></button>
+                            <button className="btn btn-icon" onClick={() => fileInputRef.current?.click()} aria-label="匯入影片" title="匯入影片"><Upload aria-hidden /><span className="rail-label">匯入</span></button>
                         </div>
                     ) : <>
                     {/* 頁籤切換 */}
@@ -2847,8 +2850,10 @@ export default function App() {
                             <button className="btn" onClick={togglePlay} style={{ padding: '6px 12px' }} aria-label={isPlaying ? '暫停（空白鍵）' : '播放（空白鍵）'} title={isPlaying ? '暫停（空白鍵／K）' : '播放（空白鍵／L）'}>
                                 {isPlaying ? <Pause aria-hidden /> : <Play aria-hidden />}
                             </button>
-                            <button className="btn btn-icon" onClick={handleUndo} disabled={!hist.canUndo} aria-label="復原" title={hist.canUndo ? '復原（Ctrl+Z）' : '沒有可以復原的操作'}><Undo2 aria-hidden /></button>
-                            <button className="btn btn-icon" onClick={handleRedo} disabled={!hist.canRedo} aria-label="重做" title={hist.canRedo ? '重做（Ctrl+Shift+Z）' : '沒有可以重做的操作'}><Redo2 aria-hidden /></button>
+                            <button className="btn btn-icon" onClick={handleUndo} disabled={!hist.canUndo} aria-label="復原" title={hist.canUndo ? '復原（Ctrl+Z）' : '沒有可以復原的操作'}
+                                onMouseEnter={e => { if (hist.canUndo) e.currentTarget.title = `復原（Ctrl+Z）：${peekHistory('undo')}`; }}><Undo2 aria-hidden /></button>
+                            <button className="btn btn-icon" onClick={handleRedo} disabled={!hist.canRedo} aria-label="重做" title={hist.canRedo ? '重做（Ctrl+Shift+Z）' : '沒有可以重做的操作'}
+                                onMouseEnter={e => { if (hist.canRedo) e.currentTarget.title = `重做（Ctrl+Shift+Z）：${peekHistory('redo')}`; }}><Redo2 aria-hidden /></button>
                             <span className="time" ref={timeDisplayRef}>{formatTime(currentTime)} / {formatTime(duration)}</span>
                             <input type="range" ref={rangeSliderRef} aria-label="播放位置" min={0} max={duration || 0} step={0.1} defaultValue={currentTime}
                                 onChange={(e) => seekTo(Number(e.target.value))}
@@ -2871,10 +2876,16 @@ export default function App() {
                                         setSpeedMenu({ clipId: clip.id, x: r.left, y: r.bottom, splitTime: t });
                                     }}><Gauge aria-hidden />{activeClipSpeed}x</button>
                             </>}
-                            {(marks.in != null || marks.out != null) && <span className="mark-group" role="group" aria-label="I／O 標記">
+                            {hasTimeline && <span className="mark-group" role="group" aria-label="I／O 標記">
+                                <button className={`btn btn-compact ${marks.in != null ? 'on' : ''}`} onClick={() => setMarks(m => ({ ...m, in: timelinePosRef.current }))}
+                                    title="在播放頭標記要剪掉的起點（I）" aria-label="標記起點 I">I</button>
+                                <button className={`btn btn-compact ${marks.out != null ? 'on' : ''}`} onClick={() => setMarks(m => ({ ...m, out: timelinePosRef.current }))}
+                                    title="在播放頭標記要剪掉的終點（O）" aria-label="標記終點 O">O</button>
+                            </span>}
+                            {(marks.in != null || marks.out != null) && <span className="mark-group" role="group" aria-label="I／O 區間">
                                 <button className="btn btn-compact btn-danger-soft" disabled={marks.in == null || marks.out == null} onClick={cutMarkedRange}
-                                    title={marks.in == null || marks.out == null ? '再按 I 或 O 標記另一端' : '剪掉 I 到 O 之間（Ctrl+Z 可復原）'}>
-                                    <Scissors aria-hidden />{marks.in != null && marks.out != null ? `剪掉 I–O ${Math.abs(marks.out - marks.in).toFixed(1)} 秒` : marks.in != null ? `I ${formatTime(marks.in)}，按 O` : `O ${formatTime(marks.out!)}，按 I`}</button>
+                                    title={marks.in == null || marks.out == null ? '再按 I 或 O 標記另一端' : '剪掉 I 到 O 之間（X；Ctrl+Z 可復原）'}>
+                                    <Scissors aria-hidden />{marks.in != null && marks.out != null ? `剪掉 ${Math.abs(marks.out - marks.in).toFixed(1)} 秒` : '再標另一端'}</button>
                                 <button className="btn btn-icon btn-compact" onClick={() => setMarks({ in: null, out: null })} aria-label="清除 I／O 標記" title="清除標記（Esc）"><X aria-hidden /></button>
                             </span>}
                             <span className="seg-group" role="group" aria-label={`時間軸比例 ${Math.round(zoom * 100)}%`}>
@@ -3184,7 +3195,7 @@ export default function App() {
                             overlay={selectedOverlay?.overlay}
                             zoom={selectedOverlay ? undefined : selectedZoom?.zoom}
                             clips={timelineClips}
-                            onOps={runZoomOps}
+                            onOps={(ops) => runZoomOps(ops, selectedOverlay ? `修改${OVERLAY_LABEL[selectedOverlay.overlay.kind]}` : '修改縮放')}
                             onClose={() => { setSelectedOverlayId(null); setSelectedZoomId(null); }}
                             onDeleted={(what) => toast('info', `已刪除${what}`, [{ label: '復原', run: handleUndo }], { key: 'history' })}
                             onHelp={openHelp}
@@ -3366,9 +3377,9 @@ export default function App() {
                                     const top = anchorRect.bottom - listRect.top + listEl.scrollTop + 4;
                                     return (
                                         <div className="merge-float-btn" style={{ top }} role="toolbar" aria-label="選取的字幕">
-                                            {canMergeSelected && <button className="btn" onClick={handleMergeSelected}>合併 {mergeIds.size} 句</button>}
+                                            {canMergeSelected && <button className="btn" onClick={handleMergeSelected}>合併 {mergeIds.size} 句<kbd className="menu-kbd">Ctrl M</kbd></button>}
                                             <button className="btn btn-danger-soft" onClick={() => handleCutSegments(mergeIds)}
-                                                title="把這幾句對應的影片剪掉（Ctrl+Z 可復原）"><Scissors aria-hidden />剪掉這 {mergeIds.size} 句</button>
+                                                title="把這幾句對應的影片剪掉（Ctrl+Z 可復原）"><Scissors aria-hidden />剪掉這 {mergeIds.size} 句<kbd className="menu-kbd">Del</kbd></button>
                                         </div>
                                     );
                                 })()}
@@ -3419,9 +3430,9 @@ export default function App() {
             const el = e.target as HTMLElement;
             if (e.key === 'Escape') {
                 if (speedMenu) { setSpeedMenu(null); return; }
+                if (showHelp) { setShowHelp(false); return; }
                 if (showExportModal) { setShowExportModal(false); return; }
                 if (showYtUpload) return;   // 由上傳對話框自己處理（上傳中不能關）
-                if (showHelp) { setShowHelp(false); return; }
                 if (showSettings) { setShowSettings(false); return; }
                 if (showRecSettings) { setShowRecSettings(false); return; }
                 if (selectedOverlayId || selectedZoomId) { setSelectedOverlayId(null); setSelectedZoomId(null); }
@@ -3439,6 +3450,9 @@ export default function App() {
                 const target = e.key === 'ArrowDown' ? all.find(s => s.start > now + 0.05) : [...all].reverse().find(s => s.start < now - 0.3);
                 if (target) seekTo(target.start);
                 return;
+            }
+            if (!e.ctrlKey && !e.metaKey && !e.altKey && (e.key === 'x' || e.key === 'X') && marksRef.current.in != null && marksRef.current.out != null && !el.closest?.('.subtitle-list')) {
+                e.preventDefault(); cutRangeRef.current(); return;
             }
             if (!e.ctrlKey && !e.metaKey && !e.altKey && (e.key === 'i' || e.key === 'I' || e.key === 'o' || e.key === 'O') && !el.closest?.('.subtitle-list')) {
                 e.preventDefault();
@@ -3501,7 +3515,7 @@ export default function App() {
                     canSplit={canSplitMenuClip}
                     splitTime={splitT}
                     onSplit={() => handleSplitClip(speedMenuClip.id, splitT)}
-                    onDelete={() => { handleClipDelete(speedMenuClip.id); toast('info', '已刪除片段', [{ label: '復原', run: handleUndo }], { key: 'history' }); }}
+                    onDelete={() => { const d = speedMenuClip.duration; handleClipDelete(speedMenuClip.id); toast('info', `已刪除片段（${d.toFixed(1)} 秒）`, [{ label: '復原', run: handleUndo }], { key: 'history' }); }}
                     onSetSpeed={(id, sp) => {
                         if (!speedUndoPushedRef.current) { speedUndoPushedRef.current = true; pushUndo(); }
                         setClipSpeed(id, sp);
@@ -3542,7 +3556,7 @@ export default function App() {
                             <button className="btn" onClick={() => setShowExportModal(false)} style={{ padding: '4px 6px' }} aria-label="關閉" title="關閉（Esc）"><X aria-hidden /></button>
                         </div>
                         <div className="style-row" title="關閉＝匯出乾淨畫面（推薦：YouTube 觀眾用 CC 字幕，之後改錯字免重傳影片）；開啟＝字幕燒進畫面">
-                            <label htmlFor="export-burn">字幕燒進畫面 <button type="button" className="help-dot" onClick={() => { setShowExportModal(false); openHelp('燒進畫面'); }} aria-label="字幕選項說明">?</button></label>
+                            <label htmlFor="export-burn">字幕燒進畫面 <button type="button" className="help-dot" onClick={() => openHelp('燒進畫面')} aria-label="字幕選項說明">?</button></label>
                             <label className="toggle-switch">
                                 <input id="export-burn" type="checkbox" checked={burnSubs} onChange={e => setBurnSubs(e.target.checked)} />
                                 <span className="toggle-slider" />

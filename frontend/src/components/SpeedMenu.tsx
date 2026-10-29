@@ -54,10 +54,10 @@ export function SpeedMenu({ clip, x, y, canSplit, splitTime, onSplit, onDelete, 
                     className="speed-preset-btn"
                     style={{ width: '100%', marginBottom: 10, opacity: canSplit ? 1 : 0.4, cursor: canSplit ? 'pointer' : 'not-allowed' }}
                     disabled={!canSplit}
-                    title={canSplit ? '在播放線位置把此片段切成兩段' : '請先把播放線(時間軸游標)移到此片段中間'}
+                    title={canSplit ? '在播放頭位置把此片段切成兩段' : '請先把播放頭移到此片段中間'}
                     onClick={onSplit}
                 >
-                    <Scissors aria-hidden /> {canSplit ? `在播放線分割（${formatTimestamp(splitTime)}）　S` : '分割（播放線不在此片段）'}
+                    <Scissors aria-hidden /> {canSplit ? `在播放頭分割（${formatTimestamp(splitTime)}）` : '分割（播放頭不在此片段）'}{canSplit && <kbd className="menu-kbd">S</kbd>}
                 </button>
                 <button
                     className="speed-preset-btn"
@@ -65,7 +65,7 @@ export function SpeedMenu({ clip, x, y, canSplit, splitTime, onSplit, onDelete, 
                     onClick={onDelete}
                     title="從時間軸刪除此片段"
                 >
-                    <Trash2 aria-hidden /> 刪除片段　Delete
+                    <Trash2 aria-hidden /> 刪除片段<kbd className="menu-kbd">Delete</kbd>
                 </button>
                 <div className="speed-menu-title"><Gauge aria-hidden /> 影片速度</div>
                 <div className="speed-menu-value">{clip.speed.toFixed(1)}x</div>

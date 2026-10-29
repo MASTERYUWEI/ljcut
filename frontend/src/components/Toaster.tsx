@@ -11,7 +11,7 @@ export default function Toaster() {
     useEffect(() => subscribeToasts(setList), []);
     if (!list.length) return null;
     return (
-        <div className="toaster" aria-live="polite">
+        <div className="toaster">
             {list.map(t => (
                 <div key={t.id} className={`toast toast-${t.kind}`} role={t.kind === 'error' ? 'alert' : 'status'}>
                     <span className="toast-mark" aria-hidden="true" />

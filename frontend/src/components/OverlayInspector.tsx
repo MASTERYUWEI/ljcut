@@ -36,23 +36,31 @@ const POSITIONS: { id: TitlePosition; label: string }[] = [
 ];
 
 /** 文字／數字欄位：本地編輯，離開欄位或按 Enter 才送出 */
-function Field({ label, value, onCommit, type = 'text', step, min, max, suffix, maxLength }: {
-    label: string; value: string | number; onCommit: (v: string) => void; type?: 'text' | 'number';
-    step?: number; min?: number; max?: number; suffix?: string; maxLength?: number;
+function Field({ label, value, onCommit, type = 'text', step, min, max, suffix, maxLength, error }: {
+    label: string; value: string | number; onCommit: (v: string) => unknown; type?: 'text' | 'number';
+    step?: number; min?: number; max?: number; suffix?: string; maxLength?: number; error?: string;
 }) {
     const [draft, setDraft] = useState(String(value));
     const sent = useRef(String(value));          // 最後送出的值：Enter 送出後緊接的 blur 不重送
     useEffect(() => { setDraft(String(value)); sent.current = String(value); }, [value]);
-    const commit = () => { if (draft !== sent.current) { sent.current = draft; onCommit(draft); } };
+    const commit = () => {
+        if (draft === sent.current) return;
+        const r = onCommit(draft);
+        if (r === false || r === null) { setDraft(String(value)); sent.current = String(value); }   // 被拒：回到目前的值
+        else sent.current = draft;
+    };
+    const errId = useRef(`f-${Math.random().toString(36).slice(2)}`).current;
     return (
         <label className="insp-field">
             <span>{label}</span>
             <span className="insp-input-wrap">
                 <input className="st-input" type={type} value={draft} step={step} min={min} max={max} maxLength={maxLength}
+                    aria-label={suffix ? `${label}（${suffix}）` : label} aria-invalid={error ? true : undefined} aria-describedby={error ? errId : undefined}
                     onChange={e => setDraft(e.target.value)} onBlur={commit}
                     onKeyDown={e => { if (e.key === 'Enter') { commit(); e.currentTarget.blur(); } if (e.key === 'Escape') { setDraft(String(value)); e.stopPropagation(); } }} />
                 {suffix && <span className="insp-suffix">{suffix}</span>}
             </span>
+            {error && <span className="insp-error" id={errId} role="alert">{error}</span>}
         </label>
     );
 }
@@ -64,6 +72,7 @@ export function OverlayInspector({ media, overlay, zoom, clips, onOps, onClose, 
     const target = overlay ?? zoom!;
     const id = overlay ? { overlayId: overlay.id } : { zoomId: zoom!.id };
     const edit = (patch: Record<string, unknown>) => onOps([{ type: overlay ? 'edit_overlay' : 'edit_zoom', ...id, ...patch }]);
+    const [timeError, setTimeError] = useState<{ key: 'start' | 'end'; text: string } | null>(null);
     const remove = () => { if (onOps([{ type: overlay ? 'delete_overlay' : 'delete_zoom', ...id }])) { onDeleted?.(title); onClose(); } };
 
     // 時間以「時間軸」顯示與輸入（存成素材秒數）：用區段開頭所在的片段換算
@@ -71,10 +80,20 @@ export function OverlayInspector({ media, overlay, zoom, clips, onOps, onClose, 
         ?? clips.find(c => c.mediaId === media.id && c.trimStart < target.end && c.trimEnd > target.start);
     const tl = (src: number) => clip ? Math.round(toTimelineTime(clip, src) * 100) / 100 : src;
     const src = (t: number) => clip ? Math.round((clip.trimStart + (t - clip.startTime) * clip.speed) * 100) / 100 : t;
-    const commitTime = (key: 'start' | 'end', v: string) => {
+    // 時間：送出前先檢查（結束至少比開始晚 0.3 秒、在片段範圍內），錯誤寫在欄位下方並還原
+    const lo = clip ? clip.startTime : 0, hi = clip ? clip.startTime + clip.duration : media.info.duration;
+    const commitTime = (key: 'start' | 'end', v: string): boolean => {
         const n = Number(v);
-        if (!Number.isFinite(n)) return;
-        edit({ [key]: Math.max(0, Math.min(media.info.duration, src(n))) });
+        const fmt = (x: number) => `${Math.round(x * 10) / 10} 秒`;
+        if (v.trim() === '' || !Number.isFinite(n)) { setTimeError({ key, text: '請輸入秒數' }); return false; }
+        const s = key === 'start' ? n : tl(target.start), e = key === 'end' ? n : tl(target.end);
+        if (n < lo - 0.01 || n > hi + 0.01) { setTimeError({ key, text: `要在這個片段的 ${fmt(lo)}～${fmt(hi)} 之間` }); return false; }
+        if (e - s < 0.3 * (clip?.speed ? 1 / clip.speed : 1) - 1e-6) {
+            setTimeError({ key, text: key === 'end' ? `結束要比開始（${fmt(s)}）晚至少 0.3 秒` : `開始要比結束（${fmt(e)}）早至少 0.3 秒` });
+            return false;
+        }
+        setTimeError(null);
+        return !!edit({ [key]: Math.max(0, Math.min(media.info.duration, src(n))) });
     };
 
     const kind = overlay?.kind;
@@ -89,8 +108,10 @@ export function OverlayInspector({ media, overlay, zoom, clips, onOps, onClose, 
             </header>
 
             <div className="insp-grid">
-                <Field label="開始" type="number" step={0.1} value={tl(target.start)} onCommit={v => commitTime('start', v)} suffix="秒" />
-                <Field label="結束" type="number" step={0.1} value={tl(target.end)} onCommit={v => commitTime('end', v)} suffix="秒" />
+                <Field label="開始" type="number" step={0.1} min={Math.round(lo * 10) / 10} max={Math.round(hi * 10) / 10} value={tl(target.start)} onCommit={v => commitTime('start', v)} suffix="秒"
+                    error={timeError?.key === 'start' ? timeError.text : undefined} />
+                <Field label="結束" type="number" step={0.1} min={Math.round(lo * 10) / 10} max={Math.round(hi * 10) / 10} value={tl(target.end)} onCommit={v => commitTime('end', v)} suffix="秒"
+                    error={timeError?.key === 'end' ? timeError.text : undefined} />
             </div>
             {!clip && <p className="insp-note">這段目前不在時間軸上（已被剪掉），時間以素材秒數顯示。</p>}
 

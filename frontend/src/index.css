@@ -3103,3 +3103,26 @@ button.ai-status:not(.active) .ai-dot { background: var(--fg-overlay0); }
 .left-collapse:hover { color: var(--fg-text); }
 .left-collapse svg { width: 15px; height: 15px; }
 .subtitle-header h2, .left-section h3 { font-size: 13px; color: var(--fg-subtext1); }
+
+/* ── 第 14 輪 ── */
+.btn { white-space: nowrap; }
+.app-header .project-name { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 1240px) { .export-badge { display: none; } }
+@media (max-width: 1140px) {
+  .header-actions .btn-label, .project-file > .btn .btn-label { display: none; }
+  .app-header .project-name { max-width: 120px; }
+}
+.insp-error { display: block; margin-top: 4px; font-size: 12px; color: var(--danger); }
+.insp-field input[aria-invalid="true"] { border-color: var(--danger); }
+.menu-kbd { margin-left: auto; padding: 0 5px; border: 1px solid var(--bg-surface2); border-radius: 4px; font-family: var(--font-mono); font-size: 11px; color: var(--fg-subtext0); background: var(--bg-base); }
+.merge-float-btn .btn { gap: 6px; }
+.merge-float-btn .menu-kbd { margin-left: 4px; }
+.help-layer { z-index: 1200; }
+.export-progress-dock { position: fixed; left: 16px; bottom: 16px; z-index: 900; width: 320px; }
+.export-progress-dock .export-progress-modal { width: 100%; padding: 14px 16px; box-shadow: 0 10px 30px rgba(0,0,0,.45); }
+.export-dock-note { display: block; margin-top: 2px; font-size: 12px; font-weight: 400; color: var(--fg-subtext0); }
+.mark-group .btn.on { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 55%, transparent); }
+.mark-group .btn-compact { min-width: 26px; justify-content: center; font-family: var(--font-mono); }
+.video-container:not(:hover) .preview-hint-idle { opacity: 0; }
+.left-rail .btn-icon { flex-direction: column; gap: 2px; padding: 6px 4px; width: 38px; }
+.rail-label { font-size: 11px; line-height: 1; color: var(--fg-subtext0); }

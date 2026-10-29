@@ -55,9 +55,9 @@ export function ExportProgress({ progress, etaSeconds, stage, onCancel, done, on
         );
     }
     return (
-        <div className="export-progress-backdrop">
+        <div className="export-progress-dock" role="region" aria-label="匯出進度">
             <div className="export-progress-modal">
-                <div className="export-progress-title" role="status">匯出影片中…</div>
+                <div className="export-progress-title" role="status">匯出影片中… <span className="export-dock-note">可以繼續校稿；之後的修改不會進這支成品</span></div>
                 <div className="export-progress-bar-track">
                     <div className="export-progress-bar-fill" style={{ width: `${progress}%` }} />
                 </div>

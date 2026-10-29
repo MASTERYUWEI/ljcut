@@ -208,15 +208,15 @@ export function SettingsModal({ settings, setSettings, onClose }: Props) {
                     <button className="btn" onClick={onClose} style={{ padding: '4px 6px' }} aria-label="關閉" title="關閉（Esc）"><X aria-hidden /></button>
                 </div>
                 <div className="style-row">
-                    <label>輸出目錄</label>
-                    <button className="folder-pick-btn" onClick={() => pickDir('outputDir', '選擇輸出目錄')}>
-                        <span>{settings.outputDir || '點擊選擇資料夾...'}</span>
+                    <label id="lbl-outdir">輸出目錄</label>
+                    <button className="folder-pick-btn" aria-labelledby="lbl-outdir" onClick={() => pickDir('outputDir', '選擇輸出目錄')}>
+                        <span>{settings.outputDir || '點一下選擇資料夾…'}</span>
                         <span className="folder-icon"><Folder aria-hidden /></span>
                     </button>
                 </div>
                 <div className="style-row">
-                    <label>SRT 存放目錄</label>
-                    <button className="folder-pick-btn" onClick={() => pickDir('srtDir', '選擇 SRT 存放目錄')}>
+                    <label id="lbl-srtdir">SRT 存放目錄</label>
+                    <button className="folder-pick-btn" aria-labelledby="lbl-srtdir" onClick={() => pickDir('srtDir', '選擇 SRT 存放目錄')}>
                         <span>{settings.srtDir || '預設：與輸出相同'}</span>
                         <span className="folder-icon"><Folder aria-hidden /></span>
                     </button>

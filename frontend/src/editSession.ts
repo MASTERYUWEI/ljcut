@@ -74,20 +74,23 @@ const count = (p: ProjectData, k: 'zooms' | 'overlays') => p.mediaItems.reduce((
 const subs = (p: ProjectData) => p.timelineClips.reduce((n, c) => n + c.segments.length, 0);
 /** 用白話描述兩個專案狀態的差異（給「已復原：…」提示用） */
 export function describeChange(from: ProjectData, to: ProjectData): string {
+    const mmss = (t: number) => `${Math.floor(t / 60)}:${String(Math.round(t % 60)).padStart(2, '0')}`;
     const parts: string[] = [];
-    const dc = to.timelineClips.length - from.timelineClips.length;
-    if (dc) parts.push(dc > 0 ? `片段 +${dc}` : `片段 −${-dc}`);
-    const dz = count(to, 'zooms') - count(from, 'zooms');
-    if (dz) parts.push(dz > 0 ? `縮放 +${dz}` : `縮放 −${-dz}`);
-    const dov = count(to, 'overlays') - count(from, 'overlays');
-    if (dov) parts.push(dov > 0 ? `標註 +${dov}` : `標註 −${-dov}`);
-    const ds = subs(to) - subs(from);
-    if (ds) parts.push(ds > 0 ? `字幕 +${ds} 句` : `字幕 −${-ds} 句`);
-    if (!parts.length) {
-        const dd = durationOf(to.timelineClips) - durationOf(from.timelineClips);
-        parts.push(Math.abs(dd) >= 0.05 ? `長度 ${dd > 0 ? '+' : '−'}${Math.abs(dd).toFixed(1)} 秒` : '內容調整');
-    }
-    return parts.join('，');
+    const da = durationOf(from.timelineClips), db = durationOf(to.timelineClips);
+    if (Math.abs(db - da) >= 0.05) parts.push(`影片長度 ${mmss(da)} → ${mmss(db)}`);
+    const sa = subs(from), sb = subs(to);
+    if (sa !== sb) parts.push(`字幕 ${sa} → ${sb} 句`);
+    const za = count(from, 'zooms'), zb = count(to, 'zooms');
+    if (za !== zb) parts.push(`縮放 ${za} → ${zb} 段`);
+    const oa = count(from, 'overlays'), ob = count(to, 'overlays');
+    if (oa !== ob) parts.push(`標註 ${oa} → ${ob} 個`);
+    if (!parts.length && from.timelineClips.length !== to.timelineClips.length) parts.push(`片段 ${from.timelineClips.length} → ${to.timelineClips.length} 段`);
+    return parts.length ? parts.join('，') : '文字或位置的修改';
+}
+/** 下一步復原／重做會發生什麼（給按鈕提示用） */
+export function peekHistory(which: 'undo' | 'redo') {
+    const snap = which === 'undo' ? past[past.length - 1] : future[future.length - 1];
+    return snap ? describeChange(projectData(), snap.project) : '';
 }
 export function undo() {
     const snap = past.pop();

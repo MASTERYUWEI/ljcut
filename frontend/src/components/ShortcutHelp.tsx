@@ -5,7 +5,7 @@ import { useDialog } from '../useDialog';
 
 const STEPS = [
     ['匯入', '左側「媒體」拖放影片，或用「螢幕錄影」錄完自動匯入。'],
-    ['辨識字幕', '左側「辨識」頁籤按「開始辨識」，完成後在右欄逐句校對。'],
+    ['辨識字幕', '左側「字幕辨識」頁籤按「開始辨識」，完成後在右欄逐句校對。'],
     ['剪輯', '在右欄點一句字幕按「剪掉這句」（Ctrl／Shift＋點可多選），或用 I／O 標記一段再「剪掉 I–O」；在播放頭按 S 分割；縮放與標註軌的「＋」加入效果。'],
     ['或交給 AI 助理', '在 AI 助理的對話裡請它提出剪除、縮放、標註；它套用的每一步都會出現在標題列的 AI 紀錄，並可 Ctrl+Z 復原。'],
     ['匯出', '「匯出影片」先看摘要再開始；預設是乾淨畫面＋獨立 SRT。'],
@@ -20,7 +20,7 @@ const GROUPS: { title: string; keys: [string, string][] }[] = [
     ] },
     { title: '剪輯', keys: [
         ['S', '在播放頭分割片段'], ['Delete', '刪除選取的標註、縮放，或先點一下的片段'],
-        ['I ／ O', '標記要剪掉的起點／終點，再按「剪掉 I–O」'], ['Ctrl + N', '新專案'],
+        ['I ／ O', '標記要剪掉的起點／終點（播放列也有 I、O 按鈕）'], ['X', '剪掉 I–O 之間'], ['Ctrl + N', '新專案'],
         ['Ctrl + Z', '復原'], ['Ctrl + Shift + Z ／ Ctrl + Y', '重做'],
         ['Ctrl + S', '儲存專案'], ['Ctrl + Shift + S', '另存新檔'],
         ['Shift + F10 或右鍵', '片段選單（分割、刪除、速度）'], ['Ctrl + ＋ ／ －', '放大／縮小時間軸'],
@@ -63,7 +63,7 @@ export function ShortcutHelp({ onClose, query = '' }: { onClose: () => void; que
     const faq = FAQ.filter(([t, d]) => hit(t, d));
     const groups = GROUPS.map(g => ({ ...g, keys: g.keys.filter(([k, d]) => hit(k, d, g.title)) })).filter(g => g.keys.length);
     return (
-        <div className="modal-overlay" onClick={onClose}>
+        <div className="modal-overlay help-layer" onClick={onClose}>
             <div className="modal-box help-box" ref={ref} role="dialog" aria-modal="true" aria-labelledby="help-title" onClick={e => e.stopPropagation()}>
                 <div className="modal-header">
                     <h2 id="help-title">說明與快捷鍵</h2>

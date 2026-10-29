@@ -94,8 +94,12 @@ export function ProjectFileButtons() {
     const [pendingNew, setPendingNew] = useState(false);
     const newBoxRef = useRef<HTMLDivElement>(null);
     useDialog(newBoxRef, pendingNew);
-    const doNew = () => { startNewProject(); setPendingNew(false); setOpen(null); toast('success', '已開新專案：把影片拖進來，或按「匯入影片」開始'); };
-    const askNew = () => { if (statusRef.current.dirty) setPendingNew(true); else if (statusRef.current.hasContent) doNew(); else doNew(); };
+    const doNew = () => {
+        const prev = statusRef.current.path;
+        startNewProject(); setPendingNew(false); setOpen(null);
+        toast('success', '已開新專案：把影片拖進來，或按「匯入影片」開始', prev ? [{ label: `重新開啟「${prev.replace(/\.ljcut$/i, '')}」`, run: () => { void doRun('open', prev); } }] : undefined);
+    };
+    const askNew = () => { if (statusRef.current.dirty) setPendingNew(true); else doNew(); };
     useEffect(() => {
         if (!pendingNew) return;
         const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); setPendingNew(false); } };
@@ -198,9 +202,9 @@ export function ProjectFileButtons() {
             {status.dirty && <span className="dirty-mark" title={backedUp ? `已自動備份（${backedUp}），但還沒存進專案檔` : '有修改還沒存進專案檔（Ctrl+S）'}>
                 <span className="dirty-dot" aria-hidden />未儲存{backedUp && <small className="backed-up">· 已備份 {backedUp}</small>}</span>}
         </span>
-        <button className="btn" aria-expanded={open === 'open'} onClick={() => { setPath(status.path || '教學剪輯.ljcut'); setOpen(open === 'open' ? null : 'open'); }}><FolderOpen aria-hidden />開啟</button>
+        <button className="btn" aria-expanded={open === 'open'} onClick={() => { setPath(status.path || '教學剪輯.ljcut'); setOpen(open === 'open' ? null : 'open'); }}><FolderOpen aria-hidden /><span className="btn-label">開啟</span></button>
         <button className="btn" disabled={busy} onClick={() => save(false)} title={status.path ? `儲存到 ${status.path}（Ctrl+S）；另存新檔 Ctrl+Shift+S` : '儲存成專案檔（Ctrl+S）'}>
-            <Save aria-hidden />{busy && !open ? '儲存中…' : '儲存'}</button>
+            <Save aria-hidden /><span className="btn-label">{busy && !open ? '儲存中…' : '儲存'}</span></button>
         {open && <form className="project-file-pop" role="dialog" aria-label={open === 'save' ? '另存專案' : '開啟專案'}
             onSubmit={e => { e.preventDefault(); if (target) void doRun(open, open === 'save' && !/\.ljcut$/i.test(target) ? `${target}.ljcut` : target); }}>
             {open === 'open' ? <>
