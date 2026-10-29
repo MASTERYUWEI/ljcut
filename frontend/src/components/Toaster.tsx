@@ -16,7 +16,7 @@ export default function Toaster() {
                 <div key={t.id} className={`toast toast-${t.kind}`} role={t.kind === 'error' ? 'alert' : 'status'}>
                     <span className="toast-mark" aria-hidden="true" />
                     <div className="toast-body">
-                        <span className="toast-kind">{LABEL[t.kind]}</span>
+                        {t.kind !== 'info' && <span className="toast-kind">{LABEL[t.kind]}</span>}
                         <p className="toast-message">{t.message}</p>
                         {(t.actions?.length || t.kind === 'error') && (
                             <div className="toast-actions">

@@ -3,7 +3,7 @@ import { useStore } from './store';
 import { EditError, requireEdit, validateProject, toSourceTime, clippedSegments } from './editCore';
 import { splitLongCues } from './utils';
 import { toast } from './toast';
-import { applyPlan, checkVersion, draftProject, dryRun, dryRunBookends, dryRunTransitions, loadProject, projectData, readState, redo, replaceProject, requestPreview, undo , contentKey , history as editHistory } from './editSession';
+import { applyPlan, checkVersion, draftProject, dryRun, dryRunBookends, dryRunTransitions, loadProject, projectData, readState, redo, replaceProject, requestPreview, undo , contentKey , history as editHistory , newProject } from './editSession';
 import type { EditPlan, ProjectData } from './editCore';
 import type { MediaItem } from './types';
 
@@ -19,6 +19,11 @@ export async function autosaveProject() {
     const p = projectData();
     validateProject(p);
     await controlRequest('/save', { path: AUTOSAVE_PATH, project: p, revision: readState().revision });
+}
+/** 開新專案（介面用）：清空編輯器並把「目前專案檔」設為未命名 */
+export function startNewProject() {
+    newProject();
+    markProjectFile('', readState().revision);
 }
 function markProjectFile(path: string, savedRevision: number) {
     projectFile.path = path; projectFile.savedRevision = savedRevision;

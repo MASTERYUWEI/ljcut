@@ -1,7 +1,7 @@
 /* 本機控制相關介面：拆成「頂部專案按鈕」與「設定裡的開發者工具」，不再常駐主畫面 */
-import { FolderOpen, Save, FolderSearch } from 'lucide-react';
+import { FolderOpen, Save, FolderSearch, FilePlus } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
-import { AUTOSAVE_PATH, autosaveProject, controlRequest, controlWorkspace, executeCommand, projectFile } from '../controlClient';
+import { AUTOSAVE_PATH, autosaveProject, controlRequest, controlWorkspace, executeCommand, projectFile, startNewProject } from '../controlClient';
 import { useStore } from '../store';
 import { StatusText } from './StatusText';
 import { useDialog } from '../useDialog';
@@ -90,6 +90,18 @@ export function ProjectFileButtons() {
         } catch (e) { toast('error', String(e)); }
         finally { setBusy(false); }
     };
+    // 新專案：有未儲存修改時先問（儲存後新建／放棄／取消）
+    const [pendingNew, setPendingNew] = useState(false);
+    const newBoxRef = useRef<HTMLDivElement>(null);
+    useDialog(newBoxRef, pendingNew);
+    const doNew = () => { startNewProject(); setPendingNew(false); setOpen(null); toast('success', '已開新專案：把影片拖進來，或按「匯入影片」開始'); };
+    const askNew = () => { if (statusRef.current.dirty) setPendingNew(true); else if (statusRef.current.hasContent) doNew(); else doNew(); };
+    useEffect(() => {
+        if (!pendingNew) return;
+        const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); setPendingNew(false); } };
+        window.addEventListener('keydown', onKey, true);
+        return () => window.removeEventListener('keydown', onKey, true);
+    }, [pendingNew]);
     const save = (saveAs = false) => {
         const st = statusRef.current;
         if (!saveAs && st.path) void doRun('save', st.path);
@@ -98,12 +110,13 @@ export function ProjectFileButtons() {
     // 開啟時向後端列出工作區裡的專案（取代手打檔名）
     const [projects, setProjects] = useState<{ path: string; name: string; modified: number; autosave?: boolean }[]>([]);
     useEffect(() => {
-        if (open !== 'open') return;
+        if (!open) return;
         controlRequest('/projects').then(r => {
+            if (open === 'save') { setProjects(r.projects ?? []); return; }
             const list = r.projects ?? [];
             const all = r.autosave ? [{ path: r.autosave.path, name: '上次沒儲存的進度（自動存檔）', modified: r.autosave.modified, autosave: true }, ...list] : list;
             setProjects(all);
-            setPath(all.find((x: { path: string }) => x.path !== statusRef.current.path)?.path ?? '');
+            setPath(all.find((x: { path: string; autosave?: boolean }) => !x.autosave && x.path !== statusRef.current.path)?.path ?? '');
             // 焦點放到第一個「不是目前專案」的項目（方向鍵可上下選）
             setTimeout(() => (boxRef.current?.querySelector<HTMLElement>('.project-item[aria-selected="true"]') ?? boxRef.current?.querySelector<HTMLElement>('.project-item'))?.focus(), 0);
         }).catch(() => setProjects([]));
@@ -168,6 +181,7 @@ export function ProjectFileButtons() {
         if (!workspace) return;
         const onKey = (e: KeyboardEvent) => {
             if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); save(e.shiftKey); }
+            if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'n') { e.preventDefault(); askNew(); }
         };
         window.addEventListener('keydown', onKey);
         return () => window.removeEventListener('keydown', onKey);
@@ -175,6 +189,8 @@ export function ProjectFileButtons() {
     }, [workspace]);
     if (!workspace) return null;
     const target = path.trim();
+    const normalized = /\.ljcut$/i.test(target) ? target : `${target}.ljcut`;
+    const nameTaken = open === 'save' && !!target && normalized !== status.path && projects.some(x => !x.autosave && x.path.toLowerCase() === normalized.toLowerCase());
     const overwrite = open === 'save' && target !== status.path;
     return <div className="project-file" ref={boxRef}>
         <span className="project-name" title={status.path ? `工作區中的 ${status.path}` : '尚未存成專案檔'}>
@@ -188,7 +204,8 @@ export function ProjectFileButtons() {
         {open && <form className="project-file-pop" role="dialog" aria-label={open === 'save' ? '另存專案' : '開啟專案'}
             onSubmit={e => { e.preventDefault(); if (target) void doRun(open, open === 'save' && !/\.ljcut$/i.test(target) ? `${target}.ljcut` : target); }}>
             {open === 'open' ? <>
-                <div className="pop-title">選擇要開啟的專案</div>
+                <button type="button" className="btn new-project-btn" onClick={askNew} title="清空編輯器，開始下一支影片（Ctrl+N）"><FilePlus aria-hidden />新專案<kbd>Ctrl N</kbd></button>
+                <div className="pop-title">或選擇要開啟的專案</div>
                 {projects.length ? <ul className="project-list" role="listbox" aria-label="專案資料夾裡的專案">
                     {projects.map(pr => <li key={pr.path}>
                         <button type="button" role="option" aria-selected={pr.path === path} className={`project-item ${pr.path === path ? 'on' : ''} ${pr.autosave ? 'autosave' : ''}`}
@@ -208,7 +225,9 @@ export function ProjectFileButtons() {
                 <input id="project-path" ref={inputRef} type="hidden" value={path} readOnly />
             </> : <>
                 <label htmlFor="project-path">專案名稱</label>
-                <input id="project-path" ref={inputRef} className="st-input" value={path} onChange={e => setPath(e.target.value)} />
+                <input id="project-path" ref={inputRef} className="st-input" value={path} onChange={e => setPath(e.target.value)}
+                    aria-invalid={nameTaken || undefined} aria-describedby={nameTaken ? 'name-taken' : undefined} />
+                {nameTaken && <StatusText kind="warn" text="已有同名專案，請換一個名稱（不會覆蓋）。" />}
             </>}
             <div className="pop-folder">
                 <small title={workspace}>存放位置：{workspace}</small>
@@ -221,11 +240,26 @@ export function ProjectFileButtons() {
             <div className="pop-actions">
                 {open === 'open' && status.dirty && status.path && <button type="button" className="btn btn-primary" disabled={busy || !target}
                     onClick={() => void saveThenOpen(target)}>儲存後開啟</button>}
-                <button ref={submitRef} className={`btn ${open === 'open' && status.dirty && status.path ? '' : 'btn-primary'}`} type="submit" disabled={busy || !target || (open === 'open' && target === status.path && !status.dirty)}>
+                <button ref={submitRef} className={`btn ${open === 'open' && status.dirty && status.path ? '' : 'btn-primary'}`} type="submit" disabled={busy || !target || nameTaken || (open === 'open' && target === status.path && !status.dirty)}>
                     {busy ? '處理中…' : open === 'save' ? '儲存' : status.dirty ? '放棄修改並開啟' : '開啟'}
                 </button>
             </div>
         </form>}
+        {pendingNew && <div className="modal-overlay">
+            <div className="modal-box" ref={newBoxRef} role="alertdialog" aria-modal="true" aria-labelledby="new-title" aria-describedby="new-desc" style={{ maxWidth: 400 }}>
+                <div className="modal-header"><h2 id="new-title">開新專案前要先儲存嗎？</h2></div>
+                <p id="new-desc" className="close-desc">「{status.name || '未命名專案'}」有還沒儲存的修改。</p>
+                <div className="close-actions">
+                    {status.path && <button className="btn btn-primary" disabled={busy} onClick={async () => {
+                        await doRun('save', status.path);
+                        if (!statusRef.current.dirty) doNew();
+                    }}>儲存後開新專案</button>}
+                    {!status.path && <button className="btn btn-primary" onClick={() => { setPendingNew(false); save(true); }}>先取名儲存</button>}
+                    <button className="btn" onClick={doNew}>放棄修改</button>
+                    <button className="btn" onClick={() => setPendingNew(false)}>取消</button>
+                </div>
+            </div>
+        </div>}
         {closing && <div className="modal-overlay">
             <div className="modal-box" ref={closeBoxRef} role="alertdialog" aria-modal="true" aria-labelledby="close-title" aria-describedby="close-desc" style={{ maxWidth: 400 }}>
                 <div className="modal-header"><h2 id="close-title">要先儲存再關閉嗎？</h2></div>

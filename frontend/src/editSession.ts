@@ -111,6 +111,13 @@ export function replaceProject(p: ProjectData, expected: ExpectedVersion) {
     pushUndo(); restore({ project: p, activeClipId: p.timelineClips[0]?.id ?? null });
     return readState();
 }
+/** 新專案：清空素材與時間軸、清空復原歷史（保留字幕樣式與辨識語言等偏好） */
+export function newProject() {
+    projectId = crypto.randomUUID();
+    useStore.setState({ mediaItems: [], timelineClips: [], activeClipId: null, segments: [], activeSegmentId: null,
+        isPlaying: false, currentTime: 0 });
+    past.length = 0; future.length = 0; notifyHistory();
+}
 /** 開啟專案：換上新專案並清空復原／重做歷史 */
 export function loadProject(p: ProjectData, expected: ExpectedVersion) {
     validateProject(p);

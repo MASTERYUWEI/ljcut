@@ -1,6 +1,6 @@
 /* ── LJCUT 主應用 ── */
 
-import { Clapperboard, Upload, CircleDot, Settings, Play, Pause, Square, Video, FolderOpen, Film, ZoomIn, PenLine, Captions, Plus, Sparkles, SpellCheck, Brain, Copy, Check, Download, X, Image as ImageIcon, ArrowUpRight, Type, Code, Focus, ListOrdered, Gauge, Undo2, Redo2, TriangleAlert, CheckCheck, CircleHelp, MousePointerClick, Minus, Scissors, Replace } from 'lucide-react';
+import { Clapperboard, Upload, CircleDot, Settings, Play, Pause, Square, Video, FolderOpen, Film, ZoomIn, PenLine, Captions, Plus, Sparkles, SpellCheck, Brain, Copy, Check, Download, X, Image as ImageIcon, ArrowUpRight, Type, Code, Focus, ListOrdered, Gauge, Undo2, Redo2, TriangleAlert, CheckCheck, CircleHelp, MousePointerClick, Minus, Scissors, Replace, MoveHorizontal, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import { useRef, useCallback, useState, useEffect, useLayoutEffect, useMemo } from 'react';
 import { useStore } from './store';
 import { api, onApiReady, getBase } from './api';
@@ -24,7 +24,7 @@ import { AiStatus } from './components/AiStatus';
 import { OverlayInspector } from './components/OverlayInspector';
 import { notify, toast, humanizeError } from './toast';
 import { useDialog } from './useDialog';
-import { pushUndo, undo, redo, projectData, dryRun, applyPlan, readState, history as editHistory, contentKey, sameContent } from './editSession';
+import { pushUndo, undo, redo, projectData, dryRun, applyPlan, readState, history as editHistory, contentKey, sameContent, requestPreview } from './editSession';
 import { clippedSegments, splitClip, timelineSegments, toSourceTime, toTimelineTime, validateProject } from './editCore';
 import { registerPreviewReader } from './controlClient';
 import { transitionVisual } from './transitions';
@@ -115,6 +115,8 @@ export default function App() {
     // 匯出時是否把字幕燒進畫面（false = 乾淨畫面，YouTube 用 CC/SRT 顯示字幕）
     const [burnSubs, setBurnSubs] = useState(false);
     const [showExportModal, setShowExportModal] = useState(false);
+    const [helpQuery, setHelpQuery] = useState('');
+    const openHelp = useCallback((q = '') => { setHelpQuery(q); setShowHelp(true); }, []);
     // 後端就緒前顯示啟動畫面（首次啟動被防毒掃描拖慢時不再黑屏）
     const [backendBooting, setBackendBooting] = useState<boolean>(() => !!(window as any).__TAURI_INTERNALS__);
     const [showYtUpload, setShowYtUpload] = useState(false);
@@ -133,6 +135,14 @@ export default function App() {
     const [showReplace, setShowReplace] = useState(false);
     const [retranscribeArmed, setRetranscribeArmed] = useState(false);
     const [overlayExpanded, setOverlayExpanded] = useState(false);
+    const [rightTab, setRightTab] = useState<'props' | 'subs'>('props');
+    const [leftCollapsed, setLeftCollapsed] = useState(() => { try { return localStorage.getItem('ljcut-left-collapsed') === '1'; } catch { return false; } });
+    useEffect(() => { try { localStorage.setItem('ljcut-left-collapsed', leftCollapsed ? '1' : '0'); } catch { /* 無法記住不影響 */ } }, [leftCollapsed]);
+    // I／O 標記：一次剪掉一段時間軸（時間軸秒數）
+    const [marks, setMarks] = useState<{ in: number | null; out: number | null }>({ in: null, out: null });
+    const marksRef = useRef(marks); marksRef.current = marks;
+    const liveRef = useRef<HTMLSpanElement>(null);
+    const announce = (text: string) => { if (liveRef.current) { liveRef.current.textContent = ''; setTimeout(() => { if (liveRef.current) liveRef.current.textContent = text; }, 30); } };
     const [exportDone, setExportDone] = useState<string | null>(null);
     const [overlayMenuPos, setOverlayMenuPos] = useState<{ left: number; bottom: number }>({ left: 0, bottom: 0 });
     const [settings, setSettings] = useState<AppSettings>({ outputDir: '', srtDir: '' });
@@ -1688,9 +1698,31 @@ export default function App() {
         const here = st.timelineClips.find(c => c.trackIndex === 0 && t >= c.startTime - 1e-3 && t < c.startTime + c.duration - 1e-3)
             ?? st.timelineClips.find(c => c.mediaId === clip.mediaId);
         if (here) st.setActiveClipId(here.id);
-        seekTo(t);
+        requestPreview(t);   // 走同一個預覽請求，蓋過套用時的播放頭還原
         toast('info', `已剪掉 ${picked.length} 句（${seconds.toFixed(1)} 秒）`, [{ label: '復原', run: handleUndo }], { key: 'history' });
+        announce(`已剪掉 ${picked.length} 句`);
+        setTimeout(() => subtitleListRef.current?.querySelector<HTMLElement>('.subtitle-item.active, .sub-group.active .subtitle-item')?.focus({ preventScroll: false }), 80);
     }, [activeClipId, timelineClips, segments, handleUndo, seekTo]);
+
+    const cutMarkedRange = useCallback(() => {
+        const { in: a0, out: b0 } = marksRef.current;
+        if (a0 == null || b0 == null) return;
+        const [a, b] = a0 < b0 ? [a0, b0] : [b0, a0];
+        if (b - a < 0.05) { notify('I 和 O 太近了，請拉開一點再剪'); return; }
+        const ops = timelineClips.filter(c => c.trackIndex === 0 && c.startTime < b && c.startTime + c.duration > a)
+            .sort((x, y) => y.startTime - x.startTime)
+            .map(c => {
+                const s = c.trimStart + (Math.max(a, c.startTime) - c.startTime) * c.speed;
+                const e = c.trimStart + (Math.min(b, c.startTime + c.duration) - c.startTime) * c.speed;
+                return { type: 'ripple_delete', clipId: c.id, start: s, end: Math.min(e, c.trimEnd) };
+            }).filter(o => o.end - o.start > 0.01);
+        if (!ops.length) return;
+        if (!runOpsRef.current(ops, '剪掉 I–O 區間')) return;
+        setMarks({ in: null, out: null });
+        requestPreview(Math.min(a, useStore.getState().getDuration()));
+        toast('info', `已剪掉 ${formatTime(a)}–${formatTime(b)}（${(b - a).toFixed(1)} 秒）`, [{ label: '復原', run: handleUndo }], { key: 'history' });
+        announce(`已剪掉 ${(b - a).toFixed(1)} 秒`);
+    }, [timelineClips, seekTo, handleUndo]);
 
     // ── 合併已選取的相鄰 CUE（active + Ctrl 選取合計） ──
     const mergeIds = useMemo(() => {
@@ -2027,6 +2059,7 @@ export default function App() {
 
     // ── 標註疊加層編輯（介面）：與縮放相同走 dry-run → apply，一次操作 = 一筆 undo ──
     const [selectedOverlayId, setSelectedOverlayId] = useState<string | null>(null);
+    useEffect(() => { if (selectedOverlayId || selectedZoomId) setRightTab('props'); }, [selectedOverlayId, selectedZoomId]);
     const selectedOverlay = useMemo(() => {
         for (const m of mediaItems) {
             const o = m.overlays?.find(o => o.id === selectedOverlayId);
@@ -2441,6 +2474,7 @@ export default function App() {
     const mainJsx = (
         <div className="app">
             {/* Header */}
+            <span className="sr-only" role="status" aria-live="polite" ref={liveRef} />
             <header className="app-header">
                 <h1>LJCUT</h1>
                 <ProjectFileButtons />
@@ -2451,16 +2485,20 @@ export default function App() {
                     {hasTimeline && (<>
                         <span className="header-sep" aria-hidden />
                         <button className="btn btn-accent" onClick={() => setShowExportModal(true)} disabled={isBurning}>
-                            {isBurning ? `匯出中 ${exportProgress >= 0 ? exportProgress + '%' : '…'}` : <><Clapperboard aria-hidden />匯出影片</>}
+                            {isBurning ? `匯出中 ${exportProgress >= 0 ? exportProgress + '%' : '…'}` : <><Clapperboard aria-hidden />匯出影片
+                                {timelineClips.some(c => c.segments.length) && <span className="export-badge" title={burnSubs ? '字幕會燒進畫面' : '乾淨畫面＋另附 SRT 字幕檔'}>{burnSubs ? '字幕燒入' : '＋SRT'}</span>}</>}
                         </button>
-                        <button className="btn" onClick={() => setShowYtUpload(true)} disabled={!lastExport || isBurning}
+                        <button className={`btn ${!lastExport ? 'btn-soft-disabled' : ''}`} onClick={() => {
+                            if (!lastExport) { toast('info', '要先匯出影片，才能上傳到 YouTube。', [{ label: '匯出影片', run: () => setShowExportModal(true) }]); return; }
+                            setShowYtUpload(true);
+                        }} disabled={isBurning} aria-disabled={!lastExport || undefined}
                             aria-label={exportStale ? '上傳到 YouTube（成品較舊）' : '上傳到 YouTube'}
                             title={!lastExport ? '請先匯出影片，再上傳 YouTube' : exportStale ? `匯出後專案又改過，這支成品不含之後的修改\n${lastExport}` : `上傳最近匯出的成品到 YouTube\n${lastExport}`}>
                             <Upload aria-hidden />YouTube{exportStale && <span className="stale-tag">成品較舊</span>}
                         </button>
                     </>)}
                     <span className="header-sep" aria-hidden />
-                    <button className="btn btn-icon" onClick={() => setShowHelp(true)} title="說明與快捷鍵（?）" aria-label="說明與快捷鍵" style={{ padding: '6px 10px' }}><CircleHelp aria-hidden /></button>
+                    <button className="btn btn-icon" onClick={() => openHelp()} title="說明與快捷鍵（?）" aria-label="說明與快捷鍵" style={{ padding: '6px 10px' }}><CircleHelp aria-hidden /></button>
                     <button className="btn btn-icon" onClick={() => setShowSettings(true)} title="設定" aria-label="設定" style={{ padding: '6px 10px' }}><Settings aria-hidden /></button>
                 </div>
             </header>
@@ -2512,7 +2550,15 @@ export default function App() {
 
             <div className={`app-body ${isResizing ? 'resizing' : ''}`}>
                 {/* 左側 — 媒體庫 */}
-                <aside className="panel-left" style={{ width: leftWidth }} aria-label="媒體與辨識">
+                <aside className={`panel-left ${leftCollapsed ? 'collapsed' : ''}`} style={{ width: leftCollapsed ? 44 : leftWidth }} aria-label="媒體與辨識">
+                    {leftCollapsed ? (
+                        <div className="left-rail">
+                            <button className="btn btn-icon" onClick={() => setLeftCollapsed(false)} aria-label="展開左欄" title="展開左欄"><PanelLeftOpen aria-hidden /></button>
+                            <button className="btn btn-icon" onClick={() => { setLeftTab('media'); setLeftCollapsed(false); }} aria-label="媒體" title="媒體"><Film aria-hidden /></button>
+                            <button className="btn btn-icon" onClick={() => { setLeftTab('subtitle'); setLeftCollapsed(false); }} aria-label="字幕辨識" title="字幕辨識"><Captions aria-hidden /></button>
+                            <button className="btn btn-icon" onClick={() => fileInputRef.current?.click()} aria-label="匯入影片" title="匯入影片"><Upload aria-hidden /></button>
+                        </div>
+                    ) : <>
                     {/* 頁籤切換 */}
                     <div className="left-tabs" role="tablist" aria-label="左側面板"
                         onKeyDown={(e) => {
@@ -2522,11 +2568,12 @@ export default function App() {
                             setLeftTab(next);
                             document.getElementById(`left-tab-${next}`)?.focus();
                         }}>
-                        {([['media', '媒體'], ['subtitle', '辨識']] as const).map(([key, label]) => (
+                        {([['media', '媒體'], ['subtitle', '字幕辨識']] as const).map(([key, label]) => (
                             <button key={key} id={`left-tab-${key}`} role="tab" aria-selected={leftTab === key} aria-controls="left-tab-panel"
                                 tabIndex={leftTab === key ? 0 : -1}
                                 className={`left-tab ${leftTab === key ? 'active' : ''}`} onClick={() => setLeftTab(key)}>{label}</button>
                         ))}
+                        <button className="left-collapse" onClick={() => setLeftCollapsed(true)} aria-label="收合左欄" title="收合左欄，讓預覽大一點"><PanelLeftClose aria-hidden /></button>
                     </div>
 
                     <div className="left-tab-body" id="left-tab-panel" role="tabpanel" aria-labelledby={`left-tab-${leftTab}`}>
@@ -2651,16 +2698,20 @@ export default function App() {
                             </>
                         )}
                     </div>
+                    </>}
                 </aside>
 
                 {/* 左側 Resize Handle */}
-                <div className="resize-handle-v" onMouseDown={(e) => startResize('left', e)} />
+                {!leftCollapsed && <div className="resize-handle-v" onMouseDown={(e) => startResize('left', e)} />}
 
                 {/* 中間：影片 */}
                 <main className="panel-center">
                     <div ref={videoContainerRef} className="video-container" onDrop={handleDrop} onDragOver={(e) => e.preventDefault()}>
-                        {(selectedOverlayId || selectedZoomId) && (
+                        {(selectedOverlayId || selectedZoomId) ? (
                             <span className="preview-hint" role="note">Shift＋點畫面{selectedOverlayId ? '移動位置；Shift＋拖曳框出範圍' : '設定放大中心'}</span>
+                        ) : hasTimeline && (
+                            <button type="button" className="preview-hint preview-hint-idle" onClick={() => openHelp('Shift')}
+                                title="在時間軸點一個縮放或標註後：Shift＋點畫面設定位置、Shift＋拖曳框出範圍">畫面手勢 · Shift＋點／拖</button>
                         )}
                         {primaryMedia ? (
                             <>
@@ -2820,16 +2871,17 @@ export default function App() {
                                         setSpeedMenu({ clipId: clip.id, x: r.left, y: r.bottom, splitTime: t });
                                     }}><Gauge aria-hidden />{activeClipSpeed}x</button>
                             </>}
-                            {segments.length > 0 && (
-                                <button className={`btn preview-sub-chip ${burnSubs ? 'burn' : ''}`} onClick={() => setShowExportModal(true)}
-                                    aria-label={burnSubs ? '匯出時字幕會燒進畫面，開啟匯出設定' : '匯出時字幕不燒入畫面（另附 SRT），開啟匯出設定'}
-                                    title={burnSubs ? '匯出時字幕會燒進畫面（點一下到匯出設定修改）' : '預覽上的字幕只供校對；匯出為乾淨畫面＋獨立 SRT（點一下到匯出設定修改）'}>
-                                    <Captions aria-hidden />{burnSubs ? '燒入' : '不燒入'}
-                                </button>
-                            )}
-                            <span className="time zoom-ratio" style={{ fontSize: 12 }} title="時間軸比例（Ctrl+＋／－）" aria-label={`時間軸比例 ${Math.round(zoom * 100)}%`}><ZoomIn aria-hidden style={{ width: 12, height: 12, verticalAlign: -2 }} /> {Math.round(zoom * 100)}%</span>
-                            <button className="btn" onClick={() => setZoom(z => Math.max(z * 0.8, 0.1))} style={{ padding: '4px 6px' }} aria-label="縮小時間軸" title="縮小時間軸（Ctrl+－）"><Minus aria-hidden /></button>
-                            <button className="btn" onClick={() => setZoom(z => Math.min(z * 1.25, 50))} style={{ padding: '4px 6px' }} aria-label="放大時間軸" title="放大時間軸（Ctrl+＋）"><Plus aria-hidden /></button>
+                            {(marks.in != null || marks.out != null) && <span className="mark-group" role="group" aria-label="I／O 標記">
+                                <button className="btn btn-compact btn-danger-soft" disabled={marks.in == null || marks.out == null} onClick={cutMarkedRange}
+                                    title={marks.in == null || marks.out == null ? '再按 I 或 O 標記另一端' : '剪掉 I 到 O 之間（Ctrl+Z 可復原）'}>
+                                    <Scissors aria-hidden />{marks.in != null && marks.out != null ? `剪掉 I–O ${Math.abs(marks.out - marks.in).toFixed(1)} 秒` : marks.in != null ? `I ${formatTime(marks.in)}，按 O` : `O ${formatTime(marks.out!)}，按 I`}</button>
+                                <button className="btn btn-icon btn-compact" onClick={() => setMarks({ in: null, out: null })} aria-label="清除 I／O 標記" title="清除標記（Esc）"><X aria-hidden /></button>
+                            </span>}
+                            <span className="seg-group" role="group" aria-label={`時間軸比例 ${Math.round(zoom * 100)}%`}>
+                                <button className="btn" onClick={() => setZoom(z => Math.max(z * 0.8, 0.1))} aria-label="縮小時間軸比例" title="縮小時間軸比例（Ctrl+－）"><Minus aria-hidden /></button>
+                                <span className="seg-value" title="時間軸比例（Ctrl+＋／－）"><MoveHorizontal aria-hidden />{Math.round(zoom * 100)}%</span>
+                                <button className="btn" onClick={() => setZoom(z => Math.min(z * 1.25, 50))} aria-label="放大時間軸比例" title="放大時間軸比例（Ctrl+＋）"><Plus aria-hidden /></button>
+                            </span>
                         </div>
                     )}
 
@@ -2898,7 +2950,7 @@ export default function App() {
                                                     onContextMenu={(e) => {
                                                         e.preventDefault();
                                                         e.stopPropagation();
-                                                        // 切點 = 播放線位置（不是滑鼠點的位置，才精確可控）
+                                                        // 切點 = 播放頭位置（不是滑鼠點的位置，才精確可控）
                                                         speedUndoPushedRef.current = false;
                                                         setSpeedMenu({ clipId: clip.id, x: e.clientX, y: e.clientY, splitTime: timelinePosRef.current });
                                                     }}
@@ -3080,7 +3132,7 @@ export default function App() {
                                         style={{ left: 0, transform: `translateX(${currentTime * pixelsPerSecond + LABEL_W}px)` }}
                                         onMouseDown={handlePlayheadMouseDown}
                                         onContextMenu={(e) => {
-                                            // 右鍵點在播放線上 → 直接對「播放線下的片段」開分割選單
+                                            // 右鍵點在播放頭上 → 直接對「播放頭下的片段」開分割選單
                                             e.preventDefault();
                                             e.stopPropagation();
                                             const t = timelinePosRef.current;
@@ -3093,6 +3145,15 @@ export default function App() {
                                     />
                                 )}
 
+                                {/* I／O 標記區間 */}
+                                {(marks.in != null || marks.out != null) && duration > 0 && (() => {
+                                    const a0 = marks.in ?? marks.out!, b0 = marks.out ?? marks.in!;
+                                    const lo = Math.min(a0, b0), hi = Math.max(a0, b0);
+                                    return <div className="mark-range" style={{ left: lo * pixelsPerSecond + LABEL_W, width: Math.max(2, (hi - lo) * pixelsPerSecond) }} aria-hidden>
+                                        {marks.in != null && <span className="mark-tag" style={{ left: (marks.in - lo) * pixelsPerSecond }}>I</span>}
+                                        {marks.out != null && <span className="mark-tag" style={{ left: (marks.out - lo) * pixelsPerSecond }}>O</span>}
+                                    </div>;
+                                })()}
                                 {/* 吸附指示線 */}
                                 {snapTime !== null && duration > 0 && (
                                     <div className="snap-line"
@@ -3110,6 +3171,13 @@ export default function App() {
                 {/* 右側：字幕 */}
                 <aside className="panel-right" style={{ width: rightWidth }} aria-label="字幕校對與屬性">
                     {(selectedOverlay || selectedZoom) && (
+                        <div className="right-tabs" role="tablist" aria-label="右欄">
+                            <button role="tab" aria-selected={rightTab === 'props'} className={`left-tab ${rightTab === 'props' ? 'active' : ''}`} onClick={() => setRightTab('props')}>
+                                {selectedOverlay ? '標註屬性' : '縮放屬性'}</button>
+                            <button role="tab" aria-selected={rightTab === 'subs'} className={`left-tab ${rightTab === 'subs' ? 'active' : ''}`} onClick={() => setRightTab('subs')}>字幕</button>
+                        </div>
+                    )}
+                    {(selectedOverlay || selectedZoom) && rightTab === 'props' && (
                         <OverlayInspector
                             key={selectedOverlay?.overlay.id ?? selectedZoom?.zoom.id}
                             media={(selectedOverlay ?? selectedZoom)!.media}
@@ -3118,10 +3186,13 @@ export default function App() {
                             clips={timelineClips}
                             onOps={runZoomOps}
                             onClose={() => { setSelectedOverlayId(null); setSelectedZoomId(null); }}
+                            onDeleted={(what) => toast('info', `已刪除${what}`, [{ label: '復原', run: handleUndo }], { key: 'history' })}
+                            onHelp={openHelp}
                         />
                     )}
+                    <div className="right-subs" hidden={!!(selectedOverlay || selectedZoom) && rightTab === 'props'}>
                     <div className="subtitle-header">
-                        <h2>字幕</h2>
+                        <h2>字幕 <button type="button" className="help-dot" onClick={() => openHelp('字幕')} aria-label="字幕工具說明">?</button></h2>
                         {totalSubs > 0 && (
                             <span className="sub-count">共 {totalSubs} 句{listClips.filter(c => c.segments.length).length > 1 ? ` · ${listClips.filter(c => c.segments.length).length} 個片段` : ''}</span>
                         )}
@@ -3205,7 +3276,7 @@ export default function App() {
                         {totalSubs === 0 ? (
                             <div className="empty-state">
                                 <p>尚無字幕</p>
-                                <p style={{ fontSize: 12 }}>匯入影片後，到左側「辨識」頁籤按「開始辨識」</p>
+                                <p style={{ fontSize: 12 }}>匯入影片後，到左側「字幕辨識」頁籤按「開始辨識」</p>
                             </div>
                         ) : (
                             <>
@@ -3273,7 +3344,7 @@ export default function App() {
                                                 <div className="sub-edit-row">
                                                     <div className="sub-edit-hint" id="sub-edit-hint">Enter 分句 · Ctrl／Shift＋點多選</div>
                                                     <button className="btn btn-sm btn-danger-soft" onClick={(e) => { e.stopPropagation(); handleCutSegments(new Set([seg.id])); }}
-                                                        title="把這一句對應的影片剪掉（選取時按 Delete；Ctrl+Z 可復原）" aria-label="剪掉這句"><Scissors aria-hidden />剪掉</button>
+                                                        title="把這一句對應的影片剪掉（選取時按 Delete；Ctrl+Z 可復原）"><Scissors aria-hidden />剪掉這句</button>
                                                 </div>
                                             ) : (
                                                 <div className="text">{seg.text}</div>
@@ -3303,6 +3374,7 @@ export default function App() {
                                 })()}
                             </>
                         )}
+                    </div>
                     </div>
                 </aside>
             </div>
@@ -3353,11 +3425,28 @@ export default function App() {
                 if (showSettings) { setShowSettings(false); return; }
                 if (showRecSettings) { setShowRecSettings(false); return; }
                 if (selectedOverlayId || selectedZoomId) { setSelectedOverlayId(null); setSelectedZoomId(null); }
+                else if (marksRef.current.in != null || marksRef.current.out != null) setMarks({ in: null, out: null });
                 return;
             }
             if (['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName) || el.isContentEditable) return;
             if (showExportModal || showYtUpload || showSettings || showRecSettings || showHelp) return;
-            if (e.key === '?') { e.preventDefault(); setShowHelp(true); return; }
+            if (e.key === '?') { e.preventDefault(); openHelp(); return; }
+            if (e.altKey && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+                // 跳到下一句／上一句字幕
+                e.preventDefault();
+                const now = timelinePosRef.current;
+                const all = timelineSegments(useStore.getState().timelineClips);
+                const target = e.key === 'ArrowDown' ? all.find(s => s.start > now + 0.05) : [...all].reverse().find(s => s.start < now - 0.3);
+                if (target) seekTo(target.start);
+                return;
+            }
+            if (!e.ctrlKey && !e.metaKey && !e.altKey && (e.key === 'i' || e.key === 'I' || e.key === 'o' || e.key === 'O') && !el.closest?.('.subtitle-list')) {
+                e.preventDefault();
+                const now = timelinePosRef.current;
+                setMarks(m => (e.key.toLowerCase() === 'i' ? { ...m, in: now } : { ...m, out: now }));
+                announce(`${e.key.toLowerCase() === 'i' ? '起點' : '終點'} ${formatTime(now)}`);
+                return;
+            }
             if (el.closest?.('[role="tablist"], .subtitle-list, .speed-menu, .project-file, .add-menu, .ai-status-wrap')) return;   // 這些區塊自己處理方向鍵
             const t = timelinePosRef.current;
             if (e.ctrlKey || e.metaKey) {
@@ -3403,7 +3492,7 @@ export default function App() {
         <>
             {mainJsx}
             <Toaster />
-            {showHelp && <ShortcutHelp onClose={() => setShowHelp(false)} />}
+            {showHelp && <ShortcutHelp query={helpQuery} onClose={() => { setShowHelp(false); setHelpQuery(''); }} />}
             {speedMenu && speedMenuClip && (
                 <SpeedMenu
                     clip={speedMenuClip}
@@ -3453,7 +3542,7 @@ export default function App() {
                             <button className="btn" onClick={() => setShowExportModal(false)} style={{ padding: '4px 6px' }} aria-label="關閉" title="關閉（Esc）"><X aria-hidden /></button>
                         </div>
                         <div className="style-row" title="關閉＝匯出乾淨畫面（推薦：YouTube 觀眾用 CC 字幕，之後改錯字免重傳影片）；開啟＝字幕燒進畫面">
-                            <label htmlFor="export-burn">燒入字幕到畫面</label>
+                            <label htmlFor="export-burn">字幕燒進畫面 <button type="button" className="help-dot" onClick={() => { setShowExportModal(false); openHelp('燒進畫面'); }} aria-label="字幕選項說明">?</button></label>
                             <label className="toggle-switch">
                                 <input id="export-burn" type="checkbox" checked={burnSubs} onChange={e => setBurnSubs(e.target.checked)} />
                                 <span className="toggle-slider" />
@@ -3483,7 +3572,7 @@ export default function App() {
                         })()}
                         {!burnSubs && (
                             <div style={{ fontSize: 12, color: 'var(--accent-green)', padding: '2px 0 6px' }}>
-                                乾淨畫面匯出：上傳 YouTube 時會自動掛 SRT 字幕（CC）
+                                字幕另附檔：匯出乾淨畫面＋同名 SRT，上傳 YouTube 時自動掛成 CC 字幕
                             </div>
                         )}
                         {burnSubs && (

@@ -85,6 +85,25 @@ def default_workspace() -> Path:
     return Path(__file__).resolve().parents[2] / "app_data" / "control"
 
 
+
+def place_asset(source: Path, dest: Path, previous_dir: Path | None) -> None:
+    """把素材放進專案：優先硬連結（同磁碟瞬間完成、不佔空間），不行才複製。
+    覆寫存檔時若舊專案已有同一份素材，直接連結舊檔，避免每次存檔都重複複製數 GB 的影片。"""
+    size = source.stat().st_size
+    candidates = []
+    if previous_dir is not None:
+        old = previous_dir / source.name
+        if old.is_file() and old.stat().st_size == size:
+            candidates.append(old)
+    candidates.append(source)
+    for c in candidates:
+        try:
+            os.link(c, dest)
+            return
+        except OSError:
+            continue
+    shutil.copyfile(source, dest)
+
 class LocalControl:
     def __init__(self, uploads: Path):
         configured = os.getenv("LJCUT_CONTROL_WORKSPACE")
@@ -554,7 +573,8 @@ class LocalControl:
             try:
                 (staging / 'assets').mkdir()
                 for media, source in sources:
-                    await asyncio.to_thread(shutil.copyfile, source, staging / 'assets' / source.name)
+                    await asyncio.to_thread(place_asset, source, staging / 'assets' / source.name,
+                                            target / 'assets' if overwrite else None)
                     media['url'] = '/uploads/' + source.name
                     media.pop('thumbnailUrl', None)
                 (staging / 'project.json').write_text(json.dumps(p, ensure_ascii=False, indent=2), encoding='utf-8')

@@ -38,7 +38,12 @@ const FRIENDLY: [RegExp, string][] = [
 ];
 export function humanizeError(raw: string): { message: string; detail?: string } {
     const hit = FRIENDLY.find(([re]) => re.test(raw));
-    if (!hit) return { message: raw.replace(/\b(Type|Reference|Syntax)?Error:\s*/g, '') };
+    if (!hit) {
+        const clean = raw.replace(/\b(Type|Reference|Syntax)?Error:\s*/g, '');
+        // 沒對到常見錯誤：保留原文，並給一個下一步
+        return /[一-鿿]/.test(clean) && clean.length < 80 ? { message: clean, detail: raw }
+            : { message: `${clean.slice(0, 120)}${clean.length > 120 ? '…' : ''}（可按「複製詳情」交給 AI 助理判斷）`, detail: raw };
+    }
     const context = raw.match(/^([^:：\n]{1,30}?)\s*[:：]/)?.[1];          // 例如「匯出失敗」
     const lead = context && /[一-鿿]/.test(context) ? `${context}：` : '';
     return { message: lead + hit[1], detail: raw };

@@ -17,6 +17,8 @@ interface Props {
     clips: TimelineClip[];
     onOps: Ops;
     onClose: () => void;
+    onDeleted?: (what: string) => void;
+    onHelp?: (q: string) => void;
 }
 
 const COLORS: { id: OverlayColor; label: string; hex: string }[] = [
@@ -58,11 +60,11 @@ function Field({ label, value, onCommit, type = 'text', step, min, max, suffix, 
 const pct = (v: number | undefined) => Math.round((v ?? 0) * 1000) / 10;
 const fromPct = (s: string) => Math.max(0, Math.min(100, Number(s))) / 100;
 
-export function OverlayInspector({ media, overlay, zoom, clips, onOps, onClose }: Props) {
+export function OverlayInspector({ media, overlay, zoom, clips, onOps, onClose, onDeleted, onHelp }: Props) {
     const target = overlay ?? zoom!;
     const id = overlay ? { overlayId: overlay.id } : { zoomId: zoom!.id };
     const edit = (patch: Record<string, unknown>) => onOps([{ type: overlay ? 'edit_overlay' : 'edit_zoom', ...id, ...patch }]);
-    const remove = () => { if (onOps([{ type: overlay ? 'delete_overlay' : 'delete_zoom', ...id }])) onClose(); };
+    const remove = () => { if (onOps([{ type: overlay ? 'delete_overlay' : 'delete_zoom', ...id }])) { onDeleted?.(title); onClose(); } };
 
     // 時間以「時間軸」顯示與輸入（存成素材秒數）：用區段開頭所在的片段換算
     const clip = clips.find(c => c.mediaId === media.id && !c.bookend && target.start >= c.trimStart - 1e-6 && target.start < c.trimEnd)
@@ -81,6 +83,7 @@ export function OverlayInspector({ media, overlay, zoom, clips, onOps, onClose }
         <section className="inspector" aria-label={`${title}屬性`}>
             <header className="inspector-head">
                 <h2>{title}</h2>
+                {onHelp && <button className="btn insp-icon" onClick={() => onHelp(overlay ? (overlay.kind === 'media' ? '子母畫面' : '標註') : '縮放')} title="說明" aria-label="這個面板的說明">?</button>}
                 <button className="btn insp-icon" onClick={remove} title="刪除（Delete）" aria-label={`刪除這個${title}`}><Trash2 aria-hidden /></button>
                 <button className="btn insp-icon" onClick={onClose} title="取消選取（Esc）" aria-label="取消選取"><X aria-hidden /></button>
             </header>
@@ -194,7 +197,7 @@ export function OverlayInspector({ media, overlay, zoom, clips, onOps, onClose }
                 <div className="insp-grid">
                     <Field label="倍率" type="number" step={0.1} min={1.1} max={4} value={zoom.scale}
                         onCommit={v => edit({ scale: Math.max(1.1, Math.min(4, Number(v) || 2)) })} suffix="×" />
-                    <Field label="緩動" type="number" step={0.1} min={0.1} max={1.5} value={zoom.ease ?? 0.4}
+                    <Field label="放大過程（秒）" type="number" step={0.1} min={0.1} max={1.5} value={zoom.ease ?? 0.4}
                         onCommit={v => edit({ ease: Math.max(0.1, Math.min(1.5, Number(v) || 0.4)) })} suffix="秒" />
                     <Field label="中心 X" type="number" step={0.5} min={0} max={100} value={pct(zoom.x)} onCommit={v => edit({ x: fromPct(v) })} suffix="%" />
                     <Field label="中心 Y" type="number" step={0.5} min={0} max={100} value={pct(zoom.y)} onCommit={v => edit({ y: fromPct(v) })} suffix="%" />

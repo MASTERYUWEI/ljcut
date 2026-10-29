@@ -106,6 +106,9 @@ class ControlTests(unittest.TestCase):
         project2=dict(project,language='en')
         self.assertEqual(self.post('/save',{'path':'saved.ljcut','project':project2,'overwrite':True}).status_code,200)
         self.assertEqual(self.post('/open',{'path':'saved.ljcut'}).json()['language'],'en')
+        # 再次儲存不重複複製素材：專案裡的素材是同一份檔案（硬連結）
+        asset=next((self.control.root/'saved.ljcut'/'assets').iterdir())
+        self.assertGreaterEqual(os.stat(asset).st_nlink,2)
         self.assertEqual(self.post('/save',{'path':'saved.ljcut','project':project,'overwrite':True}).status_code,200)
         (self.control.root/'notproject.ljcut').mkdir()
         self.assertEqual(self.post('/save',{'path':'notproject.ljcut','project':project,'overwrite':True}).status_code,409)
