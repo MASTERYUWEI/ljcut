@@ -1,6 +1,6 @@
 /* ── 片段右鍵選單（分割 / 刪除 / 倍速）── */
 import { Scissors, Trash2, Gauge } from 'lucide-react';
-import { useEffect, useRef } from 'react';
+import { useEffect, useLayoutEffect, useRef } from 'react';
 import type { TimelineClip } from '../types';
 import { formatTimestamp } from '../utils';
 
@@ -18,6 +18,14 @@ interface Props {
 
 export function SpeedMenu({ clip, x, y, canSplit, splitTime, onSplit, onDelete, onSetSpeed, onClose }: Props) {
     const boxRef = useRef<HTMLDivElement>(null);
+    // 依實際尺寸放在畫面內（原本假設 220×200，實際較大會跑出畫面）
+    useLayoutEffect(() => {
+        const el = boxRef.current;
+        if (!el) return;
+        const r = el.getBoundingClientRect();                     // 繪製前量好再擺，不會閃
+        el.style.left = `${Math.max(8, Math.min(x, window.innerWidth - r.width - 8))}px`;
+        el.style.top = `${y + r.height + 8 > window.innerHeight ? Math.max(8, y - r.height) : y}px`;
+    }, [x, y]);
     useEffect(() => {
         const prev = document.activeElement as HTMLElement | null;
         boxRef.current?.querySelector<HTMLElement>('button:not([disabled]), input')?.focus();
@@ -39,10 +47,7 @@ export function SpeedMenu({ clip, x, y, canSplit, splitTime, onSplit, onDelete, 
                     const next = e.shiftKey ? (i <= 0 ? items.length - 1 : i - 1) : (i === items.length - 1 ? 0 : i + 1);
                     e.preventDefault(); items[next].focus();
                 }}
-                style={{
-                    left: Math.min(x, window.innerWidth - 220),
-                    top: Math.min(y, window.innerHeight - 200),
-                }}
+                style={{ left: x, top: y }}
                 onClick={(e) => e.stopPropagation()}
             >
                 <button

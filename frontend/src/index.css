@@ -513,13 +513,13 @@ body {
 .subtitle-item .time-range {
   font-size: 12px;
   font-family: var(--font-mono);
-  color: var(--accent-teal);
+  color: var(--fg-subtext0);
   margin-bottom: 4px;
   letter-spacing: 0.3px;
 }
 
 .subtitle-item .text {
-  font-size: 13px;
+  font-size: 15px;
   line-height: 1.5;
   color: var(--fg-text);
 }
@@ -530,7 +530,7 @@ body {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   color: var(--fg-text);
-  font-size: 13px;
+  font-size: 15px;
   line-height: 1.5;
   padding: 7px 10px;
   resize: vertical;
@@ -2930,3 +2930,43 @@ button.ai-status:hover { border-color: var(--accent-teal); }
 .overlay-add { height: 24px; }
 .media-remove { min-width: 24px; min-height: 24px; }
 .preview-sub-chip { min-height: 24px; }
+
+/* ── 匯出對話框：片頭片尾 ── */
+.bookends { display: grid; gap: 8px; padding: 10px 12px; border-radius: 8px; background: var(--bg-surface1); }
+.bookend-row { display: flex; align-items: center; gap: 8px; }
+.bookend-check { display: inline-flex; align-items: center; gap: 6px; min-width: 56px; font-size: 12px; color: var(--fg-subtext1); }
+.bookend-file { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--fg-text); }
+.bookend-row select, .bookend-row input[type="number"] {
+  padding: 4px 8px; border-radius: var(--radius-sm); border: 1px solid var(--bg-surface2);
+  background: var(--bg-surface0); color: var(--fg-text); font-size: 12px;
+}
+.bookend-row select { flex: 1; }
+.bookend-row input[type="number"] { width: 64px; }
+.bookend-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.bookends-note { font-size: 12px; color: var(--fg-subtext0); }
+.btn-sm { padding: 3px 10px; font-size: 12px; min-height: 24px; }
+
+/* ── 開啟專案：最近專案 ── */
+.recent-projects { display: flex; flex-wrap: wrap; gap: 6px; }
+.recent-project {
+  padding: 3px 10px; border-radius: 999px; border: 1px solid var(--bg-surface2);
+  background: var(--bg-surface0); color: var(--fg-subtext1); font-size: 12px; cursor: pointer;
+}
+.recent-project.on, .recent-project:hover { border-color: var(--accent-amber); color: var(--fg-text); }
+
+.settings-loading { font-size: 12px; color: var(--fg-subtext0); }
+.yt-field-label { font-size: 13px; color: var(--fg-subtext1); margin-bottom: 6px; }
+
+/* ── 標註軌「＋」選單（與縮放軌同一種按鈕） ── */
+.add-menu-wrap { position: relative; display: inline-flex; }
+.add-menu {
+  position: absolute; left: 0; bottom: calc(100% + 4px); z-index: 40;
+  min-width: 180px; padding: 4px; border-radius: 8px;
+  border: 1px solid var(--bg-surface2); background: var(--bg-mantle);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45); display: grid;
+}
+.add-menu-item {
+  text-align: left; padding: 6px 10px; border: 0; border-radius: 6px;
+  background: transparent; color: var(--fg-subtext1); font-size: 12px; cursor: pointer;
+}
+.add-menu-item:hover, .add-menu-item:focus-visible { background: var(--bg-surface1); color: var(--fg-text); }

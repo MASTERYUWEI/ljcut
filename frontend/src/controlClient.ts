@@ -203,12 +203,15 @@ function describeChange(c: any): string {
     const fmt = (t: number) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
     return range && typeof range[0] === 'number' ? `${label}（${fmt(range[0])}–${fmt(range[1])}）` : label;
 }
-function announceExternal(method: string, result: any) {
+function announceExternal(method: string, result: any, params?: any) {
     let text = '';
     if (method === 'apply') {
         const n = Array.isArray(result?.changes) ? result.changes.length : 0;
         text = `AI 修改了時間軸${n ? `（${n} 項變更）` : ''}`;
         toast('info', `${text}，可按 Ctrl+Z 復原`);
+    } else if (method === 'open' && params?.path) {
+        text = `AI 開啟了專案「${String(params.path).replace(/\.ljcut$/i, '')}」`;
+        toast('info', text);
     } else if (EXTERNAL_LABEL[method]) {
         text = EXTERNAL_LABEL[method];
         toast('info', text);
@@ -244,7 +247,7 @@ export async function startControl() {
             if (!replies.has(command.id)) {
                 const method = command.request.method;
                 replies.set(command.id, executeCommand(method, command.request.params).then(
-                    result => { announceExternal(method, result); return { result }; },
+                    result => { announceExternal(method, result, command.request.params); return { result }; },
                     error => ({ error: { code: error.code ?? 'EDITOR_ERROR', message: String(error.message ?? error) } })));
             }
             if (!acknowledging) {

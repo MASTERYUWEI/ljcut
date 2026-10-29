@@ -1,94 +1,97 @@
+/* 匯出對話框裡的片頭片尾：選檔、轉場，一顆「加入時間軸」完成（可 Ctrl+Z 復原）。
+   選擇會自動存成下次的預設，不需要另外按儲存。 */
 import { useEffect, useRef, useState } from 'react';
 import { executeCommand, uploadBookend } from '../controlClient';
 import { readState } from '../editSession';
+import { useStore } from '../store';
+import { humanizeError } from '../toast';
+import { StatusText } from './StatusText';
+
+type Settings = { revision: number; introPath: string; outroPath: string; useIntro: boolean; useOutro: boolean; transitionMode: string; transitionDuration: number };
+const fileName = (p: string) => p.replace(/\\/g, '/').split('/').pop() || '';
+const fmt = (t: number) => `${Math.floor(t / 60)}:${String(Math.round(t % 60)).padStart(2, '0')}`;
 
 export function BookendControls() {
-    const [settings, setSettings] = useState({ revision: 0, introPath: '', outroPath: '', useIntro: false, useOutro: false, transitionMode: 'random', transitionDuration: 0.6 });
-    const [loaded, setLoaded] = useState(false);
+    const [settings, setSettings] = useState<Settings | null>(null);
     const [busy, setBusy] = useState(false);
-    const [message, setMessage] = useState('');
-    const [draft, setDraft] = useState<any>(null);
-    const introFileRef = useRef<HTMLInputElement>(null);
-    const outroFileRef = useRef<HTMLInputElement>(null);
-    const run = async (action: () => Promise<void>) => {
-        setBusy(true);
-        try { await action(); } catch (e) { setMessage(String(e)); } finally { setBusy(false); }
+    const [message, setMessage] = useState<{ kind: 'ok' | 'error' | 'info'; text: string } | null>(null);
+    const fileRefs = { intro: useRef<HTMLInputElement>(null), outro: useRef<HTMLInputElement>(null) };
+    const clips = useStore(s => s.timelineClips);
+    const present = { intro: clips.some(c => c.bookend === 'intro'), outro: clips.some(c => c.bookend === 'outro') };
+
+    useEffect(() => {
+        executeCommand('production_settings').then(setSettings)
+            .catch(e => setMessage({ kind: 'error', text: humanizeError(String(e)).message }));
+    }, []);
+    // 選擇變更後自動存成預設（時間軸不變）
+    const persist = async (next: Settings) => {
+        setSettings(next);
+        try {
+            const saved = await executeCommand('set_production_settings', { ...next, expectedSettingsRevision: next.revision });
+            setSettings(s => s ? { ...s, revision: saved.revision } : saved);
+        } catch (e) { setMessage({ kind: 'error', text: humanizeError(String(e)).message }); }
     };
-    const load = async () => {
-        const s = await executeCommand('production_settings');
-        setSettings(s); setLoaded(true); setDraft(null); setMessage('已讀取製作預設');
+    if (!settings) return <div className="bookends">{message ? <StatusText kind={message.kind} text={message.text} /> : <p className="bookends-note">正在讀取片頭片尾設定…</p>}</div>;
+
+    const pick = (role: 'intro' | 'outro', file: File) => {
+        const label = role === 'intro' ? '片頭' : '片尾';
+        setBusy(true); setMessage({ kind: 'info', text: `正在準備${label}影片…` });
+        uploadBookend(file)
+            .then(sel => { void persist({ ...settings, [`${role}Path`]: sel.path, [role === 'intro' ? 'useIntro' : 'useOutro']: true } as Settings); setMessage(null); })
+            .catch(e => setMessage({ kind: 'error', text: humanizeError(String(e)).message }))
+            .finally(() => setBusy(false));
     };
-    useEffect(() => { void run(load); }, []);
-    return <fieldset className="bookend-settings" disabled={busy}>
-        <legend className="sr-only">片頭與片尾</legend>
-        <small>按「選擇影片」從任意資料夾挑選檔案。儲存預設後，下次可直接使用。</small>
+    const wanted = (['intro', 'outro'] as const).filter(r => (r === 'intro' ? settings.useIntro && settings.introPath : settings.useOutro && settings.outroPath) && !present[r]);
+
+    const addToTimeline = async () => {
+        setBusy(true); setMessage(null);
+        try {
+            const s = readState();
+            const params = { ...settings, useIntro: wanted.includes('intro'), useOutro: wanted.includes('outro'),
+                sessionId: s.sessionId, projectId: s.projectId, expectedRevision: s.revision };
+            const draft = await executeCommand('prepare_bookends', params);
+            await executeCommand('apply', { sessionId: draft.sessionId, projectId: draft.projectId,
+                expectedRevision: draft.revision, dryRunId: draft.dryRunId, confirmed: true });
+            setMessage({ kind: 'ok', text: `已加入時間軸：${fmt(draft.beforeDuration)} → ${fmt(draft.afterDuration)}，字幕跟著主片移動。按 Ctrl+Z 可整批復原。` });
+        } catch (e) { setMessage({ kind: 'error', text: humanizeError(String(e)).message }); }
+        finally { setBusy(false); }
+    };
+
+    return <div className="bookends" aria-busy={busy}>
         {(['intro', 'outro'] as const).map(role => {
             const label = role === 'intro' ? '片頭' : '片尾';
-            const pathKey = role === 'intro' ? 'introPath' : 'outroPath';
+            const path = role === 'intro' ? settings.introPath : settings.outroPath;
+            const use = role === 'intro' ? settings.useIntro : settings.useOutro;
             const useKey = role === 'intro' ? 'useIntro' : 'useOutro';
-            const fileRef = role === 'intro' ? introFileRef : outroFileRef;
-            return <div key={role} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                <label><input type="checkbox" checked={settings[useKey]} onChange={e => {
-                    setSettings({ ...settings, [useKey]: e.target.checked }); setDraft(null);
-                }} />加入{label}</label>
-                <input aria-label={`${label}影片`} style={{ flex: 1 }} readOnly
-                    value={settings[pathKey].replace(/\\/g, '/').split('/').pop() || ''} placeholder={`尚未選擇${label}影片`} />
-                <input ref={fileRef} type="file" hidden aria-label={`選取${label}檔案`}
-                    accept=".mp4,.mkv,.mov,.webm,.avi,.wmv" onChange={e => {
-                        const file = e.target.files?.[0];
-                        e.target.value = '';
-                        if (!file) return;
-                        void run(async () => {
-                            setMessage(`正在準備${label}影片…`);
-                            const selected = await uploadBookend(file);
-                            setSettings(s => ({ ...s, [pathKey]: selected.path, [useKey]: true }));
-                            setDraft(null);
-                            setMessage(`已選擇「${selected.filename}」。按「儲存預設」即可保留這次選擇。`);
-                        });
-                    }} />
-                <button className="btn" disabled={!loaded} aria-label={`選擇${label}影片`}
-                    onClick={() => fileRef.current?.click()}>選擇影片…</button>
+            return <div key={role} className="bookend-row">
+                <label className="bookend-check">
+                    <input type="checkbox" checked={use} disabled={busy || !path || present[role]}
+                        onChange={e => void persist({ ...settings, [useKey]: e.target.checked } as Settings)} />
+                    {label}
+                </label>
+                <span className="bookend-file" title={path}>{present[role] ? `已在時間軸上` : path ? fileName(path) : `尚未選擇${label}`}</span>
+                <input ref={fileRefs[role]} type="file" hidden aria-label={`選擇${label}影片`} accept=".mp4,.mkv,.mov,.webm,.avi,.wmv"
+                    onChange={e => { const f = e.target.files?.[0]; e.target.value = ''; if (f) pick(role, f); }} />
+                <button className="btn btn-sm" disabled={busy} onClick={() => fileRefs[role].current?.click()}>{path ? '更換…' : '選擇…'}</button>
             </div>;
         })}
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-            <label>銜接轉場 <select aria-label="轉場類型" value={settings.transitionMode} onChange={e => {
-                setSettings({ ...settings, transitionMode: e.target.value }); setDraft(null);
-            }}>
-                <option value="random">隨機挑選柔和轉場</option><option value="fade-black">淡黑</option>
+        <div className="bookend-row">
+            <label className="bookend-check" htmlFor="bookend-transition">轉場</label>
+            <select id="bookend-transition" value={settings.transitionMode} disabled={busy}
+                onChange={e => void persist({ ...settings, transitionMode: e.target.value })}>
+                <option value="random">隨機柔和轉場</option><option value="fade-black">淡黑</option>
                 <option value="fade-gray">柔灰</option><option value="fade-white">淡白</option><option value="none">直接切換</option>
-            </select></label>
-            <label>時間 <input aria-label="轉場秒數" type="number" min="0.2" max="1.5" step="0.1" style={{ width: 72 }}
-                value={settings.transitionDuration} onChange={e => { setSettings({ ...settings, transitionDuration: Number(e.target.value) }); setDraft(null); }} /> 秒</label>
-            <button className="btn" disabled={!loaded} onClick={() => run(async () => {
-                setDraft(null); const s = readState();
-                const d = await executeCommand('prepare_transitions', { sessionId: s.sessionId, projectId: s.projectId,
-                    expectedRevision: s.revision, mode: settings.transitionMode, duration: settings.transitionDuration });
-                setDraft(d); setMessage('已選定本次轉場，確認後套用；影片總長與字幕時間不變。');
-            })}>檢查現有片頭片尾轉場</button>
+            </select>
+            <input aria-label="轉場秒數" type="number" min="0.2" max="1.5" step="0.1" value={settings.transitionDuration} disabled={busy || settings.transitionMode === 'none'}
+                onChange={e => void persist({ ...settings, transitionDuration: Number(e.target.value) })} />
+            <span className="bookends-note">秒</span>
         </div>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <button className="btn" disabled={!loaded} onClick={() => run(async () => {
-                const saved = await executeCommand('set_production_settings', { ...settings, expectedSettingsRevision: settings.revision });
-                setSettings(saved); setMessage('已儲存為下次可用的預設，時間軸未變更');
-            })}>儲存預設</button>
-            <button className="btn" onClick={() => run(load)}>重新讀取</button>
-            <button className="btn" disabled={!loaded} onClick={() => run(async () => {
-                setDraft(null);
-                const s = readState();
-                const d = await executeCommand('prepare_bookends', { ...settings, sessionId: s.sessionId, projectId: s.projectId, expectedRevision: s.revision });
-                setDraft(d);
-                setMessage(`預計從 ${d.beforeDuration.toFixed(3)} 秒變成 ${d.afterDuration.toFixed(3)} 秒。字幕隨主影片移動；尚未套用。`);
-            })}>檢查加入結果</button>
-            <button className="btn btn-accent" disabled={!draft} onClick={() => run(async () => {
-                await executeCommand('apply', { sessionId: draft.sessionId, projectId: draft.projectId,
-                    expectedRevision: draft.revision, dryRunId: draft.dryRunId, confirmed: true });
-                setDraft(null); setMessage('已加入時間軸，可預覽、手動調整或整批復原');
-            })}>確認套用</button>
+        <div className="bookend-actions">
+            <button className="btn" disabled={busy || wanted.length === 0} onClick={addToTimeline}>
+                {busy ? '處理中…' : wanted.length ? `把${wanted.map(r => r === 'intro' ? '片頭' : '片尾').join('和')}加入時間軸` : present.intro || present.outro ? '片頭片尾已在時間軸上' : '先選擇片頭或片尾'}
+            </button>
+            <span className="bookends-note">選擇會自動記住，下次直接用。</span>
         </div>
-        {draft && <ul>{draft.changes.map((c: any) => <li key={`${c.type}-${c.clipId}`}>
-            {c.type === 'bookend_transition' ? `${c.at.toFixed(3)} 秒：${c.label}，${c.duration} 秒`
-                : `${c.role === 'intro' ? '片頭' : '片尾'}：${c.filename}（${c.timeline[0].toFixed(3)}–${c.timeline[1].toFixed(3)} 秒）`}
-        </li>)}</ul>}
-        <small role="status">{message}</small>
-    </fieldset>;
+        {message && <StatusText kind={message.kind} text={message.text} />}
+    </div>;
 }

@@ -112,6 +112,8 @@ export default function App() {
     const [selectedSegIds, setSelectedSegIds] = useState<Set<number>>(new Set());
     const [showSettings, setShowSettings] = useState(false);
     const [showHelp, setShowHelp] = useState(false);
+    const [overlayMenuOpen, setOverlayMenuOpen] = useState(false);
+    const overlayMenuRef = useRef<HTMLDivElement>(null);
     const [settings, setSettings] = useState<AppSettings>({ outputDir: '', srtDir: '' });
     const [isRecording, setIsRecording] = useState(false);
     type EncoderInfo = { hw: boolean; name: string; nvenc_active: boolean | null };
@@ -1681,6 +1683,14 @@ export default function App() {
         }
     }, [activeSegmentId]);
 
+    useEffect(() => {
+        if (!overlayMenuOpen) return;
+        overlayMenuRef.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();   // 開啟時焦點移到第一項
+        const close = (e: MouseEvent) => { if (!(e.target as HTMLElement).closest?.('.add-menu-wrap')) setOverlayMenuOpen(false); };
+        window.addEventListener('mousedown', close);
+        return () => window.removeEventListener('mousedown', close);
+    }, [overlayMenuOpen]);
+
     // ── 快捷鍵：空白鍵 播放/暫停 + Ctrl+Z 復原 ──
     useEffect(() => {
         const onKeyDown = (e: KeyboardEvent) => {
@@ -2760,7 +2770,7 @@ export default function App() {
                                                         }
                                                     }}
                                                     style={{ left, width }}
-                                                    onClick={() => setActiveClipId(clip.id)}
+                                                    onClick={(e) => { setActiveClipId(clip.id); (e.currentTarget as HTMLElement).focus({ preventScroll: true }); }}
                                                     onMouseDown={(e) => handleClipDragStart(e, clip.id)}
                                                     onContextMenu={(e) => {
                                                         e.preventDefault();
@@ -2852,13 +2862,29 @@ export default function App() {
                                                 <span><PenLine aria-hidden /> 標註</span>
                                                 <input ref={assetInputRef} type="file" hidden accept="image/png,image/jpeg,image/webp,image/bmp,video/*,.gif"
                                                     onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) void addMediaFromFile(f); }} />
-                                                <select className="overlay-add" value="" title="在播放頭加入 3 秒的標註；選取後 Shift+點或拖曳預覽畫面設定位置"
-                                                    onClick={(e) => e.stopPropagation()}
-                                                    onChange={(e) => { const k = e.target.value as OverlayKind; e.target.value = ''; if (k) addOverlayAtPlayhead(k); }}>
-                                                    <option value="">＋ 加入</option>
-                                                    {TEMPLATE_KINDS.map(k => <option key={k} value={k}>{OVERLAY_LABEL[k]}</option>)}
-                                                    <option value="media">圖片／影片（子母畫面）…</option>
-                                                </select>
+                                                <span className="add-menu-wrap">
+                                                    <button className="zoom-mini-btn" aria-haspopup="menu" aria-expanded={overlayMenuOpen}
+                                                        aria-label="在播放頭加入標註" title="在播放頭加入 3 秒的標註"
+                                                        onClick={(e) => { e.stopPropagation(); setOverlayMenuOpen(o => !o); }}><Plus aria-hidden /></button>
+                                                    {overlayMenuOpen && (
+                                                        <div className="add-menu" role="menu" aria-label="加入標註"
+                                                            ref={overlayMenuRef}
+                                                            onKeyDown={(e) => {
+                                                                const items = Array.from(e.currentTarget.querySelectorAll<HTMLElement>('[role="menuitem"]'));
+                                                                const i = items.indexOf(document.activeElement as HTMLElement);
+                                                                if (e.key === 'ArrowDown') { e.preventDefault(); items[(i + 1) % items.length]?.focus(); }
+                                                                else if (e.key === 'ArrowUp') { e.preventDefault(); items[(i - 1 + items.length) % items.length]?.focus(); }
+                                                                else if (e.key === 'Escape' || e.key === 'Tab') { e.stopPropagation(); setOverlayMenuOpen(false); }
+                                                            }}>
+                                                            {[...TEMPLATE_KINDS, 'media' as OverlayKind].map(k => (
+                                                                <button key={k} role="menuitem" className="add-menu-item"
+                                                                    onClick={(e) => { e.stopPropagation(); setOverlayMenuOpen(false); addOverlayAtPlayhead(k); }}>
+                                                                    {k === 'media' ? '圖片／影片（子母畫面）…' : OVERLAY_LABEL[k]}
+                                                                </button>
+                                                            ))}
+                                                        </div>
+                                                    )}
+                                                </span>
                                             </div>
                                             <div className="track-content" style={{ width: timelineWidth }}>
                                                 {placed.map(({ o, clip, a, b, left, width, row }) => {
@@ -3162,7 +3188,7 @@ export default function App() {
             if (['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName) || el.isContentEditable) return;
             if (showExportModal || showYtUpload || showSettings || showRecSettings || showHelp) return;
             if (e.key === '?') { e.preventDefault(); setShowHelp(true); return; }
-            if (el.closest?.('[role="tablist"], .subtitle-list, .speed-menu, .project-file')) return;   // 這些區塊自己處理方向鍵
+            if (el.closest?.('[role="tablist"], .subtitle-list, .speed-menu, .project-file, .add-menu, .ai-status-wrap')) return;   // 這些區塊自己處理方向鍵
             const t = timelinePosRef.current;
             if (e.ctrlKey || e.metaKey) {
                 if (e.key === '=' || e.key === '+') { e.preventDefault(); setZoom(z => Math.min(z * 1.25, 50)); }

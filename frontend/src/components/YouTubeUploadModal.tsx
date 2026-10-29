@@ -167,13 +167,14 @@ export function YouTubeUploadModal({ videoPath, defaultTitle, defaultDescription
 
                             {/* ── 標籤 / 隱私 ── */}
                             <div>
-                                <div style={{ fontSize: 12, color: 'var(--fg-subtext0)', marginBottom: 4 }}>標籤（逗號或空格分隔）</div>
+                                <label>標籤（逗號或空格分隔）
                                 <input value={tags} onChange={e => setTags(e.target.value)} style={inputStyle}
                                     placeholder="Revit, BIM, 教學" disabled={uploading} />
+                                </label>
                             </div>
                             <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', fontSize: 13 }}>
-                                <span style={{ color: 'var(--fg-subtext0)', fontSize: 12 }}>隱私</span>
-                                <select value={privacy} onChange={e => setPrivacy(e.target.value as typeof privacy)} disabled={uploading}
+                                <label htmlFor="yt-privacy">隱私</label>
+                                <select id="yt-privacy" value={privacy} onChange={e => setPrivacy(e.target.value as typeof privacy)} disabled={uploading}
                                     style={{ ...inputStyle, width: 'auto' }}>
                                     <option value="private">私人（建議：上架前到 Studio 檢查再公開）</option>
                                     <option value="unlisted">不公開（有連結就能看）</option>
@@ -183,7 +184,7 @@ export function YouTubeUploadModal({ videoPath, defaultTitle, defaultDescription
 
                             {/* ── 封面縮圖 ── */}
                             <div style={{ paddingTop: 6, borderTop: '1px solid var(--border)' }}>
-                                <div style={{ fontSize: 12, color: 'var(--fg-subtext0)', marginBottom: 6 }}>封面縮圖</div>
+                                <div className="yt-field-label" id="yt-thumb-label">封面縮圖</div>
                                 <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', fontSize: 13 }}>
                                     {([
                                         ['frame', '播放頭畫面'],
@@ -201,10 +202,10 @@ export function YouTubeUploadModal({ videoPath, defaultTitle, defaultDescription
 
                             </div>
 
-                            <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13, cursor: segments.length ? 'pointer' : 'not-allowed', opacity: segments.length ? 1 : 0.5 }}>
-                                <input type="checkbox" checked={includeSrt} onChange={e => setIncludeSrt(e.target.checked)} disabled={uploading || !segments.length} />
+                            {segments.length > 0 && <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13, cursor: 'pointer' }}>
+                                <input type="checkbox" checked={includeSrt} onChange={e => setIncludeSrt(e.target.checked)} disabled={uploading} />
                                 自動掛上本次匯出的 SRT（{segments.length} 句，繁體中文 CC）
-                            </label>
+                            </label>}
 
                             <button className="btn btn-primary" onClick={doUpload} disabled={uploading || !!partialStudio || !title.trim() || !connected || (thumbMode === 'ai' && !thumbSel)}
                                 style={{ justifyContent: 'center', marginTop: 4 }}>

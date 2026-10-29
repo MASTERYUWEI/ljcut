@@ -35,6 +35,7 @@ export function SettingsModal({ settings, setSettings, onClose }: Props) {
 
     // ── Gemini API Key ──
     const [keyInfo, setKeyInfo] = useState<{ has_key: boolean; masked: string }>({ has_key: false, masked: '' });
+    const [keyLoaded, setKeyLoaded] = useState(false);
     const [keyInput, setKeyInput] = useState('');
     const [showKey, setShowKey] = useState(false);
     const [saving, setSaving] = useState(false);
@@ -44,7 +45,7 @@ export function SettingsModal({ settings, setSettings, onClose }: Props) {
     const editing = !keyInfo.has_key || isEditing;
 
     useEffect(() => {
-        api.getApiKeyInfo().then(setKeyInfo).catch(() => { });
+        api.getApiKeyInfo().then(setKeyInfo).catch(() => { }).finally(() => setKeyLoaded(true));
     }, []);
 
     // ── AI 模型（動態偵測 Google 最新 Flash）──
@@ -225,7 +226,9 @@ export function SettingsModal({ settings, setSettings, onClose }: Props) {
                 <div className="style-row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 8 }}>
                     <label>Gemini API Key</label>
 
-                    {!editing ? (
+                    {!keyLoaded ? (
+                        <div className="settings-loading" role="status">讀取中…</div>
+                    ) : !editing ? (
                         // 已設定：顯示遮罩 + 變更按鈕（不再是空白框）
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                             <span style={{ color: 'var(--ok)', fontSize: 13, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
@@ -308,7 +311,9 @@ export function SettingsModal({ settings, setSettings, onClose }: Props) {
                 {/* ── YouTube 上傳連結 ── */}
                 <div className="style-row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 6 }}>
                     <label>YouTube 上傳</label>
-                    {yt?.connected ? (
+                    {yt === null ? (
+                        <div className="settings-loading" role="status">讀取中…</div>
+                    ) : yt.connected ? (
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
                             <span style={{ color: 'var(--ok)', display: 'inline-flex', alignItems: 'center', gap: 6 }}><CircleCheck aria-hidden />已連結頻道：{yt.channel || '(讀取中)'}</span>
                             <button className="btn" style={{ marginLeft: 'auto', padding: '0 10px' }}

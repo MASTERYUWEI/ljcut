@@ -18,6 +18,15 @@ export function useControlWorkspace() {
     return workspace;
 }
 
+const RECENT_KEY = 'ljcut-recent-projects';
+function recentProjects(): string[] {
+    try { return JSON.parse(localStorage.getItem(RECENT_KEY) || '[]').filter((x: unknown) => typeof x === 'string').slice(0, 6); } catch { return []; }
+}
+function rememberProject(path: string) {
+    try { localStorage.setItem(RECENT_KEY, JSON.stringify([path, ...recentProjects().filter(p => p !== path)].slice(0, 6))); } catch { /* 無法記住不影響功能 */ }
+}
+if (typeof window !== 'undefined') window.addEventListener('ljcut-project-file', () => { if (projectFile.path) rememberProject(projectFile.path); });
+
 const version = () => { const s = readState(); return { sessionId: s.sessionId, projectId: s.projectId, expectedRevision: s.revision }; };
 
 /** 未儲存狀態：專案版本 ≠ 最後存檔／開啟時的版本 */
@@ -99,8 +108,12 @@ export function ProjectFileButtons() {
         {open && <form className="project-file-pop" role="dialog" aria-label={open === 'save' ? '另存專案' : '開啟專案'}
             onSubmit={e => { e.preventDefault(); if (target) void doRun(open, target); }}>
             <label htmlFor="project-path">{open === 'save' ? '存成（相對於工作區的檔名）' : '要開啟的專案檔（相對於工作區）'}</label>
+            {open === 'open' && recentProjects().length > 0 && <div className="recent-projects" role="group" aria-label="最近的專案">
+                {recentProjects().map(r => <button type="button" key={r} className={`recent-project ${r === path ? 'on' : ''}`} onClick={() => setPath(r)}
+                    onDoubleClick={() => void doRun('open', r)} title={`${r}（按兩下直接開啟）`}>{r.replace(/\.ljcut$/i, '')}</button>)}
+            </div>}
             <input id="project-path" ref={inputRef} className="st-input" value={path} onChange={e => setPath(e.target.value)} />
-            <small title={workspace}>工作區：{workspace}</small>
+            <small title={workspace}>存在本機控制的工作資料夾裡</small>
             {open === 'open' && status.dirty && <StatusText kind="warn" text="目前的修改還沒儲存，開啟後會被取代（可先按「儲存」）。" />}
             {overwrite && status.path && <StatusText kind="info" text={`會另存成新檔；原本的「${status.path}」不變。同名檔案會被覆蓋。`} />}
             <button className="btn btn-primary" type="submit" disabled={busy || !target}>
