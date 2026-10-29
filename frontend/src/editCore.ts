@@ -156,6 +156,13 @@ export type EditOperation = {
     position?: Overlay['position'];
     html?: string;
     layer?: Overlay['layer'];
+    asset?: Overlay['asset'];
+    offset?: number;
+    loop?: boolean;
+    volume?: number;
+    shape?: Overlay['shape'];
+    border?: Overlay['border'];
+    shadow?: boolean;
     review?: 'confirmed' | 'needs_review';
     reason?: string;
 };
@@ -283,7 +290,7 @@ function visibleOnTimeline(next: ProjectData, mediaId: string, start: number, en
     return next.timelineClips.filter(c => c.mediaId === mediaId && c.trimStart < end && c.trimEnd > start)
         .map(c => [toTimelineTime(c, Math.max(c.trimStart, start)), toTimelineTime(c, Math.min(c.trimEnd, end))]);
 }
-const OVERLAY_FIELDS = ['start', 'end', 'x', 'y', 'w', 'h', 'text', 'sub', 'color', 'from', 'position', 'html', 'layer'] as const;
+const OVERLAY_FIELDS = ['start', 'end', 'x', 'y', 'w', 'h', 'text', 'sub', 'color', 'from', 'position', 'html', 'layer', 'asset', 'offset', 'loop', 'volume', 'shape', 'border', 'shadow'] as const;
 function applyOverlayOp(next: ProjectData, op: EditOperation, id: () => string): object {
     let media: ProjectData['mediaItems'][number] | undefined;
     let overlay: Overlay;
@@ -292,7 +299,8 @@ function applyOverlayOp(next: ProjectData, op: EditOperation, id: () => string):
         media = mediaForAdd(next, op);
         overlay = { id: id(), kind: op.kind, start: op.start!, end: op.end!, x: op.x ?? 0.5, y: op.y ?? 0.5 };
         if (op.kind === 'box' || op.kind === 'spotlight') { overlay.w = op.w ?? 0.2; overlay.h = op.h ?? 0.2; }
-        for (const k of ['text', 'sub', 'color', 'from', 'position', 'html', 'layer'] as const) if (op[k] !== undefined) (overlay as unknown as Record<string, unknown>)[k] = op[k];
+        if (op.kind === 'media') overlay.w = op.w ?? 0.3;
+        for (const k of ['text', 'sub', 'color', 'from', 'position', 'html', 'layer', 'asset', 'offset', 'loop', 'volume', 'shape', 'border', 'shadow'] as const) if (op[k] !== undefined) (overlay as unknown as Record<string, unknown>)[k] = op[k];
         media.overlays = [...(media.overlays ?? []), overlay];
     } else {
         requireEdit(typeof op.overlayId === 'string', 'OVERLAY_REQUIRED', `${op.type} 需提供 overlayId`);

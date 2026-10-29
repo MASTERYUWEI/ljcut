@@ -32,6 +32,28 @@ export function getHtmlDoc(html: string, srcW: number, srcH: number): HtmlDoc | 
     return null;
 }
 
+export interface MediaDecor { left: number; top: number; width: number; height: number; radius: number; under?: Sprite; over?: Sprite }
+const decors = new Map<string, MediaDecor | 'loading' | 'error'>();
+/** 子母畫面的位置與陰影／外框貼圖（與匯出同一個繪製程式）；就緒前回 null */
+export function getMediaDecor(o: Overlay, srcW: number, srcH: number): MediaDecor | null {
+    const k = JSON.stringify([srcW, srcH, o.x, o.y, o.w, o.shape, o.border, o.shadow, o.asset?.width, o.asset?.height]);
+    const hit = decors.get(k);
+    if (hit && hit !== 'loading' && hit !== 'error') return hit;
+    if (!hit) {
+        decors.set(k, 'loading');
+        fetch(`${getBase()}/api/overlay/media-decor`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ overlay: o, width: srcW, height: srcH }),
+        }).then(r => r.ok ? r.json() : Promise.reject(new Error(String(r.status))))
+            .then(d => {
+                for (const s of [d.under, d.over]) if (s) s.url = `${getBase()}${s.url}`;
+                decors.set(k, d);
+            })
+            .catch(() => decors.set(k, 'error'));
+    }
+    return null;
+}
+
 /** 已就緒回傳貼圖；否則在背景請求並回 null（下一格再試） */
 export function getSprite(o: Overlay, srcW: number, srcH: number): Sprite | null {
     const k = key(o, srcW, srcH);

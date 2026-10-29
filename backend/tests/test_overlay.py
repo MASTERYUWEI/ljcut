@@ -132,3 +132,67 @@ class HtmlOverlayTests(unittest.TestCase):
             self.assertTrue(is_box(pixel(out, 2.0, .48, .5)))                  # HTML 2 秒：left 760/1920
             self.assertFalse(is_box(pixel(out, 2.0, .08, .5)))
             self.assertFalse(is_box(pixel(out, 3.5, .9, .5)))                  # 結束後消失
+
+
+class MediaOverlayTests(unittest.TestCase):
+    def test_sanitize_and_geometry(self):
+        a = {'id': 'a_0123456789ab', 'type': 'video', 'width': 1280, 'height': 720, 'duration': 5}
+        m = overlay.sanitize([ov(kind='media', asset=a, x=.6, y=.6, w=.3)])[0]
+        self.assertEqual((m['shape'], m['border'], m['volume'], m['layer']), ('rounded', 'white', 0, 'screen'))
+        self.assertEqual(overlay.media_geometry(m, 1920, 1080), (1152, 648, 576, 324, 16))
+        circ = dict(m, shape='circle')
+        self.assertEqual(overlay.media_geometry(circ, 1920, 1080)[2:], (576, 576, 288))
+        for bad in ([ov(kind='media')], [ov(kind='media', asset={**a, 'id': '../x'})], [ov(kind='media', asset=a, w=2)],
+                    [ov(kind='media', asset=a, volume=3)], [ov(kind='media', asset=a, shape='star')]):
+            with self.assertRaises(ValueError, msg=bad):
+                overlay.sanitize(bad)
+
+    def test_export_image_and_video_pip_with_mask_and_audio(self):
+        import subprocess
+        from services import asset
+        from test_zoom import FLAGS
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            uploads = root / 'uploads'
+            uploads.mkdir()
+            src = uploads / 'quad.mp4'
+            quadrant_video(src)
+            png = root / 'magenta.png'
+            from PIL import Image
+            Image.new('RGB', (400, 300), (255, 0, 255)).save(png)
+            vid = root / 'pip.mp4'
+            subprocess.run(['ffmpeg', '-v', 'error', '-y', '-f', 'lavfi', '-i', 'color=c=orange:s=320x240:r=30:d=3',
+                            '-f', 'lavfi', '-i', 'sine=frequency=1000:d=3', '-shortest', '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
+                            '-c:a', 'aac', str(vid)], check=True, capture_output=True, creationflags=FLAGS)
+            img_asset = asset.import_file(png, uploads)
+            vid_asset = asset.import_file(vid, uploads)
+            self.assertEqual((img_asset['type'], img_asset['duration']), ('image', 0))
+            self.assertTrue(vid_asset['hasAudio'])
+            out = root / 'out.mp4'
+            ass = root / 'none.ass'
+            ass.write_text('', encoding='utf-8')
+            # 圖片：來源 3–6 秒，右下；影片：來源 6–9 秒，左上圓形、音量 0.8；片段來源 2–10、等速
+            overlays = [ov(id='i', kind='media', asset=img_asset, start=3, end=6, x=.55, y=.55, w=.4, border='none', shadow=False),
+                        ov(id='v', kind='media', asset=vid_asset, start=6, end=9, x=.05, y=.05, w=.3, shape='circle', volume=.8)]
+            clips = [{'video_path': str(src), 'trim_start': 2, 'trim_end': 10, 'speed': 1, 'output_duration': 8,
+                      'overlays': overlays, 'asset_root': str(uploads)}]
+            for _ in FFmpegService.export_timeline_with_progress(clips, str(ass), str(out), use_nvenc=False,
+                                                                 video_width=640, video_height=360):
+                pass
+            self.assertAlmostEqual(FFmpegService.get_media_info(str(out))['duration'], 8, delta=0.1)
+            is_mag = lambda p: p[0] > 200 and p[2] > 200 and p[1] < 80
+            self.assertEqual(color(pixel(out, 0.5, .75, .75)), 'white')     # 圖片出現前
+            self.assertTrue(is_mag(pixel(out, 2.0, .75, .75)))              # 成品 2 秒 = 來源 4：圖片在右下
+            self.assertEqual(color(pixel(out, 2.0, .25, .25)), 'red')       # 其他地方不受影響
+            r, g, b = pixel(out, 5.5, .2, .29)                               # 成品 5.5 = 來源 7.5：圓形影片中央（橘）
+            self.assertTrue(r > 200 and 100 < g < 200 and b < 80, (r, g, b))
+            self.assertEqual(color(pixel(out, 5.5, .055, .065)), 'red')     # 圓形外的角落：遮罩生效、露出底下紅色
+            self.assertEqual(color(pixel(out, 7.5, .2, .29)), 'red')        # 結束後消失
+            # 聲音：子母畫面期間（1000Hz）音量明顯高於只有主聲音時
+            def rms(t0, d):
+                raw = subprocess.run(['ffmpeg', '-v', 'error', '-ss', str(t0), '-t', str(d), '-i', str(out), '-ac', '1', '-ar', '8000',
+                                      '-f', 's16le', '-'], capture_output=True, creationflags=FLAGS).stdout
+                import array, math
+                a = array.array('h', raw)
+                return math.sqrt(sum(x * x for x in a) / max(1, len(a)))
+            self.assertGreater(rms(4.5, 1.5), rms(0.5, 1.5) * 1.18)   # 理論值 √(1+0.8²) ≈ 1.28 倍

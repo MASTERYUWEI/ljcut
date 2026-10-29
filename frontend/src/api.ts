@@ -571,6 +571,16 @@ export const api = {
         return res.json();
     },
 
+    /** 上傳圖片／影片到子母畫面素材庫 */
+    async uploadAsset(file: File): Promise<import('./overlay').OverlayAsset> {
+        const form = new FormData();
+        form.append('file', file);
+        const res = await fetch(`${resolvedBase}/api/asset`, { method: 'POST', body: form });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(body.detail ?? `上傳失敗：HTTP ${res.status}`);
+        return body;
+    },
+
     getThumbnailUrl(fileId: string): string {
         return `${resolvedBase}/api/thumbnail/${fileId}`;
     },

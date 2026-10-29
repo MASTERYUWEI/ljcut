@@ -101,6 +101,20 @@ LJ Cut 重開後不必重啟 MCP。
 - **MCP**：`ljcut_html_guide`（規則與範例）、`ljcut_html_preview`（套用前試看幾個時間點，不改專案）；
   加入後 `ljcut_check_overlays` 也會渲染 HTML 動畫。介面上 HTML 動畫可選取、刪除、↻ 切換圖層；內容請 AI 修改。
 
+## 子母畫面（kind = media：疊圖片或另一支影片）
+
+- **素材庫**：圖片（PNG/JPG/WebP/BMP）與影片（MP4/MOV/MKV/WebM/AVI/WMV/GIF）存在 `uploads/assets/{a_xxxxxxxxxxxx}.ext`，
+  不佔主時間軸。AI 用 `ljcut_import_asset`（工作區檔案）、介面用「✏️ 標註 → ＋ 加入 → 🖼 圖片／影片」上傳（`/api/asset`）。
+- **欄位**：`{kind:'media', start, end, asset, x, y, w?, offset?, loop?, volume?, shape?, border?, shadow?, layer?, text?}`。
+  x,y 為左上角、w 為畫面寬度比例（預設 0.3，高度依素材比例；圓形為正方形）；影片與主素材 1:1 同步，從 `offset` 秒起播，
+  超過素材長度時停在最後一格或 `loop` 循環；`volume` 0–1（預設 0 靜音）會混進成品聲音（與主聲音同樣變速，不壓低主聲音）。
+  形狀 rounded（預設）／circle（適合視訊鏡頭）／rect；外框顏色或 none（預設白）；陰影預設開；layer screen（預設，固定）／content（跟著縮放）。
+  MCP 的 `ljcut_plan` 可只給 `assetId`，會自動補上素材資訊。
+- **一致性**：尺寸公式在 `overlay.ts mediaGeometry` 與 `overlay.py media_geometry` 相同；陰影、外框與圓角遮罩由後端 PIL 繪製，
+  預覽（`/api/overlay/media-decor`）與匯出用同一份。匯出時素材縮放後以遮罩 `alphamerge`、淡入淡出後疊上，聲音以 `amix` 混入。
+- **介面**：選取子母畫面後 ✎ 調音量（影片有聲音時）、↻ 換形狀；Shift+點移動左上角、Shift+拖曳設定位置與寬度。
+  預覽時影片跟著主畫面播放（同倍速、漂移超過 0.2 秒校正），暫停時精準跳到對應秒數。
+
 ## 相關改動
 
 - **長輪詢**：編輯器以 `/poll {wait:8}` 等待命令，後端有命令立即回應。過去靠 300ms 計時器，

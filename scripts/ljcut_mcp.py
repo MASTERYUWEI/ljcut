@@ -115,10 +115,15 @@ def t_status(_):
         for z in m.get("zooms") or []:
             lines.append(f"      縮放 {z['id']}  src {r2(z['start'])}–{r2(z['end'])}  中心({z['x']},{z['y']})  {z['scale']}x")
         for i, o in enumerate(m.get("overlays") or []):
-            geo = f"({o['x']},{o['y']}" + (f",w{o['w']},h{o['h']}" if o.get("w") is not None else "") + ")"
+            geo = (f"({o['x']},{o['y']}" + (f",w{o['w']}" if o.get("w") is not None else "")
+                   + (f",h{o['h']}" if o.get("h") is not None else "") + ")")
             extra = "".join(f" {k}={o[k]}" for k in ("text", "sub", "color", "from", "position", "layer") if o.get(k))
             if o["kind"] == "html":
                 extra += f"  html {len(o.get('html') or '')} 字元"
+            if o["kind"] == "media":
+                a = o.get("asset") or {}
+                extra += (f"  子母畫面 {a.get('filename')}（{a.get('type')}）w{o.get('w')} {o.get('shape', 'rounded')}"
+                          f" 音量{o.get('volume', 0)}{' 循環' if o.get('loop') else ''} offset{o.get('offset', 0)}")
             lines.append(f"      標註#{i} {o['id']}  {o['kind']}  src {r2(o['start'])}–{r2(o['end'])}  {geo}{extra}")
     lines.append("時間軸片段（依順序）：")
     for i, c in enumerate(clips_sorted(s)):
@@ -220,9 +225,15 @@ def t_plan(a):
     ops = a.get("operations")
     if not isinstance(ops, list) or not ops:
         raise ValueError("operations 至少一個")
+    assets = {}
     for o in ops:
         if "type" not in o and "op" in o:
             o["type"] = o.pop("op")
+        # 子母畫面：只給 assetId 時自動補上素材資訊
+        if o.get("assetId") and not o.get("asset"):
+            aid = o.pop("assetId")
+            assets[aid] = assets.get(aid) or client().request(f"/asset/{aid}")
+            o["asset"] = assets[aid]
         o.setdefault("trackId", "video-main")
         o.setdefault("timeDomain", "source")
     res = command("dry_run", {**version(s), "timeUnit": "seconds", "operations": ops})
@@ -249,6 +260,14 @@ def t_redo(_):
     s = state()
     command("redo", version(s))
     return t_status({})
+
+
+def t_import_asset(a):
+    """匯入子母畫面素材（工作區內的圖片／影片），不會放上主時間軸。"""
+    res = client().request("/asset", {"path": a["path"]})
+    kind = "圖片" if res["type"] == "image" else f"影片 {res['duration']}s{'（有聲音）' if res.get('hasAudio') else ''}"
+    return [text_block(f"已匯入子母畫面素材 {res['filename']}：{kind}，{res['width']}x{res['height']}"),
+            text_block({"assetId": res["id"], "next": "用 ljcut_plan 的 add_overlay kind=media，帶 assetId 與位置／寬度"})]
 
 
 def t_import(a):
@@ -494,6 +513,10 @@ OPS_DOC = (
     "    共用：color red/yellow/blue/green/white（預設紅，標題預設黃）；座標皆為畫面比例 0–1；text 單行最多 40 字。"
     "一次說明一件事，同時出現的標註別超過 2–3 個\n"
     "- edit_overlay {overlayId, 任一欄位} / delete_overlay {overlayId}\n"
+    "- add_overlay kind=media {start,end,assetId,x,y,w?,offset?,loop?,volume?,shape?,border?,shadow?,layer?}：子母畫面（疊圖片或另一支影片）。"
+    "先用 ljcut_import_asset 匯入取得 assetId；x,y 為左上角、w 為畫面寬度比例（預設 0.3，高度依素材比例；circle 為正方形）；"
+    "offset 影片從第幾秒開始、loop 循環、volume 0–1（預設 0 靜音）；shape rounded（預設）/circle（適合視訊鏡頭）/rect；"
+    "border 外框顏色或 none（預設 white）；shadow 預設 true；layer screen（預設，固定）/content（跟著縮放）。影片與主素材 1:1 同步播放\n"
     "- add_overlay kind=html {start,end,html,layer?,text?}：自訂 HTML 動畫（模板做不到時才用，例如片頭字卡、數字跳動、流程圖逐步出現）。"
     "規則見 ljcut_html_guide；套用前可先用 ljcut_html_preview 看幾個時間點的畫面\n"
     "需要 clipId 的操作若要指向同批剛分割出的新片段，先 dry-run 一次取得新 clipId。"
@@ -534,6 +557,8 @@ TOOLS = [
     ("ljcut_undo", "復原上一批變更（與 LJ Cut 介面共用 Ctrl+Z 堆疊）。", {}, [], t_undo),
     ("ljcut_redo", "重做。", {}, [], t_redo),
     ("ljcut_preview", "讓 LJ Cut 播放器跳到時間軸某秒並暫停（使用者畫面會跟著動）。", {"time": NUM}, ["time"], t_preview),
+    ("ljcut_import_asset", "匯入子母畫面素材：工作區內的圖片（PNG/JPG/WebP/BMP）或影片（MP4/MOV/MKV/WebM/AVI/WMV/GIF），回傳 assetId；不會放上主時間軸。",
+     {"path": {"type": "string"}}, ["path"], t_import_asset),
     ("ljcut_import", "匯入工作區內的影片/音訊（相對路徑），接在時間軸最後。", {"path": {"type": "string"}}, ["path"], t_import),
     ("ljcut_save", "另存專案（工作區相對路徑，副檔名 .ljcut，不覆寫）。", {"path": {"type": "string"}}, ["path"], t_save),
     ("ljcut_open", "開啟工作區內的 .ljcut 專案（會取代目前時間軸）。", {"path": {"type": "string"}}, ["path"], t_open),

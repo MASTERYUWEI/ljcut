@@ -46,6 +46,25 @@ def _parse_frame_rate(fr: str) -> float:
 from . import zoom as zoom_service
 from . import overlay as overlay_service
 from . import html_overlay
+from . import asset as asset_service
+
+def _atempo(speed: float) -> list[str]:
+    """把倍速拆成 atempo 串接（每段 0.5–2.0）。"""
+    if speed == 1.0:
+        return []
+    parts, remaining = [], speed
+    while remaining > 2.0:
+        parts.append("atempo=2.0")
+        remaining /= 2.0
+    parts.append(f"atempo={max(0.5, remaining):.4f}")
+    return parts
+
+
+def _asset_root(video_path: str) -> Path:
+    """子母畫面素材在 uploads/assets；主素材可能來自 uploads 或其子資料夾。"""
+    p = Path(video_path).resolve().parent
+    return p if (p / "assets").exists() or p.name == "uploads" else p.parent
+
 
 class FFmpegService:
     @staticmethod
@@ -348,8 +367,52 @@ class FFmpegService:
                 # 標註疊加層：每個畫成一張透明貼圖，當成額外輸入（循環靜態圖）依時間疊上
                 overlays = overlay_service.visible(clip.get("overlays"), trim_start, trim_end) if src_w and src_h else []
                 sprites = []
+                n_in = 1 + (0 if has_audio else 1)   # 下一個額外輸入的編號
+                audio_mix = []                        # 要混進成品的子母畫面聲音：(輸入編號, 疊加層, 輸出起點秒)
                 for o in overlays:
-                    inp = 1 + (0 if has_audio else 1) + len(sprites)
+                    inp = n_in
+                    if o["kind"] == "media":
+                        # 子母畫面：素材本身＋（圓角遮罩、陰影、外框）各一個輸入
+                        root = Path(clip["asset_root"]) if clip.get("asset_root") else _asset_root(video_path)
+                        asset_path = asset_service.find(root, o["asset"]["id"])
+                        if not asset_path:
+                            raise RuntimeError(f"找不到子母畫面素材 {o['asset'].get('filename') or o['asset']['id']}")
+                        a_src, b_src = max(o["start"], trim_start), min(o["end"], trim_end)
+                        span = b_src - a_src                       # 來源秒數（素材與主畫面 1:1）
+                        ta = (a_src - trim_start) / speed
+                        entry = {"ta": ta, "asset": inp}
+                        if o["asset"]["type"] == "image":
+                            cmd += ["-loop", "1", "-framerate", str(target_fps), "-t", f"{span / speed + 1:.3f}", "-i", str(asset_path)]
+                        else:
+                            dur = o["asset"]["duration"] or 0
+                            pos = o["offset"] + (a_src - o["start"])
+                            if o.get("loop") and dur > 0:
+                                cmd += ["-stream_loop", "-1", "-ss", f"{pos % dur:.3f}"]
+                            else:
+                                cmd += ["-ss", f"{min(pos, max(0.0, dur - 0.05)):.3f}"]
+                            cmd += ["-t", f"{span:.3f}", "-i", str(asset_path)]
+                            if o["volume"] > 0 and o["asset"].get("hasAudio"):
+                                audio_mix.append((inp, o, ta))
+                        n_in += 1
+                        mask = overlay_service.media_mask(o, src_w, src_h)
+                        if mask is not None:
+                            mpath = temp_dir / f"mask_{idx}_{len(sprites)}.png"
+                            mask.save(mpath)
+                            cmd += ["-loop", "1", "-framerate", str(target_fps), "-t", f"{span / speed + 1:.3f}", "-i", str(mpath)]
+                            entry["mask"] = n_in
+                            n_in += 1
+                        under, over = overlay_service.media_decor(o, src_w, src_h)
+                        for key, deco in (("under", under), ("over", over)):
+                            if deco is None:
+                                continue
+                            dpath = temp_dir / f"{key}_{idx}_{len(sprites)}.png"
+                            deco[0].save(dpath)
+                            cmd += ["-loop", "1", "-framerate", str(target_fps), "-t", f"{seg_out + 1:.3f}", "-i", str(dpath)]
+                            entry[key] = (n_in, deco[1], deco[2], deco[0].width, deco[0].height)
+                            n_in += 1
+                        sprites.append((o, entry, inp))
+                        continue
+                    n_in += 1
                     if o["kind"] == "html":
                         # 逐格截成透明 PNG 序列（原解析度）；時間依來源秒數，倍速時一起變快
                         if html_renderer is None:
@@ -364,7 +427,8 @@ class FFmpegService:
                     sprites.append((o, info, inp))
                     cmd += ["-loop", "1", "-framerate", str(target_fps), "-t", f"{seg_out + 1:.3f}", "-i", info["path"]]
 
-                cmd += ['-map', '[vout]' if sprites else '0:v:0', '-map', '0:a:0' if has_audio else '1:a:0']
+                cmd += ['-map', '[vout]' if sprites else '0:v:0',
+                        '-map', '[aout]' if audio_mix else ('0:a:0' if has_audio else '1:a:0')]
                 if clip_dur > 0:
                     cmd += ["-t", str(clip_dur / speed)]
 
@@ -397,6 +461,43 @@ class FFmpegService:
                     def stack(items, scale_k, label):
                         nonlocal cur
                         for n, (o, info, inp) in enumerate(items):
+                            if o["kind"] == "media":
+                                left, top, pw, ph, radius = overlay_service.media_geometry(o, src_w, src_h)
+                                fade = dict(o, kind="spotlight")   # 只淡入淡出，不彈出
+                                # 陰影墊底
+                                if "under" in info:
+                                    dinp, dl, dt, _, _ = info["under"]
+                                    chain, _, enable = overlay_service.anim_filters(fade, trim_start, speed, scale_k, src_h)
+                                    graph.append(f"[{dinp}:v]{chain}[{label}u{n}]")
+                                    graph.append(f"[{cur}][{label}u{n}]overlay=x={dl * scale_k:.2f}:y={dt * scale_k:.2f}:enable='{enable}'[{label}uo{n}]")
+                                    cur = f"{label}uo{n}"
+                                # 素材：縮到目標尺寸（圓形先填滿再裁正方形），套遮罩，再平移到出現時間並淡入淡出
+                                tw, th = max(2, round(pw * scale_k / 2) * 2), max(2, round(ph * scale_k / 2) * 2)
+                                fit = (f"scale={tw}:{th}:force_original_aspect_ratio=increase,crop={tw}:{th}"
+                                       if o["shape"] == "circle" else f"scale={tw}:{th}")
+                                graph.append(f"[{inp}:v]setpts=PTS-STARTPTS,{fit},setsar=1,format=rgba[{label}ma{n}]")
+                                src_label = f"{label}ma{n}"
+                                if "mask" in info:
+                                    graph.append(f"[{info['mask']}:v]scale={tw}:{th},format=gray[{label}mk{n}]")
+                                    graph.append(f"[{src_label}][{label}mk{n}]alphamerge[{label}mm{n}]")
+                                    src_label = f"{label}mm{n}"
+                                ta = info["ta"]
+                                tb = (o["end"] - trim_start) / speed
+                                fi, fo = overlay_service.FADE_IN / speed, overlay_service.FADE_OUT / speed
+                                t_in = (o["start"] - trim_start) / speed
+                                graph.append(f"[{src_label}]setpts=PTS/{speed}+{ta:.6f}/TB,"
+                                             f"fade=t=in:st={t_in:.6f}:d={fi:.6f}:alpha=1,fade=t=out:st={tb - fo:.6f}:d={fo:.6f}:alpha=1[{label}mf{n}]")
+                                graph.append(f"[{cur}][{label}mf{n}]overlay=x={left * scale_k:.2f}:y={top * scale_k:.2f}:"
+                                             f"enable='between(t,{max(0.0, ta):.6f},{tb:.6f})'[{label}mo{n}]")
+                                cur = f"{label}mo{n}"
+                                # 外框蓋上
+                                if "over" in info:
+                                    dinp, dl, dt, _, _ = info["over"]
+                                    chain, _, enable = overlay_service.anim_filters(fade, trim_start, speed, scale_k, src_h)
+                                    graph.append(f"[{dinp}:v]{chain}[{label}b{n}]")
+                                    graph.append(f"[{cur}][{label}b{n}]overlay=x={dl * scale_k:.2f}:y={dt * scale_k:.2f}:enable='{enable}'[{label}bo{n}]")
+                                    cur = f"{label}bo{n}"
+                                continue
                             if o["kind"] == "html":
                                 # PNG 序列從 0 起算：平移到出現的輸出秒數；播完後讓主畫面直接通過
                                 size = "" if scale_k == 1.0 else f",scale={fit_w}:{fit_h}"
@@ -416,6 +517,20 @@ class FFmpegService:
                     cur = "vf"
                     stack([s for s in sprites if not overlay_service.is_content(s[0])], k, "t")
                     graph.append(f"[{cur}]{','.join(tail)}[vout]")
+                    if audio_mix:
+                        # 子母畫面的聲音：與主聲音同樣變速，延後到出現時間，依音量混入（不壓低主聲音）
+                        main_a = "0:a" if has_audio else "1:a"
+                        graph.append(f"[{main_a}]{','.join(['asetpts=PTS-STARTPTS', *_atempo(speed)])},"
+                                     f"aformat=sample_rates=48000:channel_layouts=stereo[am]")
+                        mixes = ["[am]"]
+                        for n, (ainp, o, ta) in enumerate(audio_mix):
+                            delay = max(0, round(ta * 1000))
+                            graph.append(f"[{ainp}:a]{','.join(['asetpts=PTS-STARTPTS', *_atempo(speed)])},"
+                                         f"aformat=sample_rates=48000:channel_layouts=stereo,volume={o['volume']:.3f},"
+                                         f"adelay={delay}:all=1[ap{n}]")
+                            mixes.append(f"[ap{n}]")
+                        post = ",".join(transition_audio) if transition_audio else "anull"
+                        graph.append(f"{''.join(mixes)}amix=inputs={len(mixes)}:duration=first:normalize=0,{post}[aout]")
                     script = temp_dir / f"clip_{idx}.fc.txt"
                     script.write_text(";\n".join(graph), encoding="utf-8")
                     cmd += ["-filter_complex_script", str(script)]
@@ -438,7 +553,8 @@ class FFmpegService:
                         remaining = 0.5
                     af_parts.append(f"atempo={remaining:.4f}")
                 af_parts.extend(transition_audio)
-                cmd += ["-af", ",".join(af_parts)]
+                if not audio_mix:   # 有子母畫面聲音時，音訊已在 filter_complex 裡處理
+                    cmd += ["-af", ",".join(af_parts)]
 
                 cmd += [
                     "-r", str(target_fps),

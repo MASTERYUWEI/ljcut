@@ -25,6 +25,7 @@ from . import publication as publications
 from . import observe
 from . import zoom as zoom_service
 from . import overlay as overlay_service
+from . import asset as asset_service
 
 
 def fail(code, message, status=400):
@@ -436,6 +437,7 @@ class LocalControl:
             if mode not in ("box", "crop"):
                 fail("INVALID_PARAM", "zoomMode 需為 box 或 crop")
             layers = body.get("overlays")
+            asset_root = self.uploads
             if layers is not None:
                 if not isinstance(layers, list):
                     fail("INVALID_PARAM", "overlays 需為每個時間點一個疊加層陣列（或 null）")
@@ -447,11 +449,30 @@ class LocalControl:
             try:
                 res = await asyncio.to_thread(observe.contact_sheet, src, [float(t) for t in times], out,
                                               [str(x) for x in labels] if labels else None, width, cols,
-                                              body.get("grid") is True, zooms, mode, layers)
+                                              body.get("grid") is True, zooms, mode, layers, asset_root)
             except ValueError as e:
                 fail("INVALID_PARAM", str(e))
             res["path"] = out.relative_to(self.root).as_posix()
             return res
+
+        @r.post('/asset')
+        async def import_asset(request: Request, body: dict = Body(...)):
+            """把工作區內的圖片／影片匯入子母畫面素材庫，回傳可直接放進 add_overlay 的 asset。"""
+            self.authorize(request)
+            source = self.path(body.get('path'), True)
+            try:
+                return await asyncio.to_thread(asset_service.import_file, source, self.uploads)
+            except ValueError as error:
+                fail('UNSUPPORTED_MEDIA', str(error))
+
+        @r.get('/asset/{asset_id}')
+        async def asset_info(asset_id: str, request: Request):
+            self.authorize(request)
+            path = asset_service.find(self.uploads, asset_id)
+            if not path:
+                fail('ASSET_NOT_FOUND', f'找不到子母畫面素材 {asset_id}', 404)
+            meta = await asyncio.to_thread(asset_service.probe, path)
+            return {"id": asset_id, "filename": path.name, "url": f"/uploads/assets/{path.name}", **meta}
 
         @r.post('/observe/cursor')
         async def observe_cursor(request: Request, body: dict = Body(...)):
@@ -587,7 +608,7 @@ class LocalControl:
                 clips.append({"video_path": str(medias[c['mediaId']]), "trim_start": start,
                               "trim_end": end, "speed": speed, "output_duration": length, "transition_in": c.get('transitionIn'),
                               "zooms": zooms_by_media.get(c['mediaId'], []),
-                              "overlays": overlays_by_media.get(c['mediaId'], [])})
+                              "overlays": overlays_by_media.get(c['mediaId'], []), "asset_root": str(self.uploads)})
                 subtitle_clips.append({"segments": c['segments'], "trim_start": start, "trim_end": end,
                                        "speed": speed, "time_offset": offset, "bookend": c.get('bookend')})
                 offset += length

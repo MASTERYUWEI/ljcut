@@ -19,7 +19,8 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
-KINDS = ("box", "arrow", "spotlight", "step", "title", "html")
+KINDS = ("box", "arrow", "spotlight", "step", "title", "html", "media")
+SHAPES = ("rect", "rounded", "circle")
 CONTENT_KINDS = ("box", "arrow", "spotlight", "step")
 COLORS = {
     "red": (255, 59, 48), "yellow": (255, 204, 0), "blue": (10, 132, 255),
@@ -81,6 +82,11 @@ def sanitize(overlays) -> list[dict]:
             raise ValueError("疊加層數值無效")
         if not (c["start"] >= 0 and c["end"] - c["start"] >= 0.3):
             raise ValueError("疊加層至少 0.3 秒")
+        if o["kind"] == "media":
+            # 子母畫面：圖片／影片疊在主畫面上
+            c.update(_sanitize_media(o))
+            out.append(c)
+            continue
         if o["kind"] == "html":
             # 自訂 HTML 動畫：外觀由 HTML 決定，只需內容與圖層（content 跟著縮放／screen 固定在畫面上）
             from .html_overlay import check_html, MAX_SECONDS
@@ -126,9 +132,85 @@ def sanitize(overlays) -> list[dict]:
     return out
 
 
+def _sanitize_media(o: dict) -> dict:
+    from .asset import ID_RE
+    a = o.get("asset")
+    if not isinstance(a, dict) or not isinstance(a.get("id"), str) or not ID_RE.fullmatch(a["id"]) \
+            or a.get("type") not in ("image", "video"):
+        raise ValueError("子母畫面需提供 asset（先匯入圖片／影片取得 id）")
+    try:
+        asset = {"id": a["id"], "type": a["type"], "filename": str(a.get("filename", ""))[:200],
+                 "url": str(a.get("url", ""))[:300], "width": int(a["width"]), "height": int(a["height"]),
+                 "duration": float(a.get("duration") or 0), "hasAudio": bool(a.get("hasAudio"))}
+        w = float(o.get("w", 0.3))
+        offset = float(o.get("offset", 0))
+        volume = float(o.get("volume", 0))
+    except (KeyError, TypeError, ValueError):
+        raise ValueError("子母畫面數值無效（asset 寬高、w、offset、volume）") from None
+    if not (asset["width"] > 0 and asset["height"] > 0 and math.isfinite(asset["duration"]) and asset["duration"] >= 0):
+        raise ValueError("子母畫面素材尺寸無效")
+    if not (math.isfinite(w) and 0.05 <= w <= 1):
+        raise ValueError("子母畫面寬度 w 需為 0.05–1（畫面寬度比例）")
+    if not (math.isfinite(offset) and offset >= 0 and math.isfinite(volume) and 0 <= volume <= 1):
+        raise ValueError("offset 需 ≥ 0、volume 需為 0–1")
+    shape = o.get("shape", "rounded")
+    if shape not in SHAPES:
+        raise ValueError(f"shape 需為 {'/'.join(SHAPES)}")
+    border = o.get("border", "white")
+    if border != "none" and border not in COLORS:
+        raise ValueError(f"border 需為 none 或 {'/'.join(COLORS)}")
+    layer = o.get("layer", "screen")
+    if layer not in ("content", "screen"):
+        raise ValueError("layer 需為 content 或 screen")
+    out = {"asset": asset, "w": w, "offset": offset, "volume": volume, "shape": shape, "border": border,
+           "shadow": o.get("shadow", True) is not False, "loop": o.get("loop") is True, "layer": layer}
+    out.pop("color", None)
+    return out
+
+
+def media_geometry(o: dict, src_w: int, src_h: int) -> tuple[int, int, int, int, int]:
+    """子母畫面在主畫面（原解析度像素）上的位置與大小：(left, top, width, height, 圓角半徑)。
+    與前端 overlay.ts 的 mediaGeometry 相同公式。"""
+    a = o["asset"]
+    pw = max(2, round(o["w"] * src_w / 2) * 2)
+    ph = pw if o["shape"] == "circle" else max(2, round(pw * a["height"] / a["width"] / 2) * 2)
+    radius = pw // 2 if o["shape"] == "circle" else (round(16 * src_h / 1080) if o["shape"] == "rounded" else 0)
+    return round(o["x"] * src_w), round(o["y"] * src_h), pw, ph, radius
+
+
+def media_mask(o: dict, src_w: int, src_h: int) -> Image.Image | None:
+    """圓角／圓形的透明遮罩（L 模式，白=顯示）；直角回 None。"""
+    _, _, pw, ph, radius = media_geometry(o, src_w, src_h)
+    if not radius:
+        return None
+    m = Image.new("L", (pw * SS, ph * SS), 0)
+    ImageDraw.Draw(m).rounded_rectangle([0, 0, pw * SS - 1, ph * SS - 1], radius=radius * SS, fill=255)
+    return m.resize((pw, ph), Image.LANCZOS)
+
+
+def media_decor(o: dict, src_w: int, src_h: int) -> tuple[tuple[Image.Image, int, int] | None, tuple[Image.Image, int, int] | None]:
+    """子母畫面的陰影（墊在下面）與外框（蓋在上面）貼圖：((圖, left, top) | None, (圖, left, top) | None)。"""
+    left, top, pw, ph, radius = media_geometry(o, src_w, src_h)
+    u = src_h / 1080
+    under = over = None
+    if o.get("shadow", True):
+        pad = round(30 * u)
+        img = Image.new("RGBA", (pw + pad * 2, ph + pad * 2), (0, 0, 0, 0))
+        ImageDraw.Draw(img).rounded_rectangle([pad, pad + round(8 * u), pad + pw, pad + ph + round(8 * u)],
+                                              radius=max(radius, 1), fill=(0, 0, 0, 150))
+        under = (img.filter(ImageFilter.GaussianBlur(max(1, 14 * u))), left - pad, top - pad)
+    if o.get("border", "white") != "none":
+        bw = max(2, round(5 * u))
+        img = Image.new("RGBA", ((pw + bw * 2) * SS, (ph + bw * 2) * SS), (0, 0, 0, 0))
+        ImageDraw.Draw(img).rounded_rectangle([0, 0, img.width - 1, img.height - 1], radius=(radius + bw) * SS if radius else 0,
+                                              outline=COLORS[o["border"]] + (255,), width=bw * SS)
+        over = (img.resize((pw + bw * 2, ph + bw * 2), Image.LANCZOS), left - bw, top - bw)
+    return under, over
+
+
 def is_content(o: dict) -> bool:
-    """內容層跟著畫面縮放；標題固定在畫面上；HTML 動畫依 layer 決定。"""
-    if o["kind"] == "html":
+    """內容層跟著畫面縮放；標題固定在畫面上；HTML 動畫與子母畫面依 layer 決定。"""
+    if o["kind"] in ("html", "media"):
         return o.get("layer") == "content"
     return o["kind"] in CONTENT_KINDS
 

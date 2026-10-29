@@ -3,7 +3,9 @@
    外觀只由後端 backend/services/overlay.py 畫成透明貼圖（預覽與匯出用同一張圖）；
    這裡負責驗證與進出場動畫，公式與後端 anim_filters / anim_state 相同。 */
 
-export type OverlayKind = 'box' | 'arrow' | 'spotlight' | 'step' | 'title' | 'html';
+export type OverlayKind = 'box' | 'arrow' | 'spotlight' | 'step' | 'title' | 'html' | 'media';
+/** 子母畫面素材（存在 uploads/assets；疊加層只記中繼資料） */
+export interface OverlayAsset { id: string; type: 'image' | 'video'; filename: string; url: string; width: number; height: number; duration: number; hasAudio?: boolean }
 export type OverlayColor = 'red' | 'yellow' | 'blue' | 'green' | 'white';
 export type ArrowFrom = 'right' | 'left' | 'top' | 'bottom' | 'top-right' | 'top-left' | 'bottom-right' | 'bottom-left';
 export type TitlePosition = 'bottom-left' | 'bottom-center' | 'top-left' | 'top-center';
@@ -31,16 +33,39 @@ export interface Overlay {
     position?: TitlePosition;
     /** 自訂 HTML 動畫（kind = html）：AI 撰寫，設計畫面高 1080 px、寬依素材比例；時間由 LJ Cut 控制 */
     html?: string;
-    /** HTML 動畫圖層：content 跟著畫面縮放、screen 固定在畫面上（預設 screen） */
+    /** HTML 動畫與子母畫面的圖層：content 跟著畫面縮放、screen 固定在畫面上（預設 screen） */
     layer?: 'content' | 'screen';
+    /** 子母畫面（kind = media）：素材、寬度（畫面寬比例；高度依素材比例）、影片起播秒數、循環、音量 0–1、形狀、外框、陰影 */
+    asset?: OverlayAsset;
+    offset?: number;
+    loop?: boolean;
+    volume?: number;
+    shape?: 'rect' | 'rounded' | 'circle';
+    border?: OverlayColor | 'none';
+    shadow?: boolean;
 }
 
-export const OVERLAY_KINDS: OverlayKind[] = ['box', 'arrow', 'spotlight', 'step', 'title', 'html'];
+export const OVERLAY_KINDS: OverlayKind[] = ['box', 'arrow', 'spotlight', 'step', 'title', 'html', 'media'];
 /** 介面「＋ 加入」可直接新增的模板（HTML 動畫由 AI 撰寫） */
 export const TEMPLATE_KINDS: OverlayKind[] = ['box', 'arrow', 'spotlight', 'step', 'title'];
-export const OVERLAY_LABEL: Record<OverlayKind, string> = { box: '醒目框', arrow: '箭頭', spotlight: '聚光燈', step: '步驟', title: '標題', html: 'HTML 動畫' };
-/** 內容層會跟著畫面縮放一起放大；標題固定在畫面上；HTML 動畫依 layer */
-export const isContentOverlay = (o: Overlay) => o.kind === 'html' ? o.layer === 'content' : o.kind !== 'title';
+export const OVERLAY_LABEL: Record<OverlayKind, string> = { box: '醒目框', arrow: '箭頭', spotlight: '聚光燈', step: '步驟', title: '標題', html: 'HTML 動畫', media: '子母畫面' };
+/** 內容層會跟著畫面縮放一起放大；標題固定在畫面上；HTML 動畫與子母畫面依 layer */
+export const isContentOverlay = (o: Overlay) => o.kind === 'html' || o.kind === 'media' ? o.layer === 'content' : o.kind !== 'title';
+
+/** 子母畫面在主畫面（原解析度像素）上的位置：與後端 overlay.media_geometry 相同公式 */
+export function mediaGeometry(o: Overlay, srcW: number, srcH: number) {
+    const a = o.asset!;
+    const pw = Math.max(2, Math.round((o.w ?? 0.3) * srcW / 2) * 2);
+    const ph = o.shape === 'circle' ? pw : Math.max(2, Math.round(pw * a.height / a.width / 2) * 2);
+    const radius = o.shape === 'circle' ? Math.floor(pw / 2) : (o.shape ?? 'rounded') === 'rounded' ? Math.round(16 * srcH / 1080) : 0;
+    return { left: Math.round(o.x * srcW), top: Math.round(o.y * srcH), width: pw, height: ph, radius };
+}
+/** 子母畫面影片在主素材時間 t 應顯示的素材秒數（循環或停在最後一格） */
+export function mediaTime(o: Overlay, t: number): number {
+    const dur = o.asset?.duration ?? 0;
+    const pos = (o.offset ?? 0) + (t - o.start);
+    return o.loop && dur > 0 ? ((pos % dur) + dur) % dur : Math.min(Math.max(0, pos), Math.max(0, dur - 0.05));
+}
 export const HTML_LIMITS = { maxChars: 200_000, maxSeconds: 60 };
 
 const COLORS = ['red', 'yellow', 'blue', 'green', 'white'];
@@ -59,6 +84,19 @@ export function checkOverlays(list: unknown, duration: number): string | null {
         ids.add(o.id);
         if (![o.start, o.end, o.x, o.y].every(finite)) return '疊加層數值無效';
         if (o.start < 0 || o.end > duration + 1e-6 || o.end - o.start < 0.3) return '疊加層需在素材範圍內且至少 0.3 秒';
+        if (o.kind === 'media') {
+            const a = o.asset;
+            if (!a || typeof a.id !== 'string' || !/^a_[0-9a-f]{12}$/.test(a.id) || (a.type !== 'image' && a.type !== 'video')
+                || !(a.width > 0 && a.height > 0) || !(a.duration >= 0)) return '子母畫面需提供 asset（先匯入圖片／影片）';
+            if (o.x < 0 || o.x > 1 || o.y < 0 || o.y > 1) return '子母畫面位置 x/y 需為 0–1';
+            if (o.w !== undefined && !(o.w >= 0.05 && o.w <= 1)) return '子母畫面寬度 w 需為 0.05–1';
+            if (o.offset !== undefined && !(o.offset >= 0)) return 'offset 需 ≥ 0';
+            if (o.volume !== undefined && !(o.volume >= 0 && o.volume <= 1)) return 'volume 需為 0–1';
+            if (o.shape !== undefined && !['rect', 'rounded', 'circle'].includes(o.shape)) return 'shape 需為 rect/rounded/circle';
+            if (o.border !== undefined && o.border !== 'none' && !COLORS.includes(o.border)) return 'border 需為 none 或顏色';
+            if (o.layer !== undefined && o.layer !== 'content' && o.layer !== 'screen') return 'layer 需為 content 或 screen';
+            continue;
+        }
         if (o.kind === 'html') {
             if (typeof o.html !== 'string' || !o.html.trim() || o.html.length > HTML_LIMITS.maxChars) return `HTML 動畫需提供 html（最多 ${HTML_LIMITS.maxChars / 1000}K 字元）`;
             if (o.end - o.start > HTML_LIMITS.maxSeconds) return `HTML 動畫每段最多 ${HTML_LIMITS.maxSeconds} 秒`;
@@ -86,6 +124,9 @@ export function checkOverlays(list: unknown, duration: number): string | null {
 /** 某個來源時間的動畫狀態：不透明度、彈出縮放、標題滑入（以 1080p 為基準的像素，負值往左） */
 export function overlayAnim(o: Overlay, t: number): { opacity: number; scale: number; slide: number } {
     if (o.kind === 'html') return { opacity: 1, scale: 1, slide: 0 };   // HTML 自己控制進出場
+    if (o.kind === 'media') {   // 子母畫面：只淡入淡出
+        return { opacity: Math.min(Math.min(1, Math.max(0, (t - o.start) / FADE_IN)), Math.min(1, Math.max(0, (o.end - t) / FADE_OUT))), scale: 1, slide: 0 };
+    }
     const k = Math.min(1, Math.max(0, (t - o.start) / FADE_IN));
     const out = Math.min(1, Math.max(0, (o.end - t) / FADE_OUT));
     const smooth = k * k * (3 - 2 * k);

@@ -297,3 +297,25 @@ test('html overlays: add/edit layer, validation, no template animation', async (
     bad({ type: 'add_overlay', kind: 'html', start: 1, end: 4, html: 'x', layer: 'top' });
     bad({ type: 'add_overlay', kind: 'html', start: 0, end: 7.9, html: 'x'.repeat(200_001) });
 });
+
+test('media (picture-in-picture) overlays: geometry matches backend, time mapping, validation', async () => {
+    const { mediaGeometry, mediaTime, overlayAnim } = await import('../src/overlay');
+    const asset = { id: 'a_0123456789ab', type: 'video' as const, filename: 'cam.mp4', url: '/uploads/assets/a_0123456789ab.mp4', width: 1280, height: 720, duration: 5 };
+    const p:any = project(); p.mediaItems[0].info.width = 1920; p.mediaItems[0].info.height = 1080;
+    const op = (o:any) => ({ trackId: 'video-main' as const, timeDomain: 'source' as const, ...o });
+    const ids = (() => { let i = 0; return () => `m${i++}`; })();
+    const d = evaluatePlan(p, 0, { ...plan(), operations: [op({ type: 'add_overlay', kind: 'media', start: 1, end: 7, x: 0.6, y: 0.6, asset, offset: 2 })] } as any, ids);
+    const m = d.next.mediaItems[0].overlays![0];
+    assert.equal(m.w, 0.3);
+    assert.deepEqual(mediaGeometry(m, 1920, 1080), { left: 1152, top: 648, width: 576, height: 324, radius: 16 });   // 與後端測試同值
+    assert.deepEqual(mediaGeometry({ ...m, shape: 'circle' }, 1920, 1080), { left: 1152, top: 648, width: 576, height: 576, radius: 288 });
+    assert.equal(mediaTime(m, 2), 3);                       // offset 2 + (2-1)
+    assert.ok(Math.abs(mediaTime(m, 6.9) - 4.95) < 1e-9);   // 超過素材長度：停在最後一格
+    assert.ok(Math.abs(mediaTime({ ...m, loop: true }, 6) - 2) < 1e-9);   // 循環：(2+5) % 5
+    assert.deepEqual(overlayAnim(m, 1), { opacity: 0, scale: 1, slide: 0 });
+    const bad = (o:any) => assert.throws(() => evaluatePlan(p, 0, { ...plan(), operations: [op(o)] } as any, ids), { code: 'INVALID_OVERLAY' });
+    bad({ type: 'add_overlay', kind: 'media', start: 1, end: 3 });
+    bad({ type: 'add_overlay', kind: 'media', start: 1, end: 3, asset: { ...asset, id: '../etc' } });
+    bad({ type: 'add_overlay', kind: 'media', start: 1, end: 3, asset, volume: 2 });
+    bad({ type: 'add_overlay', kind: 'media', start: 1, end: 3, asset, shape: 'star' });
+});

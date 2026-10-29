@@ -55,7 +55,8 @@ def _draw_grid(tile, font):
 
 def contact_sheet(media: Path, times: list[float], out: Path, labels: list[str] | None = None,
                   thumb_width: int = 384, cols: int = 4, grid: bool = False,
-                  zooms: list | None = None, zoom_mode: str = "box", overlays: list | None = None) -> dict:
+                  zooms: list | None = None, zoom_mode: str = "box", overlays: list | None = None,
+                  asset_root: Path | None = None) -> dict:
     """指定時間點各抓一格，拼成一張附時間標籤的縮圖網格。
 
     grid=True 疊上 10% 座標格線（給 AI 判斷放大中心 x/y）；
@@ -90,6 +91,9 @@ def contact_sheet(media: Path, times: list[float], out: Path, labels: list[str] 
                 base = tile.convert("RGBA")
                 screen_layer = Image.new("RGBA", base.size, (0, 0, 0, 0))
                 for o in layer_list:
+                    if o["kind"] == "media":
+                        _composite_media(base if overlay_service.is_content(o) else screen_layer, o, t, asset_root)
+                        continue
                     if o["kind"] == "html":
                         # HTML 動畫：用無頭瀏覽器渲染該時間點的一格（整個拼圖共用一個瀏覽器）
                         if html_renderer is None:
@@ -142,6 +146,47 @@ def contact_sheet(media: Path, times: list[float], out: Path, labels: list[str] 
     out.parent.mkdir(parents=True, exist_ok=True)
     sheet.save(out, "JPEG", quality=85)
     return {"path": str(out), "times": [round(t, 3) for t in times], "grid": [rows, cols]}
+
+
+def _composite_media(canvas, o: dict, t: float, asset_root: Path | None):
+    """把子母畫面（素材那一格＋遮罩＋陰影／外框）疊到畫布上，與匯出同一套尺寸與繪製。"""
+    from io import BytesIO
+    from . import overlay as overlay_service, asset as asset_service
+    W, H = canvas.size
+    left, top, pw, ph, radius = overlay_service.media_geometry(o, W, H)
+    under, over = overlay_service.media_decor(o, W, H)
+    if under:
+        _paste(canvas, *under)
+    path = asset_service.find(asset_root, o["asset"]["id"]) if asset_root else None
+    if path is None:
+        frame = Image.new("RGBA", (pw, ph), (60, 60, 60, 255))
+    else:
+        pos = 0.0
+        if o["asset"]["type"] == "video":
+            dur = o["asset"]["duration"] or 0
+            pos = o["offset"] + (t - o["start"])
+            pos = (pos % dur) if (o.get("loop") and dur) else min(pos, max(0.0, dur - 0.05))
+        r = _run(["ffmpeg", "-v", "error", "-ss", f"{max(0.0, pos):.3f}", "-i", str(path), "-frames:v", "1",
+                  "-f", "image2pipe", "-vcodec", "png", "-"])
+        frame = Image.open(BytesIO(r.stdout)).convert("RGBA") if r.returncode == 0 and r.stdout else Image.new("RGBA", (pw, ph), (60, 60, 60, 255))
+        if o["shape"] == "circle":
+            s = min(frame.width, frame.height)
+            frame = frame.crop(((frame.width - s) // 2, (frame.height - s) // 2, (frame.width + s) // 2, (frame.height + s) // 2))
+        frame = frame.resize((pw, ph), Image.LANCZOS)
+    mask = overlay_service.media_mask(o, W, H)
+    if mask is not None:
+        frame.putalpha(mask)
+    _paste(canvas, frame, left, top)
+    if over:
+        _paste(canvas, *over)
+
+
+def _paste(canvas, img, x: int, y: int):
+    """alpha 合成；貼圖超出畫布邊緣時先裁掉超出部分（alpha_composite 不接受負座標）。"""
+    l, t = max(0, -x), max(0, -y)
+    r, b = min(img.width, canvas.width - x), min(img.height, canvas.height - y)
+    if r > l and b > t:
+        canvas.alpha_composite(img.crop((l, t, r, b)), (x + l, y + t))
 
 
 def silences(media: Path, noise_db: float = -35.0, min_silence: float = 0.8) -> dict:

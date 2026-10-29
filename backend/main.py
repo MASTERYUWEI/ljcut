@@ -340,6 +340,7 @@ async def export_timeline(body: dict = Body(default={})):
             "transition_in": clip.get('transition_in'),
             "zooms": clip.get('zooms') or [],
             "overlays": clip.get('overlays') or [],
+            "asset_root": str(UPLOAD_DIR),
         })
 
         # 字幕資訊（含時間偏移）
@@ -473,6 +474,57 @@ async def overlay_render(body: dict = Body(default={})):
     info = await asyncio.to_thread(overlay_service.render_cached, o, w, h, OUTPUT_DIR / "overlays")
     return {"url": f"/outputs/overlays/{info['file']}", "left": info["left"], "top": info["top"],
             "width": info["width"], "height": info["height"]}
+
+
+@app.post("/api/asset")
+async def upload_asset(file: UploadFile = File(...)):
+    """介面用：上傳圖片／影片到子母畫面素材庫。"""
+    from services import asset as asset_service
+    name = (file.filename or "").replace("\\", "/").rsplit("/", 1)[-1]
+    ext = Path(name).suffix.lower()
+    if ext not in asset_service.IMAGE_EXT | asset_service.VIDEO_EXT:
+        raise HTTPException(400, "子母畫面支援 PNG／JPG／WebP／BMP 圖片與 MP4／MOV／MKV／WebM／AVI／WMV／GIF 影片")
+    tmp = UPLOAD_DIR / f".asset-{uuid.uuid4().hex}{ext}"
+    try:
+        with open(tmp, "wb") as f:
+            shutil.copyfileobj(file.file, f)
+        return await asyncio.to_thread(asset_service.import_file, tmp, UPLOAD_DIR, name)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+@app.post("/api/overlay/media-decor")
+async def media_decor(body: dict = Body(default={})):
+    """預覽用：子母畫面的位置、陰影與外框貼圖（與匯出同一個繪製程式）。"""
+    try:
+        o = overlay_service.sanitize([body.get("overlay")])[0]
+        w, h = int(body.get("width", 0)), int(body.get("height", 0))
+    except (ValueError, TypeError, IndexError) as e:
+        raise HTTPException(400, str(e))
+    if o["kind"] != "media" or not (16 <= w <= 8192 and 16 <= h <= 8192):
+        raise HTTPException(400, "需為子母畫面與有效畫面尺寸")
+
+    def build():
+        import hashlib, json as _json
+        left, top, pw, ph, radius = overlay_service.media_geometry(o, w, h)
+        out = {"left": left, "top": top, "width": pw, "height": ph, "radius": radius}
+        under, over = overlay_service.media_decor(o, w, h)
+        cache = OUTPUT_DIR / "overlays"
+        cache.mkdir(parents=True, exist_ok=True)
+        key = hashlib.sha1(_json.dumps([o["w"], o["x"], o["y"], o["shape"], o["border"], o["shadow"],
+                                        o["asset"]["width"], o["asset"]["height"], w, h]).encode()).hexdigest()[:20]
+        for name, deco in (("under", under), ("over", over)):
+            if deco is None:
+                continue
+            f = cache / f"media_{key}_{name}.png"
+            if not f.exists():
+                deco[0].save(f)
+            out[name] = {"url": f"/outputs/overlays/{f.name}", "left": deco[1], "top": deco[2],
+                         "width": deco[0].width, "height": deco[0].height}
+        return out
+    return await asyncio.to_thread(build)
 
 
 @app.post("/api/overlay/html-doc")
