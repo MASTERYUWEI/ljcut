@@ -20,6 +20,7 @@ const GROUPS: { title: string; keys: [string, string][] }[] = [
     { title: '剪輯', keys: [
         ['S', '在播放線分割片段'], ['Delete', '刪除選取的片段、標註或縮放'],
         ['Ctrl + Z', '復原'], ['Ctrl + Shift + Z ／ Ctrl + Y', '重做'],
+        ['Ctrl + S', '儲存專案'], ['Ctrl + Shift + S', '另存新檔'],
         ['Shift + F10 或右鍵', '片段選單（分割、刪除、速度）'], ['Ctrl + ＋ ／ －', '放大／縮小時間軸'],
     ] },
     { title: '標註與縮放', keys: [

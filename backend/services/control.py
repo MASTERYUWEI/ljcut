@@ -1,6 +1,6 @@
 """Optional loopback command mailbox. The editor, not this service, owns the timeline.
 
-Enable with LJCUT_CONTROL_WORKSPACE. Paths are relative to that workspace;
+Enabled by default (see default_workspace); override with LJCUT_CONTROL_WORKSPACE, empty disables. Paths are relative to that workspace;
 project bundles copy media out of the application's disposable uploads directory.
 """
 import asyncio
@@ -76,9 +76,19 @@ def project_payload(p):
     return p
 
 
+def default_workspace() -> Path:
+    if os.getenv("LJCUT_DATA_DIR"):                       # 安裝版（打包後端）
+        return Path.home() / "Documents" / "LJCUT 專案"
+    return Path(__file__).resolve().parents[2] / "app_data" / "control"
+
+
 class LocalControl:
     def __init__(self, uploads: Path):
         configured = os.getenv("LJCUT_CONTROL_WORKSPACE")
+        # 沒指定時也啟用，讓一般使用者可以存檔／開啟專案：
+        # 安裝版存到「文件\LJCUT 專案」；開發模式沿用 scripts 的 app_data/control。設成空字串可關閉。
+        if configured is None:
+            configured = str(default_workspace())
         self.root = Path(configured).resolve() if configured else None
         self.uploads = uploads.resolve()
         self.token = secrets.token_urlsafe(32)

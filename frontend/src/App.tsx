@@ -114,6 +114,7 @@ export default function App() {
     const [showHelp, setShowHelp] = useState(false);
     const [overlayMenuOpen, setOverlayMenuOpen] = useState(false);
     const overlayMenuRef = useRef<HTMLDivElement>(null);
+    const [overlayMenuPos, setOverlayMenuPos] = useState<{ left: number; bottom: number }>({ left: 0, bottom: 0 });
     const [settings, setSettings] = useState<AppSettings>({ outputDir: '', srtDir: '' });
     const [isRecording, setIsRecording] = useState(false);
     type EncoderInfo = { hw: boolean; name: string; nvenc_active: boolean | null };
@@ -395,7 +396,7 @@ export default function App() {
         }
     }, []);
 
-    // ── 上傳（多檔，加入媒體庫） ──
+    // ── 匯入（多檔，加入媒體庫；時間軸空的時候第一支自動放上去） ──
     const handleUpload = useCallback(async (file: File) => {
         setIsUploading(true);
         try {
@@ -409,13 +410,19 @@ export default function App() {
                 thumbnailUrl: api.getThumbnailUrl(result.file_id),
             };
             addMedia(item);
+            // 時間軸還是空的：第一支素材直接放上去（不必再拖曳）
+            if (useStore.getState().timelineClips.length === 0 && item.info.duration > 0) {
+                pushUndo();
+                addClip({ id: crypto.randomUUID(), mediaId: item.id, trackIndex: 0, startTime: 0, trimStart: 0,
+                    trimEnd: item.info.duration, speed: 1, duration: item.info.duration, segments: [] });
+            }
             // 背景載入波形
             api.getWaveform(result.file_id).then(peaks => {
                 updateMedia(result.file_id, { waveformPeaks: peaks });
             }).catch(() => { });
-        } catch (err) { notify(`上傳失敗: ${err}`); }
+        } catch (err) { notify(`匯入失敗: ${err}`); }
         finally { setIsUploading(false); }
-    }, [addMedia, updateMedia, setIsUploading]);
+    }, [addMedia, addClip, updateMedia, setIsUploading]);
 
     // ── 螢幕錄影 ──
     const IS_TAURI = !!(window as any).__TAURI_INTERNALS__;
@@ -2452,7 +2459,7 @@ export default function App() {
                                     role="button" tabIndex={0} aria-label="新增素材：選擇影片或音訊檔"
                                     onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileInputRef.current?.click(); } }}
                                     onDrop={handleDrop} onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}>
-                                    <p>{isUploading ? '上傳中...' : '點擊新增 或 拖放檔案'}</p>
+                                    <p>{isUploading ? '匯入中…' : '點一下匯入影片，或把檔案拖進來'}</p>
                                     <input ref={fileInputRef} type="file" accept="video/*,audio/*" hidden multiple
                                         onChange={(e) => {
                                             const files = e.target.files;
@@ -2551,7 +2558,7 @@ export default function App() {
                                         </div>
                                     </>
                                 )}
-                                {!primaryMedia && <div className="empty-state" style={{ padding: 20 }}><p>請先上傳媒體</p></div>}
+                                {!primaryMedia && <div className="empty-state" style={{ padding: 20 }}><p>請先匯入影片</p></div>}
 
                             </>
                         )}
@@ -2595,7 +2602,7 @@ export default function App() {
                             </>
                         ) : (
                             <div className="video-placeholder">
-                                <div className="icon"><Film aria-hidden /></div><p>請上傳影片或音頻</p>
+                                <div className="icon"><Film aria-hidden /></div><p>匯入影片或音訊開始剪輯</p><p className="empty-sub">點左側「媒體」或直接把檔案拖進來；匯入後會自動放上時間軸</p>
                             </div>
                         )}
 
@@ -2706,7 +2713,7 @@ export default function App() {
                                     <Captions aria-hidden />{burnSubs ? '燒入' : '不燒入'}
                                 </button>
                             )}
-                            <span className="time" style={{ fontSize: 12 }} title="時間軸縮放比例（Ctrl+＋／－）"><ZoomIn aria-hidden style={{ width: 12, height: 12, verticalAlign: -2 }} /> {Math.round(zoom * 100)}%</span>
+                            <span className="time" style={{ fontSize: 12 }} title="時間軸比例（Ctrl+＋／－）" aria-label={`時間軸比例 ${Math.round(zoom * 100)}%`}><ZoomIn aria-hidden style={{ width: 12, height: 12, verticalAlign: -2 }} /> {Math.round(zoom * 100)}%</span>
                             <button className="btn" onClick={() => setZoom(z => Math.max(z * 0.8, 0.1))} style={{ padding: '4px 8px', fontSize: 12 }} aria-label="縮小時間軸" title="縮小時間軸（Ctrl+－）">−</button>
                             <button className="btn" onClick={() => setZoom(z => Math.min(z * 1.25, 50))} style={{ padding: '4px 8px', fontSize: 12 }} aria-label="放大時間軸" title="放大時間軸（Ctrl+＋）">+</button>
                         </div>
@@ -2765,8 +2772,10 @@ export default function App() {
                                                         else if (e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) {
                                                             e.preventDefault(); e.stopPropagation();
                                                             const r = e.currentTarget.getBoundingClientRect();
+                                                            const area = tracksRef.current?.getBoundingClientRect();
+                                                            const visibleLeft = Math.max(r.left, (area?.left ?? 0) + LABEL_W);
                                                             speedUndoPushedRef.current = false;
-                                                            setSpeedMenu({ clipId: clip.id, x: r.left + 8, y: r.bottom, splitTime: timelinePosRef.current });
+                                                            setSpeedMenu({ clipId: clip.id, x: visibleLeft + 8, y: r.bottom, splitTime: timelinePosRef.current });
                                                         }
                                                     }}
                                                     style={{ left, width }}
@@ -2795,7 +2804,7 @@ export default function App() {
                                             );
                                         })}
                                         {timelineClips.length === 0 && (
-                                            <div className="track-drop-hint">從左側媒體庫拖放媒體到此號</div>
+                                            <div className="track-drop-hint">從左側媒體庫把影片拖到這裡</div>
                                         )}
                                     </div>
                                 </div>
@@ -2865,9 +2874,14 @@ export default function App() {
                                                 <span className="add-menu-wrap">
                                                     <button className="zoom-mini-btn" aria-haspopup="menu" aria-expanded={overlayMenuOpen}
                                                         aria-label="在播放頭加入標註" title="在播放頭加入 3 秒的標註"
-                                                        onClick={(e) => { e.stopPropagation(); setOverlayMenuOpen(o => !o); }}><Plus aria-hidden /></button>
+                                                        onClick={(e) => {
+                                                            e.stopPropagation();
+                                                            const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                                                            setOverlayMenuPos({ left: r.left, bottom: window.innerHeight - r.top + 4 });
+                                                            setOverlayMenuOpen(o => !o);
+                                                        }}><Plus aria-hidden /></button>
                                                     {overlayMenuOpen && (
-                                                        <div className="add-menu" role="menu" aria-label="加入標註"
+                                                        <div className="add-menu" role="menu" aria-label="加入標註" style={overlayMenuPos}
                                                             ref={overlayMenuRef}
                                                             onKeyDown={(e) => {
                                                                 const items = Array.from(e.currentTarget.querySelectorAll<HTMLElement>('[role="menuitem"]'));
@@ -3241,7 +3255,7 @@ export default function App() {
                     canSplit={canSplitMenuClip}
                     splitTime={splitT}
                     onSplit={() => handleSplitClip(speedMenuClip.id, splitT)}
-                    onDelete={() => handleClipDelete(speedMenuClip.id)}
+                    onDelete={() => { handleClipDelete(speedMenuClip.id); toast('info', '已刪除片段，按 Ctrl+Z 可復原'); }}
                     onSetSpeed={(id, sp) => {
                         if (!speedUndoPushedRef.current) { speedUndoPushedRef.current = true; pushUndo(); }
                         setClipSpeed(id, sp);

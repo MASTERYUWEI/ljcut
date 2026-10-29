@@ -313,3 +313,16 @@ class ControlTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class DefaultWorkspaceTests(unittest.TestCase):
+    def test_control_enabled_without_env(self):
+        """沒設 LJCUT_CONTROL_WORKSPACE 也能存檔：安裝版用文件資料夾，開發用 app_data/control；空字串可關閉。"""
+        from services import control as ctl
+        env = {k: v for k, v in os.environ.items() if k not in ('LJCUT_CONTROL_WORKSPACE', 'LJCUT_DATA_DIR')}
+        with patch.dict(os.environ, env, clear=True):
+            self.assertEqual(ctl.default_workspace().parts[-2:], ('app_data', 'control'))
+        with patch.dict(os.environ, {**env, 'LJCUT_DATA_DIR': 'x'}, clear=True):
+            self.assertEqual(ctl.default_workspace().name, 'LJCUT 專案')
+        with patch.dict(os.environ, {**env, 'LJCUT_CONTROL_WORKSPACE': ''}, clear=True):
+            self.assertIsNone(ctl.LocalControl(Path(tempfile.mkdtemp())).root)

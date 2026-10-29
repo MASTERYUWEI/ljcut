@@ -39,6 +39,7 @@ export function AiStatus() {
             title="AI 助理的修改紀錄（每個修改都可按 Ctrl+Z 復原）">
             <span className="ai-dot" aria-hidden /><Bot aria-hidden />
             <span className="ai-status-text">{summary}</span>
+            <span className="ai-status-short" aria-hidden>{aiActivity.log.length ? `AI · ${aiActivity.log.length}` : 'AI'}</span>
         </button>
         <span className="sr-only" role="status">{aiActivity.text ? summary : ''}</span>
         {open && <div className="ai-log" role="dialog" aria-label="AI 助理修改紀錄">

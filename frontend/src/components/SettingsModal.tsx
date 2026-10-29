@@ -293,7 +293,7 @@ export function SettingsModal({ settings, setSettings, onClose }: Props) {
                             </div>
                             {modelInfo.update_available ? (
                                 <button className="btn" disabled={switching} onClick={() => switchModel(modelInfo.best)}
-                                    style={{ justifyContent: 'center', color: 'var(--accent-amber)' }}
+                                    style={{ justifyContent: 'center' }}
                                     title="Google 已推出較新的 Flash 模型，點擊切換並儲存">
                                     {switching ? '切換中…' : <><Sparkles aria-hidden />Google 有新模型 {modelInfo.best}，點此切換</>}
                                 </button>

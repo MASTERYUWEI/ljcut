@@ -385,7 +385,7 @@ body {
 .video-controls .time {
   font-size: 12px;
   font-family: var(--font-mono);
-  color: var(--accent-amber);
+  color: var(--fg-subtext1);
   letter-spacing: 0.5px;
 }
 
@@ -2890,7 +2890,9 @@ input[type="number"]:focus-visible, input[type="text"]:focus-visible, textarea:f
   .ai-status.recent .ai-dot { animation: ai-pulse 1s ease-in-out 3; }
 }
 @keyframes ai-pulse { 50% { opacity: 0.3; } }
+.ai-status-short { display: none; }
 @media (max-width: 1180px) {
+  .ai-status-short { display: inline; }
   .ai-status-text { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
 }
 
@@ -2960,7 +2962,7 @@ button.ai-status:hover { border-color: var(--accent-teal); }
 /* ── 標註軌「＋」選單（與縮放軌同一種按鈕） ── */
 .add-menu-wrap { position: relative; display: inline-flex; }
 .add-menu {
-  position: absolute; left: 0; bottom: calc(100% + 4px); z-index: 40;
+  position: fixed; z-index: 60;
   min-width: 180px; padding: 4px; border-radius: 8px;
   border: 1px solid var(--bg-surface2); background: var(--bg-mantle);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45); display: grid;
@@ -2970,3 +2972,8 @@ button.ai-status:hover { border-color: var(--accent-teal); }
   background: transparent; color: var(--fg-subtext1); font-size: 12px; cursor: pointer;
 }
 .add-menu-item:hover, .add-menu-item:focus-visible { background: var(--bg-surface1); color: var(--fg-text); }
+
+/* YouTube 對話框：欄位標籤與匯出對話框一致 */
+[aria-labelledby="yt-upload-title"] label { font-size: 13px; color: var(--fg-subtext1); }
+[aria-labelledby="yt-upload-title"] h2 { font-size: 16px; }
+.empty-sub { font-size: 12px; color: var(--fg-subtext0); margin-top: 6px; }

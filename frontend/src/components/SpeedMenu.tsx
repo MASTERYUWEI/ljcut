@@ -73,9 +73,6 @@ export function SpeedMenu({ clip, x, y, canSplit, splitTime, onSplit, onDelete, 
                     min={1} max={5} step={0.1}
                     value={clip.speed}
                     onChange={(e) => onSetSpeed(clip.id, parseFloat(e.target.value))} />
-                <div className="speed-menu-labels">
-                    <span>1x</span><span>2x</span><span>3x</span><span>4x</span><span>5x</span>
-                </div>
                 <div className="speed-menu-presets">
                     {[1, 1.5, 2, 3, 5].map(s => (
                         <button key={s}
