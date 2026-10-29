@@ -1,6 +1,6 @@
 /* ── LJCUT 主應用 ── */
 
-import { Clapperboard, Upload, CircleDot, Settings, Play, Pause, Square, Video, FolderOpen, Film, ZoomIn, PenLine, Captions, Plus, Sparkles, SpellCheck, Brain, Copy, Check, Download, X, Image as ImageIcon, ArrowUpRight, Type, Code, Focus, ListOrdered, Gauge, Undo2, Redo2, TriangleAlert, CheckCheck } from 'lucide-react';
+import { Clapperboard, Upload, CircleDot, Settings, Play, Pause, Square, Video, FolderOpen, Film, ZoomIn, PenLine, Captions, Plus, Sparkles, SpellCheck, Brain, Copy, Check, Download, X, Image as ImageIcon, ArrowUpRight, Type, Code, Focus, ListOrdered, Gauge, Undo2, Redo2, TriangleAlert, CheckCheck, CircleHelp } from 'lucide-react';
 import { useRef, useCallback, useState, useEffect, useLayoutEffect, useMemo } from 'react';
 import { useStore } from './store';
 import { api, onApiReady, getBase } from './api';
@@ -19,6 +19,7 @@ import { ProjectFileButtons, useControlWorkspace } from './components/ProjectCon
 import { BookendControls } from './components/BookendControls';
 import Toaster from './components/Toaster';
 import { StatusText } from './components/StatusText';
+import { ShortcutHelp } from './components/ShortcutHelp';
 import { OverlayInspector } from './components/OverlayInspector';
 import { notify, toast } from './toast';
 import { useDialog } from './useDialog';
@@ -106,6 +107,7 @@ export default function App() {
     const [isDraggingCue, setIsDraggingCue] = useState(false);
     const [selectedSegIds, setSelectedSegIds] = useState<Set<number>>(new Set());
     const [showSettings, setShowSettings] = useState(false);
+    const [showHelp, setShowHelp] = useState(false);
     const [settings, setSettings] = useState<AppSettings>({ outputDir: '', srtDir: '' });
     const [isRecording, setIsRecording] = useState(false);
     type EncoderInfo = { hw: boolean; name: string; nvenc_active: boolean | null };
@@ -1295,6 +1297,11 @@ export default function App() {
             currentTimeRef.current = mediaTime;
             // 拖拉中不要呼叫 play，避免 seek/play race condition
             loadClipIntoVideo(clip, mediaTime, isPlaying && !isDraggingRef.current);
+            // 暫停時拖動播放頭：字幕清單也標出目前這句（播放中由 tick loop 處理）
+            if (!isPlaying) {
+                const seg = clip.segments.find(s => mediaTime >= s.start && mediaTime <= s.end);
+                if (seg && seg.id !== useStore.getState().activeSegmentId) useStore.getState().setActiveSegment(seg.id);
+            }
         } else if (v) {
             v.pause();
             currentPlayingClipRef.current = null;
@@ -2349,6 +2356,7 @@ export default function App() {
                     </>)}
                     <ProjectFileButtons />
                     <button className="btn" onClick={() => setShowRecSettings(true)}><CircleDot aria-hidden />螢幕錄影</button>
+                    <button className="btn btn-icon" onClick={() => setShowHelp(true)} title="說明與快捷鍵（?）" aria-label="說明與快捷鍵" style={{ padding: '6px 10px' }}><CircleHelp aria-hidden /></button>
                     <button className="btn" onClick={() => setShowSettings(true)} title="設定" aria-label="設定" style={{ padding: '6px 10px' }}><Settings aria-hidden /></button>
                 </div>
             </header>
@@ -2933,7 +2941,7 @@ export default function App() {
                         />
                     )}
                     <div className="subtitle-header">
-                        <h3>字幕</h3>
+                        <h2>字幕</h2>
                         {segments.length > 0 && (
                             <span style={{ fontSize: 12, color: 'var(--fg-subtext0)' }}>{segments.length} 段</span>
                         )}
@@ -2948,20 +2956,6 @@ export default function App() {
                                 <button className="btn st-btn" onClick={handleScanFlow} disabled={isScanningFlow}
                                     title="AI 找出語意不通順的句子，點擊定位手動修改"><Brain aria-hidden />{isScanningFlow ? '掃描中' : '掃語意'}</button>
                             </div>
-                            <div className="st-row">
-                                <button className="btn st-btn" onClick={() => handleCopySubtitles('text')} title="複製全部字幕文字（不含時間碼，貼給 AI 潤稿用）">
-                                    {copyMsg === 'text' ? <><Check aria-hidden />已複製</> : <><Copy aria-hidden />全文</>}</button>
-                                <button className="btn st-btn" onClick={() => handleCopySubtitles('srt')} title="複製完整 SRT 內容（含時間碼）">
-                                    {copyMsg === 'srt' ? <><Check aria-hidden />已複製</> : <><Copy aria-hidden />SRT</>}</button>
-                                <button className="btn st-btn" onClick={handleExportSrt} title="匯出 SRT 檔案到資料夾"><Download aria-hidden />SRT 檔</button>
-                            </div>
-                            <div className="st-row st-split">
-                                <span className="st-label">每段上限</span>
-                                <input type="number" min={5} max={50} value={subtitleStyle.maxCharsPerCue}
-                                    onChange={e => setSubtitleStyle({ maxCharsPerCue: Number(e.target.value) })} />
-                                <span className="st-label">字</span>
-                                <button className="btn st-btn" onClick={handleResplit} title="依上限重新分段（可復原）">重新分段</button>
-                            </div>
                             {(isPolishing || isScanningTypos || isScanningFlow) &&
                                 <div className="progress-bar"><div className="fill loading" style={{ width: '100%' }} /></div>}
                             <div className="st-row">
@@ -2971,6 +2965,23 @@ export default function App() {
                                 <button className="btn st-btn" disabled={!typoFrom} onClick={handleReplaceAll}
                                     title="整條時間軸所有出現處一次取代（Ctrl+Z 可復原）">取代</button>
                             </div>
+                            <details className="st-more">
+                                <summary>複製、匯出 SRT 與重新分段</summary>
+                                <div className="st-row">
+                                    <button className="btn st-btn" onClick={() => handleCopySubtitles('text')} title="複製全部字幕文字（不含時間碼，貼給 AI 潤稿用）">
+                                        {copyMsg === 'text' ? <><Check aria-hidden />已複製</> : <><Copy aria-hidden />全文</>}</button>
+                                    <button className="btn st-btn" onClick={() => handleCopySubtitles('srt')} title="複製完整 SRT 內容（含時間碼）">
+                                        {copyMsg === 'srt' ? <><Check aria-hidden />已複製</> : <><Copy aria-hidden />SRT</>}</button>
+                                    <button className="btn st-btn" onClick={handleExportSrt} title="匯出 SRT 檔案到資料夾"><Download aria-hidden />SRT 檔</button>
+                                </div>
+                                <div className="st-row st-split">
+                                    <span className="st-label">每段上限</span>
+                                    <input type="number" min={5} max={50} value={subtitleStyle.maxCharsPerCue}
+                                        onChange={e => setSubtitleStyle({ maxCharsPerCue: Number(e.target.value) })} />
+                                    <span className="st-label">字</span>
+                                    <button className="btn st-btn" onClick={handleResplit} title="依上限重新分段（可復原）">重新分段</button>
+                                </div>
+                            </details>
                             {typoSuggestions.length > 0 && (
                                 <div className="st-list">
                                     {typoSuggestions.map((t, i) => (
@@ -3119,13 +3130,15 @@ export default function App() {
                 if (speedMenu) { setSpeedMenu(null); return; }
                 if (showExportModal) { setShowExportModal(false); return; }
                 if (showYtUpload) return;   // 由上傳對話框自己處理（上傳中不能關）
+                if (showHelp) { setShowHelp(false); return; }
                 if (showSettings) { setShowSettings(false); return; }
                 if (showRecSettings) { setShowRecSettings(false); return; }
                 if (selectedOverlayId || selectedZoomId) { setSelectedOverlayId(null); setSelectedZoomId(null); }
                 return;
             }
             if (['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName) || el.isContentEditable) return;
-            if (showExportModal || showYtUpload || showSettings || showRecSettings) return;
+            if (showExportModal || showYtUpload || showSettings || showRecSettings || showHelp) return;
+            if (e.key === '?') { e.preventDefault(); setShowHelp(true); return; }
             if (el.closest?.('[role="tablist"], .subtitle-list, .speed-menu, .project-file')) return;   // 這些區塊自己處理方向鍵
             const t = timelinePosRef.current;
             if (e.ctrlKey || e.metaKey) {
@@ -3163,13 +3176,14 @@ export default function App() {
         };
         window.addEventListener('keydown', onKey);
         return () => window.removeEventListener('keydown', onKey);
-    }, [speedMenu, showExportModal, showYtUpload, showSettings, showRecSettings, selectedOverlayId, selectedZoomId,
+    }, [speedMenu, showExportModal, showYtUpload, showSettings, showRecSettings, showHelp, selectedOverlayId, selectedZoomId,
         activeClipId, timelineClips, duration, isPlaying, handleSplitClip, handleClipDelete, runZoomOps, seekTo, togglePlay]);
 
     return (
         <>
             {mainJsx}
             <Toaster />
+            {showHelp && <ShortcutHelp onClose={() => setShowHelp(false)} />}
             {speedMenu && speedMenuClip && (
                 <SpeedMenu
                     clip={speedMenuClip}
@@ -3204,7 +3218,7 @@ export default function App() {
                 <div className="modal-overlay" onClick={() => setShowExportModal(false)}>
                     <div className="modal-box" ref={exportDialogRef} role="dialog" aria-modal="true" aria-labelledby="export-title" onClick={e => e.stopPropagation()} style={{ maxWidth: 430 }}>
                         <div className="modal-header">
-                            <h3 id="export-title">匯出影片</h3>
+                            <h2 id="export-title">匯出影片</h2>
                             <button className="btn" onClick={() => setShowExportModal(false)} style={{ padding: '4px 6px' }} aria-label="關閉" title="關閉（Esc）"><X aria-hidden /></button>
                         </div>
                         <div className="style-row" title="關閉＝匯出乾淨畫面（推薦：YouTube 觀眾用 CC 字幕，之後改錯字免重傳影片）；開啟＝字幕燒進畫面">

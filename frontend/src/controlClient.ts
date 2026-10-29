@@ -2,6 +2,7 @@ import { api, getBase } from './api';
 import { useStore } from './store';
 import { EditError, requireEdit, validateProject, toSourceTime, clippedSegments } from './editCore';
 import { splitLongCues } from './utils';
+import { toast } from './toast';
 import { applyPlan, checkVersion, draftProject, dryRun, dryRunBookends, dryRunTransitions, projectData, readState, redo, replaceProject, requestPreview, undo } from './editSession';
 import type { EditPlan, ProjectData } from './editCore';
 import type { MediaItem } from './types';
@@ -170,6 +171,20 @@ export async function executeCommand(method: string, params: any = {}): Promise<
 }
 
 let started = false;
+// 外部（AI／MCP）改了專案時告訴使用者：改了什麼、可以怎麼復原
+const EXTERNAL_LABEL: Record<string, string> = {
+    undo: 'AI 復原了上一步', redo: 'AI 重做了一步', open: 'AI 開啟了另一個專案',
+    import: 'AI 匯入了素材', transcribe: 'AI 完成字幕辨識',
+};
+function announceExternal(method: string, result: any) {
+    if (method === 'apply') {
+        const n = Array.isArray(result?.changes) ? result.changes.length : 0;
+        toast('info', `AI 修改了時間軸${n ? `（${n} 項變更）` : ''}，可按 Ctrl+Z 復原`);
+    } else if (EXTERNAL_LABEL[method]) {
+        toast('info', EXTERNAL_LABEL[method]);
+    }
+}
+
 export async function startControl() {
     if (started) return;
     started = true;
@@ -191,8 +206,10 @@ export async function startControl() {
             conflicts = 0;
             if (!command) return false;
             if (!replies.has(command.id)) {
-                replies.set(command.id, executeCommand(command.request.method, command.request.params).then(
-                    result => ({ result }), error => ({ error: { code: error.code ?? 'EDITOR_ERROR', message: String(error.message ?? error) } })));
+                const method = command.request.method;
+                replies.set(command.id, executeCommand(method, command.request.params).then(
+                    result => { announceExternal(method, result); return { result }; },
+                    error => ({ error: { code: error.code ?? 'EDITOR_ERROR', message: String(error.message ?? error) } })));
             }
             if (!acknowledging) {
                 acknowledging = true;

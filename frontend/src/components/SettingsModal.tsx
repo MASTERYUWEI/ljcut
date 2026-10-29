@@ -203,7 +203,7 @@ export function SettingsModal({ settings, setSettings, onClose }: Props) {
         <div className="modal-overlay" onClick={onClose}>
             <div className="modal-box" ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="settings-title" onClick={e => e.stopPropagation()}>
                 <div className="modal-header">
-                    <h3 id="settings-title">設定</h3>
+                    <h2 id="settings-title">設定</h2>
                     <button className="btn" onClick={onClose} style={{ padding: '4px 6px' }} aria-label="關閉" title="關閉（Esc）"><X aria-hidden /></button>
                 </div>
                 <div className="style-row">

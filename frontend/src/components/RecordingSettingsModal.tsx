@@ -54,7 +54,7 @@ export function RecordingSettingsModal({
         <div className="modal-overlay" onClick={onClose}>
             <div className="modal-box" ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="rec-settings-title" onClick={e => e.stopPropagation()}>
                 <div className="modal-header">
-                    <h3 id="rec-settings-title">螢幕錄影設定</h3>
+                    <h2 id="rec-settings-title">螢幕錄影設定</h2>
                     <button className="btn" onClick={onClose} style={{ padding: '4px 6px' }} aria-label="關閉" title="關閉（Esc）"><X aria-hidden /></button>
                 </div>
                 <div className="rec-setting-row">

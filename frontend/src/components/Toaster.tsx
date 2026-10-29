@@ -25,7 +25,7 @@ export default function Toaster() {
                                 ))}
                                 {t.kind === 'error' && (
                                     <button className="toast-btn" onClick={() => {
-                                        void navigator.clipboard?.writeText(t.message).then(() => { setCopied(t.id); setTimeout(() => setCopied(null), 1500); });
+                                        void navigator.clipboard?.writeText(t.detail ?? t.message).then(() => { setCopied(t.id); setTimeout(() => setCopied(null), 1500); });
                                     }}>{copied === t.id ? '已複製' : '複製詳情'}</button>
                                 )}
                             </div>

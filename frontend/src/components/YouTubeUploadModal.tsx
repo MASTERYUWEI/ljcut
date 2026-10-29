@@ -117,7 +117,7 @@ export function YouTubeUploadModal({ videoPath, defaultTitle, defaultDescription
         <div className="modal-overlay" onClick={uploading ? undefined : onClose}>
             <div className="modal-box" ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="yt-upload-title" onClick={e => e.stopPropagation()} style={{ maxWidth: 1000, maxHeight: '88vh', overflowY: 'auto' }}>
                 <div className="modal-header">
-                    <h3 id="yt-upload-title">上傳到 YouTube</h3>
+                    <h2 id="yt-upload-title">上傳到 YouTube</h2>
                     <button className="btn" onClick={onClose} disabled={uploading} style={{ padding: '4px 6px' }} aria-label="關閉" title="關閉（Esc）"><X aria-hidden /></button>
                 </div>
 

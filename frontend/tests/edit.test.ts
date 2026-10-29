@@ -331,3 +331,13 @@ test('edit_overlay: null clears an optional field (inspector clears caption text
     assert.equal('text' in o, false);
     assert.equal(o.color, 'blue');
 });
+
+test('humanizeError: raw exceptions become plain guidance, raw text kept for copy', async () => {
+    const { humanizeError } = await import('../src/toast');
+    const net = humanizeError('匯出失敗: TypeError: Failed to fetch');
+    assert.match(net.message, /^匯出失敗：連不到 LJCUT 後端服務/);
+    assert.equal(net.detail, '匯出失敗: TypeError: Failed to fetch');
+    assert.match(humanizeError('Error: 429 RESOURCE_EXHAUSTED').message, /額度/);
+    assert.equal(humanizeError('片段不存在').message, '片段不存在');          // 已是中文的訊息不動
+    assert.equal(humanizeError('Error: 片段 4012 不存在').message, '片段 4012 不存在');   // 401 不可誤判
+});
