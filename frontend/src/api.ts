@@ -109,9 +109,11 @@ export const api = {
         fileId: string,
         language = 'zh',
         onProgress?: (pct: number, current?: number, total?: number) => void,
+        fast = false,
     ): Promise<TranscribeResult> {
         const form = new FormData();
         form.append('language', language);
+        form.append('fast', fast ? '1' : '0');
         const res = await fetch(`${resolvedBase}/api/transcribe/${fileId}`, { method: 'POST', body: form });
         if (!res.ok) throw new Error(await res.text());
 

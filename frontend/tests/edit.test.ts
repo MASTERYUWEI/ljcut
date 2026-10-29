@@ -134,3 +134,75 @@ test('dry-run no mutation, batch undo/redo, stable IDs, manual edits invalidate 
     assert.throws(() => applyPlan({dryRunId:stale.dryRunId,...oldVersion,confirmed:true}), {code:'STALE_PROJECT'});
     assert.equal(readState().canRedo,false);
 });
+
+// ── AI 剪輯動作：split / set_speed / move_clip / delete_clip / edit_subtitle / delete_subtitle ──
+const op = (o: any) => ({ clipId: 'clip1', trackId: 'video-main' as const, timeDomain: 'source' as const, ...o });
+const run = (p: any, ops: any[]) => {
+    let n = 0;
+    return evaluatePlan(p, 0, { sessionId: 's', projectId: 'project-fixture', expectedRevision: 0, timeUnit: 'seconds', operations: ops },
+        () => `new${++n}`);
+};
+
+test('set_speed speeds a middle range, keeps subtitles on source time, relays out contiguously', () => {
+    const p: any = project();
+    p.timelineClips[0].segments = [{ id: 0, start: 1, end: 2, text: '前段' }, { id: 1, start: 6.5, end: 7.5, text: '後段' }];
+    const r = run(p, [op({ type: 'set_speed', start: 2, end: 6, speed: 4 })]);
+    const clips = [...r.next.timelineClips].sort((a, b) => a.startTime - b.startTime);
+    assert.deepEqual(clips.map(c => [c.trimStart, c.trimEnd, c.speed, c.startTime]),
+        [[0, 2, 1, 0], [2, 6, 4, 2], [6, 8, 1, 3]]);
+    assert.equal(r.afterDuration, 5);                         // 8 秒 → 2 + 1 + 2
+    assert.equal((r.changes[0] as any).savedSeconds, 3);
+    const subs = timelineSegments(r.next.timelineClips);
+    assert.deepEqual(subs.map(s => [s.text, s.start, s.end]), [['前段', 1, 2], ['後段', 3.5, 4.5]]);
+    assert.throws(() => run(project(), [op({ type: 'set_speed', start: 2, end: 6, speed: 0.5 })]), { code: 'INVALID_SPEED' });
+});
+
+test('split then move_clip reorders, delete_clip ripples, bookends stay locked', () => {
+    const r = run(project(), [op({ type: 'split', at: 3 })]);
+    const [a, b] = [...r.next.timelineClips].sort((x, y) => x.startTime - y.startTime);
+    assert.deepEqual([a.trimEnd, b.trimStart, b.startTime], [3, 3, 3]);
+    const moved = evaluatePlan(r.next, 0, { sessionId: 's', projectId: 'project-fixture', expectedRevision: 0, timeUnit: 'seconds',
+        operations: [op({ type: 'move_clip', clipId: b.id, toIndex: 0 })] }, () => 'x');
+    const order = [...moved.next.timelineClips].sort((x, y) => x.startTime - y.startTime);
+    assert.deepEqual(order.map(c => [c.id, c.startTime]), [[b.id, 0], [a.id, 5]]);
+    const del = evaluatePlan(moved.next, 0, { sessionId: 's', projectId: 'project-fixture', expectedRevision: 0, timeUnit: 'seconds',
+        operations: [op({ type: 'delete_clip', clipId: b.id })] }, () => 'y');
+    assert.deepEqual(del.next.timelineClips.map(c => [c.id, c.startTime]), [[a.id, 0]]);
+    assert.equal(del.afterDuration, 3);
+    const withIntro: any = project();
+    withIntro.timelineClips[0].bookend = 'intro';
+    withIntro.timelineClips.push({ ...withIntro.timelineClips[0], id: 'main', bookend: undefined, startTime: 8 });
+    assert.throws(() => run(withIntro, [op({ type: 'move_clip', clipId: 'main', toIndex: 0 })]), { code: 'BOOKEND_LOCKED' });
+    assert.throws(() => run(withIntro, [op({ type: 'move_clip', toIndex: 1 })]), { code: 'BOOKEND_LOCKED' });
+});
+
+test('edit_subtitle / delete_subtitle change text only and reject markup', () => {
+    const p: any = project();
+    p.timelineClips[0].segments = [{ id: 0, start: 1, end: 2, text: '組群參數', words: [{ word: '組', start: 1, end: 1.2, probability: .9 }] },
+        { id: 1, start: 3, end: 4, text: '刪掉' }];
+    const r = run(p, [op({ type: 'edit_subtitle', segmentId: 0, text: '族群參數' }), op({ type: 'delete_subtitle', segmentId: 1 })]);
+    const segs = r.next.timelineClips[0].segments;
+    assert.deepEqual(segs.map(s => [s.id, s.text, s.start, s.end]), [[0, '族群參數', 1, 2]]);
+    assert.equal(segs[0].words, undefined);
+    assert.equal(p.timelineClips[0].segments.length, 2);       // 原專案不被改動
+    assert.throws(() => run(p, [op({ type: 'edit_subtitle', segmentId: 0, text: '{\b1}粗體' })]), { code: 'UNSUPPORTED_SUBTITLE_TEXT' });
+    assert.throws(() => run(p, [op({ type: 'edit_subtitle', segmentId: 9, text: 'x' })]), { code: 'SUBTITLE_NOT_FOUND' });
+});
+
+test('omitted clipId locates the clip by source time, even after earlier ops split it in the same batch', () => {
+    const op = (o:any) => ({ trackId: 'video-main' as const, timeDomain: 'source' as const, ...o });
+    const q:any = { ...plan(), operations: [
+        op({ type: 'ripple_delete', start: 1, end: 2 }),
+        op({ type: 'set_speed', start: 5, end: 7, speed: 2 }),   // 原 clip1 已被切開，需自動找到右半段
+        op({ type: 'split', at: 3 }),
+    ] };
+    const d = evaluatePlan(project(), 0, q, (() => { let i = 0; return () => `n${i++}`; })());
+    assert.equal(d.afterDuration, 8 - 1 - 1);
+    assert.deepEqual(d.next.timelineClips.map(c => [c.trimStart, c.trimEnd, c.speed]),
+        [[0,1,1],[2,3,1],[3,5,1],[5,7,2],[7,8,1]]);
+    const gone:any = { ...plan(), operations: [op({ type: 'ripple_delete', start: 1, end: 2 }), op({ type: 'split', at: 1.5 })] };
+    assert.throws(() => evaluatePlan(project(), 0, gone, () => 'x'), { code: 'CLIP_NOT_FOUND' });
+    const twice:any = project(); twice.timelineClips.push({ ...twice.timelineClips[0], id: 'clip2', startTime: 8 });
+    assert.throws(() => evaluatePlan(twice, 0, { ...plan(), operations: [op({ type: 'split', at: 4 })] } as any, () => 'x'), { code: 'CLIP_AMBIGUOUS' });
+    assert.throws(() => evaluatePlan(project(), 0, { ...plan(), operations: [op({ type: 'delete_clip' })] } as any, () => 'x'), { code: 'CLIP_REQUIRED' });
+});

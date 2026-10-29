@@ -1032,6 +1032,7 @@ pub fn cleanup_old_files(app: &AppHandle, max_age_days: u64) {
         dirs.push(data_dir.join("outputs"));
     }
     dirs.push(find_backend_subdir("uploads"));
+    dirs.push(find_backend_subdir("uploads").join("proxies")); // 預覽代理檔
     dirs.push(find_backend_subdir("outputs"));
 
     let mut removed = 0u32;

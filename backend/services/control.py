@@ -22,6 +22,7 @@ from .ffmpeg_service import FFmpegService
 from .subtitle import SubtitleService
 from .transitions import validate_transitions
 from . import publication as publications
+from . import observe
 
 
 def fail(code, message, status=400):
@@ -73,6 +74,7 @@ class LocalControl:
         self.commands = {}
         self.owner = None
         self.seen = 0
+        self.waiting = 0               # 正在長輪詢等待命令的編輯器請求數
         self.jobs = {}
         self.router = APIRouter(prefix="/api/control", dependencies=[])
         if self.root:
@@ -295,9 +297,9 @@ class LocalControl:
                 if self.commands[cid]['request'] != body:
                     fail('REQUEST_ID_REUSED', '同一 id 不可搭配不同內容', 409)
                 return self.commands[cid]
-            if body.get('method') not in {'state', 'dry_run', 'apply', 'undo', 'redo', 'import', 'save', 'open', 'preview', 'export', 'production_settings', 'set_production_settings', 'prepare_bookends', 'prepare_transitions', 'publication', 'prepare_covers', 'cover_batch', 'complete_covers', 'select_cover'} or not isinstance(body.get('params', {}), dict):
+            if body.get('method') not in {'state', 'dry_run', 'apply', 'undo', 'redo', 'import', 'save', 'open', 'preview', 'export', 'production_settings', 'set_production_settings', 'prepare_bookends', 'prepare_transitions', 'publication', 'prepare_covers', 'cover_batch', 'complete_covers', 'select_cover', 'transcribe'} or not isinstance(body.get('params', {}), dict):
                 fail('UNSUPPORTED_COMMAND', '不支援的控制命令')
-            if not self.owner or time.monotonic() - self.seen > 10:
+            if not self.owner or (not self.waiting and time.monotonic() - self.seen > 10):
                 fail('EDITOR_OFFLINE', '請先開啟已啟用控制的 LJ Cut 編輯器', 409)
             if len(self.commands) >= 2000:
                 fail('SESSION_LIMIT', '此工作階段已達 2000 個命令，請儲存後重新連線', 429)
@@ -318,18 +320,40 @@ class LocalControl:
             if not isinstance(client, str) or not client:
                 fail('INVALID_CLIENT', '缺少編輯器識別碼')
             if self.owner != client:
-                if self.owner and time.monotonic() - self.seen < 10:
+                if self.owner and (self.waiting or time.monotonic() - self.seen < 10):
                     fail('EDITOR_ALREADY_CONNECTED', '另一個 LJ Cut 編輯器正在控制此工作階段', 409)
                 for command in self.commands.values():
                     if command['status'] in {'queued', 'delivered'}:
                         command.update(status='failed', error={"code": "EDITOR_DISCONNECTED", "message": "編輯器已中斷；請讀取狀態確認，命令不會自動重送到另一專案"})
                 self.owner = client
             self.seen = time.monotonic()
-            for command in self.commands.values():
-                if command['owner'] == client and command['status'] in {'queued', 'delivered'}:
-                    command['status'] = 'delivered'
-                    return command
-            return None
+
+            def take(states):
+                for command in self.commands.values():
+                    if command['owner'] == client and command['status'] in states:
+                        command['status'] = 'delivered'
+                        return command
+
+            # 長輪詢：新命令立刻送出；沒有就等到有命令或逾時（不靠前端計時器，視窗最小化/背景分頁也不會被節流拖慢）
+            # 已送出但未回覆的命令只在逾時後重送，避免前端執行長命令時反覆空轉
+            if (command := take({'queued'})):
+                return command
+            wait = body.get('wait', 0)
+            if isinstance(wait, (int, float)) and wait > 0:
+                # 每 0.1 秒檢查一次：延遲可忽略，且不依賴跨事件迴圈的 Event
+                deadline = time.monotonic() + min(float(wait), 8.0)
+                self.waiting += 1
+                try:
+                    while time.monotonic() < deadline and self.owner == client:
+                        if any(c['owner'] == client and c['status'] == 'queued' for c in self.commands.values()):
+                            break
+                        await asyncio.sleep(0.1)
+                finally:
+                    self.waiting -= 1
+                if self.owner != client or await request.is_disconnected():
+                    return None  # 頁面已關閉/重新整理：不刷新 seen，讓新頁面盡快接手
+                self.seen = time.monotonic()
+            return take({'queued'}) or take({'delivered'})
 
         @r.post('/ack/{cid}')
         async def ack(cid: str, request: Request, body: dict = Body(...)):
@@ -356,6 +380,73 @@ class LocalControl:
             await asyncio.to_thread(shutil.copyfile, source, dest)
             return {"id": mid, "filename": source.name, "url": '/uploads/' + dest.name,
                     "info": info, "waveformPeaks": []}
+
+        # ── 觀察工具（唯讀，不需編輯器在線）：給 AI 看畫面、聽停頓 ──
+        def media_file(body):
+            mid = body.get("mediaId")
+            if body.get("path"):
+                return self.path(body["path"], True)
+            if not isinstance(mid, str) or not re.fullmatch(r"[a-zA-Z0-9_-]{1,80}", mid):
+                fail("INVALID_MEDIA", "需提供 mediaId 或工作區相對 path")
+            for p in sorted(self.uploads.glob(mid + ".*")):
+                if p.suffix.lower() != ".wav" and p.is_file():
+                    return p
+            fail("MEDIA_NOT_FOUND", f"找不到素材 {mid}", 404)
+
+        def num(body, key, default, lo, hi):
+            v = body.get(key, default)
+            if not isinstance(v, (int, float)) or isinstance(v, bool) or not (lo <= v <= hi):
+                fail("INVALID_PARAM", f"{key} 需介於 {lo}–{hi}")
+            return float(v)
+
+        @r.post('/observe/frames')
+        async def observe_frames(request: Request, body: dict = Body(...)):
+            self.authorize(request)
+            src = media_file(body)
+            times = body.get("times")
+            if not isinstance(times, list) or not times or not all(isinstance(t, (int, float)) and t >= 0 for t in times):
+                fail("INVALID_PARAM", "times 需為非負秒數陣列")
+            labels = body.get("labels") if isinstance(body.get("labels"), list) else None
+            width = int(num(body, "thumbWidth", 384, 160, 960))
+            cols = int(num(body, "cols", 4, 1, 8))
+            out = self.root / "observe" / f"frames-{uuid.uuid4().hex[:10]}.jpg"
+            try:
+                res = await asyncio.to_thread(observe.contact_sheet, src, [float(t) for t in times], out,
+                                              [str(x) for x in labels] if labels else None, width, cols)
+            except ValueError as e:
+                fail("INVALID_PARAM", str(e))
+            res["path"] = out.relative_to(self.root).as_posix()
+            return res
+
+        @r.post('/observe/silences')
+        async def observe_silences(request: Request, body: dict = Body(...)):
+            self.authorize(request)
+            src = media_file(body)
+            return await asyncio.to_thread(observe.silences, src, num(body, "noiseDb", -35, -80, -10),
+                                           num(body, "minSilence", 0.8, 0.1, 30))
+
+        @r.post('/observe/scenes')
+        async def observe_scenes(request: Request, body: dict = Body(...)):
+            self.authorize(request)
+            src = media_file(body)
+            return await asyncio.to_thread(observe.scene_changes, src, num(body, "threshold", 0.3, 0.01, 0.95))
+
+        @r.post('/observe/audio-levels')
+        async def observe_levels(request: Request, body: dict = Body(...)):
+            self.authorize(request)
+            src = media_file(body)
+            try:
+                return await asyncio.to_thread(observe.audio_levels, src, num(body, "window", 1.0, 0.1, 60))
+            except ValueError as e:
+                fail("NO_AUDIO", str(e))
+
+        @r.get('/observe/file')
+        async def observe_file(request: Request, path: str):
+            self.authorize(request)
+            p = self.path(path, True)
+            if not p.is_relative_to(self.root / "observe"):
+                fail("OUTSIDE_WORKSPACE", "只能讀取 observe/ 下的分析圖")
+            return FileResponse(str(p), media_type="image/jpeg")
 
         @r.post('/validate-media')
         async def validate_media(request: Request, body: dict = Body(...)):

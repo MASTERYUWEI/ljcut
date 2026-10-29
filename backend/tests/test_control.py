@@ -66,6 +66,28 @@ class ControlTests(unittest.TestCase):
         self.post('/poll',{'clientId':'new-editor'})
         self.assertEqual(self.client.get('/api/control/commands/lost',headers=self.headers).json()['error']['code'],'EDITOR_DISCONNECTED')
 
+    def test_long_poll_wakes_on_submit_and_times_out(self):
+        self.post('/poll', {'clientId': 'editor'})
+        t0 = time.monotonic()
+        self.assertIsNone(self.post('/poll', {'clientId': 'editor', 'wait': 0.3}).json())
+        self.assertGreaterEqual(time.monotonic() - t0, 0.25)
+        got = {}
+        def waiter():
+            got['res'] = self.post('/poll', {'clientId': 'editor', 'wait': 5}).json()
+            got['at'] = time.monotonic()
+        th = threading.Thread(target=waiter); th.start()
+        time.sleep(0.3)
+        self.assertEqual(self.post('/poll', {'clientId': 'other'}).status_code, 409)  # 等待中仍算在線
+        sent = time.monotonic()
+        self.assertEqual(self.post('/commands', {'id': 'lp1', 'method': 'transcribe', 'params': {}}).json()['status'], 'queued')
+        th.join(5)
+        self.assertEqual(got['res']['id'], 'lp1')
+        self.assertLess(got['at'] - sent, 1.0)
+        # 已送出未回覆的命令不會立即重送（避免前端空轉），逾時後才重送
+        t0 = time.monotonic()
+        self.assertEqual(self.post('/poll', {'clientId': 'editor', 'wait': 0.3}).json()['id'], 'lp1')
+        self.assertGreaterEqual(time.monotonic() - t0, 0.25)
+
     def test_save_open_export_and_cancel(self):
         fixture=create_fixture(self.control.root/'fixture.mp4')
         original=hashlib.sha256(fixture.read_bytes()).hexdigest()

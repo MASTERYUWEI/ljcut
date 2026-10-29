@@ -111,22 +111,50 @@ export function validateProject(p: ProjectData, continuous = false): void {
     }
 }
 
+export type EditOperation = {
+    type: 'ripple_delete' | 'add_subtitle' | 'split' | 'set_speed' | 'move_clip'
+        | 'delete_clip' | 'edit_subtitle' | 'delete_subtitle';
+    /** 省略時依來源秒數（start / at）自動找片段；同批前面的操作分割過也能正確定位 */
+    clipId?: string;
+    /** 省略 clipId 時可指定素材，避免同一來源時間出現在多個片段 */
+    mediaId?: string;
+    trackId: 'video-main';
+    timeDomain: 'source';
+    /** ripple_delete / add_subtitle / set_speed：來源秒數區間（左閉右開） */
+    start?: number;
+    end?: number;
+    /** split：來源秒數分割點 */
+    at?: number;
+    /** set_speed：1–5 倍 */
+    speed?: number;
+    /** move_clip：移到時間軸第幾個位置（0 起算，依目前順序） */
+    toIndex?: number;
+    /** edit_subtitle / delete_subtitle：片段內字幕 ID */
+    segmentId?: number;
+    text?: string;
+    review?: 'confirmed' | 'needs_review';
+    reason?: string;
+};
 export interface EditPlan {
     sessionId: string;
     projectId: string;
     expectedRevision: number;
     timeUnit: 'seconds';
-    operations: Array<{
-        type: 'ripple_delete' | 'add_subtitle';
-        clipId: string;
-        trackId: 'video-main';
-        timeDomain: 'source';
-        start: number;
-        end: number;
-        text?: string;
-        review?: 'confirmed' | 'needs_review';
-        reason?: string;
-    }>;
+    operations: EditOperation[];
+}
+/** 依目前順序重新排定片段起點，維持「從 0 開始、無空隙」的單軌。 */
+function relayout(clips: TimelineClip[], order?: TimelineClip[]): TimelineClip[] {
+    let t = 0;
+    return (order ?? [...clips].sort((a, b) => a.startTime - b.startTime)).map(c => {
+        const placed = { ...c, startTime: t };
+        t += c.duration;
+        return placed;
+    });
+}
+function checkSubtitleText(text: unknown): asserts text is string {
+    requireEdit(typeof text === 'string' && text.trim().length > 0 && text.length <= 2000,
+        'INVALID_SUBTITLE', '字幕文字需為 1–2000 字');
+    requireEdit(!/[{}\\\r\n]/.test(text), 'UNSUPPORTED_SUBTITLE_TEXT', '字幕僅支援單行純文字，不支援 ASS 標記或反斜線');
 }
 export function evaluateTransitions(project: ProjectData, mode: TransitionKind | 'random' | 'none', duration: number, random = Math.random) {
     validateProject(project, true);
@@ -180,6 +208,18 @@ export function evaluateBookends(project: ProjectData, intro: MediaItem | undefi
     validateProject(next, true);
     return { next, changes, beforeDuration, afterDuration: durationOf(next.timelineClips) };
 }
+/** 依操作的來源時間找出唯一包含它的片段（不含片頭片尾）。 */
+function locateClip(clips: TimelineClip[], op: EditOperation): TimelineClip {
+    const point = op.type === 'split';
+    const t = point ? op.at : op.start;
+    requireEdit(finite(t) && (point || finite(op.end)), 'CLIP_REQUIRED',
+        `${op.type} 需提供 clipId，或提供來源秒數讓系統自動定位片段`);
+    const hits = clips.filter(c => !c.bookend && (!op.mediaId || c.mediaId === op.mediaId)
+        && (point ? t > c.trimStart && t < c.trimEnd : t >= c.trimStart && op.end! <= c.trimEnd));
+    requireEdit(hits.length > 0, 'CLIP_NOT_FOUND', `沒有片段完整包含來源時間 ${t}${point ? '' : '–' + op.end}（可能已被刪除，或跨越兩個片段）`);
+    requireEdit(hits.length === 1, 'CLIP_AMBIGUOUS', `來源時間 ${t} 出現在 ${hits.length} 個片段，請指定 clipId 或 mediaId`);
+    return hits[0];
+}
 export function evaluatePlan(project: ProjectData, revision: number, plan: EditPlan, id: () => string) {
     requireEdit(plan && plan.projectId === project.projectId && plan.expectedRevision === revision,
         'STALE_PROJECT', '專案已變更，請重新讀取狀態並 dry-run');
@@ -191,33 +231,94 @@ export function evaluatePlan(project: ProjectData, revision: number, plan: EditP
     for (const op of plan.operations) {
         requireEdit(op && op.trackId === 'video-main' && op.timeDomain === 'source', 'INVALID_TIME_DOMAIN', '需指定 video-main 與 source 時間');
         requireEdit(op.review !== 'needs_review', 'REVIEW_REQUIRED', '待確認段落不可套用，請先人工確認');
-        const c = next.timelineClips.find(c => c.id === op.clipId);
+        const c = op.clipId ? next.timelineClips.find(c => c.id === op.clipId) : locateClip(next.timelineClips, op);
         requireEdit(c, 'CLIP_NOT_FOUND', `找不到片段 ${op.clipId}`);
+        if (op.type === 'split') {
+            requireEdit(finite(op.at), 'INVALID_RANGE', 'split 需提供來源秒數 at');
+            const [left, right] = splitClip(c, op.at, id());
+            next.timelineClips = next.timelineClips.flatMap(o => o.id === c.id ? [left, right] : [o]);
+            changes.push({ type: op.type, clipId: c.id, source: op.at, timeline: toTimelineTime(c, op.at),
+                keptClipIds: [left.id, right.id] });
+            continue;
+        }
+        if (op.type === 'move_clip') {
+            const ordered = [...next.timelineClips].sort((a, b) => a.startTime - b.startTime);
+            requireEdit(Number.isInteger(op.toIndex) && op.toIndex! >= 0 && op.toIndex! < ordered.length,
+                'INVALID_RANGE', `toIndex 需為 0–${ordered.length - 1}`);
+            requireEdit(!c.bookend, 'BOOKEND_LOCKED', '片頭片尾位置固定，不可移動');
+            const from = ordered.findIndex(o => o.id === c.id);
+            const rest = ordered.filter(o => o.id !== c.id);
+            rest.splice(op.toIndex!, 0, c);
+            const introAt = rest.findIndex(o => o.bookend === 'intro');
+            const outroAt = rest.findIndex(o => o.bookend === 'outro');
+            requireEdit((introAt <= 0) && (outroAt < 0 || outroAt === rest.length - 1),
+                'BOOKEND_LOCKED', '片段不可移到片頭之前或片尾之後');
+            next.timelineClips = relayout(next.timelineClips, rest);
+            changes.push({ type: op.type, clipId: c.id, fromIndex: from, toIndex: op.toIndex });
+            continue;
+        }
+        if (op.type === 'delete_clip') {
+            const ordered = [...next.timelineClips].sort((a, b) => a.startTime - b.startTime).filter(o => o.id !== c.id);
+            next.timelineClips = relayout(next.timelineClips, ordered);
+            changes.push({ type: op.type, clipId: c.id, removedSeconds: c.duration,
+                timeline: [c.startTime, c.startTime + c.duration], linked: ['video', 'embedded-audio', 'clip-subtitles'] });
+            continue;
+        }
+        if (op.type === 'edit_subtitle' || op.type === 'delete_subtitle') {
+            const seg = c.segments.find(s => s.id === op.segmentId);
+            requireEdit(seg, 'SUBTITLE_NOT_FOUND', `片段 ${c.id} 找不到字幕 ${op.segmentId}`);
+            if (op.type === 'edit_subtitle') {
+                checkSubtitleText(op.text);
+                changes.push({ type: op.type, clipId: c.id, segmentId: seg.id, before: seg.text, after: op.text });
+                seg.text = op.text;
+                delete seg.words;   // 文字改了，舊的逐字時間不再對應
+            } else {
+                c.segments = c.segments.filter(s => s.id !== seg.id);
+                changes.push({ type: op.type, clipId: c.id, segmentId: seg.id, text: seg.text });
+            }
+            continue;
+        }
         requireEdit(finite(op.start) && finite(op.end) && op.start >= c.trimStart && op.end <= c.trimEnd
             && op.end > op.start, 'INVALID_RANGE', '操作區間必須在該片段的來源裁切範圍內');
+        const start = op.start, end = op.end;
+        if (op.type === 'set_speed') {
+            requireEdit(finite(op.speed) && op.speed >= 1 && op.speed <= 5, 'INVALID_SPEED', '倍速需為 1–5');
+            const parts: TimelineClip[] = [];
+            let mid: TimelineClip = c;
+            if (start > c.trimStart) { const [l, r] = splitClip(mid, start, id()); parts.push(l); mid = r; }
+            let tail: TimelineClip | undefined;
+            if (end < mid.trimEnd) { const [l, r] = splitClip(mid, end, id()); mid = l; tail = r; }
+            mid = { ...mid, speed: op.speed, duration: (mid.trimEnd - mid.trimStart) / op.speed };
+            parts.push(mid);
+            if (tail) parts.push(tail);
+            const before = c.duration;
+            next.timelineClips = relayout(next.timelineClips.flatMap(o => o.id === c.id ? parts : [o]));
+            changes.push({ type: op.type, clipId: c.id, source: [start, end], speed: op.speed,
+                speedClipId: mid.id, keptClipIds: parts.map(p => p.id),
+                savedSeconds: before - parts.reduce((a, p) => a + p.duration, 0) });
+            continue;
+        }
         if (op.type === 'add_subtitle') {
-            requireEdit(typeof op.text === 'string' && op.text.trim().length > 0 && op.text.length <= 2000,
-                'INVALID_SUBTITLE', '字幕文字需為 1–2000 字');
-            requireEdit(!/[{}\\\r\n]/.test(op.text), 'UNSUPPORTED_SUBTITLE_TEXT', '第一階段新增字幕僅支援單行純文字，不支援 ASS 標記或反斜線');
-            requireEdit(!c.segments.some(s => s.start < op.end && s.end > op.start),
+            checkSubtitleText(op.text);
+            requireEdit(!c.segments.some(s => s.start < end && s.end > start),
                 'SUBTITLE_OVERLAP', '此範圍已有字幕，請先手動整理，避免預覽與燒錄呈現不同');
-            c.segments.push({ id: Math.max(-1, ...c.segments.map(s => s.id)) + 1, start: op.start, end: op.end, text: op.text });
+            c.segments.push({ id: Math.max(-1, ...c.segments.map(s => s.id)) + 1, start: start, end: end, text: op.text! });
             c.segments.sort((a, b) => a.start - b.start);
-            changes.push({ type: op.type, clipId: c.id, source: [op.start, op.end],
-                timeline: [toTimelineTime(c, op.start), toTimelineTime(c, op.end)], text: op.text });
+            changes.push({ type: op.type, clipId: c.id, source: [start, end],
+                timeline: [toTimelineTime(c, start), toTimelineTime(c, end)], text: op.text! });
         } else if (op.type === 'ripple_delete') {
-            const delta = (op.end - op.start) / c.speed;
+            const delta = (end - start) / c.speed;
             const kept: TimelineClip[] = [];
-            if (op.start > c.trimStart) kept.push(splitClip(c, op.start, id())[0]);
-            if (op.end < c.trimEnd) {
-                const right = splitClip(c, op.end, kept.length ? id() : c.id)[1];
+            if (start > c.trimStart) kept.push(splitClip(c, start, id())[0]);
+            if (end < c.trimEnd) {
+                const right = splitClip(c, end, kept.length ? id() : c.id)[1];
                 kept.push({ ...right, startTime: right.startTime - delta });
             }
             next.timelineClips = next.timelineClips.flatMap(other => other.id === c.id ? kept : [{
                 ...other, startTime: other.startTime >= c.startTime + c.duration - 1e-6 ? other.startTime - delta : other.startTime,
             }]);
-            changes.push({ type: op.type, clipId: c.id, source: [op.start, op.end],
-                timeline: [toTimelineTime(c, op.start), toTimelineTime(c, op.end)], removedSeconds: delta,
+            changes.push({ type: op.type, clipId: c.id, source: [start, end],
+                timeline: [toTimelineTime(c, start), toTimelineTime(c, end)], removedSeconds: delta,
                 keptClipIds: kept.map(c => c.id), linked: ['video', 'embedded-audio', 'clip-subtitles'] });
         } else throw new EditError('UNSUPPORTED_OPERATION', `不支援的操作 ${op.type}`);
     }

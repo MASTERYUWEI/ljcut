@@ -1,6 +1,7 @@
 import { api, getBase } from './api';
 import { useStore } from './store';
-import { EditError, requireEdit, validateProject, toSourceTime } from './editCore';
+import { EditError, requireEdit, validateProject, toSourceTime, clippedSegments } from './editCore';
+import { splitLongCues } from './utils';
 import { applyPlan, checkVersion, draftProject, dryRun, dryRunBookends, dryRunTransitions, projectData, readState, redo, replaceProject, requestPreview, undo } from './editSession';
 import type { EditPlan, ProjectData } from './editCore';
 import type { MediaItem } from './types';
@@ -104,6 +105,34 @@ export async function executeCommand(method: string, params: any = {}): Promise<
         replaceProject(p, params);
         return { mediaId: media.id, clipId, state: readState() };
     }
+    if (method === 'transcribe') {
+        // 與手動「開始辨識」同一條管線：辨識 → 保留原始逐字稿 → 依每段上限分段 → 寫入該素材所有片段（一筆 undo）
+        const s0 = useStore.getState();
+        const media = s0.mediaItems.find(m => m.id === params.mediaId);
+        requireEdit(media, 'MEDIA_NOT_FOUND', `找不到素材 ${params.mediaId}`);
+        useStore.getState().setIsTranscribing(true);
+        let result;
+        try {
+            result = await api.transcribe(media.id, params.language ?? s0.language, undefined, !!params.fast);
+        } finally {
+            useStore.getState().setIsTranscribing(false);
+        }
+        // 辨識期間使用者可能改過專案：以「目前」狀態為基底合併，不覆蓋其他修改
+        const cur = readState();
+        const p = projectData();
+        const target = p.mediaItems.find(m => m.id === media.id);
+        requireEdit(target, 'MEDIA_NOT_FOUND', '辨識期間素材已被移除');
+        target.transcript = structuredClone(result);
+        const segs = splitLongCues(result.segments, p.subtitleStyle.maxCharsPerCue).map((s, id) => ({ ...s, id }));
+        let clipsUpdated = 0;
+        for (const c of p.timelineClips) {
+            if (c.mediaId !== media.id) continue;
+            c.segments = clippedSegments(segs, c.trimStart, c.trimEnd);
+            clipsUpdated++;
+        }
+        replaceProject(p, { sessionId: cur.sessionId, projectId: cur.projectId, expectedRevision: cur.revision });
+        return { mediaId: media.id, segments: segs.length, clipsUpdated, state: readState() };
+    }
     if (method === 'save') {
         const p = projectData();
         validateProject(p);
@@ -152,14 +181,15 @@ export async function startControl() {
     window.dispatchEvent(new Event('ljcut-control-ready'));
     const clientId = crypto.randomUUID();
     const replies = new Map<string, Promise<object>>();
-    let polling = false;
     let acknowledging = false;
-    const tick = async () => {
-        if (polling) return;
-        polling = true;
+    let alive = true;
+    let conflicts = 0;
+    // 回傳 false 表示這輪沒拿到命令
+    const tick = async (): Promise<boolean> => {
         try {
-            const command = await controlRequest('/poll', { clientId });
-            if (!command) return;
+            const command = await controlRequest('/poll', { clientId, wait: 8 });
+            conflicts = 0;
+            if (!command) return false;
             if (!replies.has(command.id)) {
                 replies.set(command.id, executeCommand(command.request.method, command.request.params).then(
                     result => ({ result }), error => ({ error: { code: error.code ?? 'EDITOR_ERROR', message: String(error.message ?? error) } })));
@@ -170,15 +200,26 @@ export async function startControl() {
                     .catch(() => { /* same request ID returns the cached result on the next poll */ })
                     .finally(() => { acknowledging = false; });
             }
+            return true;
         } catch (error) {
-            if (error instanceof EditError && error.code === 'EDITOR_ALREADY_CONNECTED') {
-                clearInterval(timer);
+            // 重新整理後舊頁面的連線最多佔用約 10 秒：先重試，持續被佔用才判定另有編輯器
+            if (error instanceof EditError && error.code === 'EDITOR_ALREADY_CONNECTED' && ++conflicts > 15) {
+                alive = false;
                 controlWorkspace = '';
                 window.dispatchEvent(new Event('ljcut-control-ready'));
             }
-        } finally { polling = false; }
+            await new Promise(r => setTimeout(r, 1000));
+            return false;
+        }
     };
-    const timer = setInterval(() => { void tick(); }, 300);
-    import.meta.hot?.dispose(() => clearInterval(timer));
-    void tick();
+    // 長輪詢迴圈：後端握住請求直到有命令（最多 8 秒），網路回應不受背景計時器節流影響。
+    // 立即回空（舊版後端或異常）時稍等，避免空轉。
+    import.meta.hot?.dispose(() => { alive = false; });
+    void (async () => {
+        while (alive) {
+            const t0 = performance.now();
+            const got = await tick();
+            if (!got && performance.now() - t0 < 200) await new Promise(r => setTimeout(r, 300));
+        }
+    })();
 }

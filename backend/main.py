@@ -12,6 +12,7 @@ for _nvidia_dir in glob.glob(os.path.join(_venv_site, "nvidia", "*", "bin")):
     os.add_dll_directory(_nvidia_dir)
 
 import json
+import re
 import uuid
 import shutil
 import threading
@@ -164,7 +165,7 @@ async def upload_video(file: UploadFile = File(...)):
 
 
 @app.post("/api/transcribe/{file_id}")
-async def transcribe(file_id: str, language: str = Form(default="zh")):
+async def transcribe(file_id: str, language: str = Form(default="zh"), fast: str = Form(default="0")):
     """語音辨識 — SSE 串流進度（辨識在背景執行緒跑，避免凍結事件迴圈）"""
     svc = _ensure_model()  # 惰性載入；模型還沒好時會在此阻塞直到就緒
 
@@ -189,7 +190,8 @@ async def transcribe(file_id: str, language: str = Form(default="zh")):
         try:
             push({"progress": 0, "stage": "extract"})  # 抽取音訊中
             FFmpegService.extract_audio(video_path, audio_path)
-            result = svc.transcribe(audio_path, language=language, on_progress=on_progress)
+            result = svc.transcribe(audio_path, language=language, on_progress=on_progress,
+                                    fast=fast in ("1", "true", "True"))
             push({"progress": 100, "done": True, "result": result})
         except Exception as e:
             push({"error": str(e)})
@@ -410,6 +412,68 @@ async def get_waveform(file_id: str):
         raise HTTPException(500, f"波形生成失敗: {e}")
 
     return JSONResponse({"peaks": peaks})
+
+
+# ── 預覽代理檔（長片／高解析度 → 720p、每秒關鍵幀，拖拉/跳點順暢；匯出仍用原檔）──
+
+PROXY_DIR = UPLOAD_DIR / "proxies"   # 子資料夾：不會被 uploads/{id}.* 的 glob 誤抓
+PROXY_MIN_DURATION = 300.0           # 5 分鐘以上
+PROXY_MIN_HEIGHT = 1080              # 或高度超過 1080
+_proxy_jobs: dict[str, str] = {}     # file_id → pending / failed
+
+
+def _proxy_status(file_id: str) -> dict:
+    out = PROXY_DIR / f"{file_id}.mp4"
+    if out.exists():
+        return {"status": "ready", "url": f"/uploads/proxies/{file_id}.mp4"}
+    if file_id in _proxy_jobs:
+        return {"status": _proxy_jobs[file_id]}
+    return {"status": "none"}
+
+
+def _build_proxy(file_id: str, src: str) -> None:
+    PROXY_DIR.mkdir(parents=True, exist_ok=True)
+    out = PROXY_DIR / f"{file_id}.mp4"
+    tmp = PROXY_DIR / f"{file_id}.tmp.mp4"
+    common = ["-vf", "scale=-2:'min(720,ih)'", "-g", "30", "-keyint_min", "30",
+              "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart"]
+    flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    for codec in (["-c:v", "h264_nvenc", "-preset", "p2", "-cq", "28"],
+                  ["-c:v", "libx264", "-preset", "veryfast", "-crf", "26"]):
+        r = subprocess.run(["ffmpeg", "-y", "-i", src, *common, *codec, str(tmp)],
+                           capture_output=True, creationflags=flags)
+        if r.returncode == 0 and tmp.exists():
+            os.replace(tmp, out)
+            _proxy_jobs.pop(file_id, None)
+            return
+    tmp.unlink(missing_ok=True)
+    _proxy_jobs[file_id] = "failed"
+
+
+@app.get("/api/proxy/{file_id}")
+async def get_proxy(file_id: str):
+    if not re.fullmatch(r"[0-9a-f]{12}", file_id):
+        raise HTTPException(400, "無效的 file_id")
+    return _proxy_status(file_id)
+
+
+@app.post("/api/proxy/{file_id}")
+async def ensure_proxy(file_id: str):
+    """需要時於背景產生代理檔；短片或低解析度回 skip（直接用原檔）"""
+    if not re.fullmatch(r"[0-9a-f]{12}", file_id):
+        raise HTTPException(400, "無效的 file_id")
+    st = _proxy_status(file_id)
+    if st["status"] != "none":
+        return st
+    matches = [m for m in UPLOAD_DIR.glob(f"{file_id}.*") if m.suffix.lower() not in (".wav", ".mp3", ".m4a")]
+    if not matches:
+        return {"status": "skip"}
+    info = FFmpegService.get_media_info(str(matches[0]))
+    if not info.get("height") or (info.get("duration", 0) < PROXY_MIN_DURATION and info["height"] <= PROXY_MIN_HEIGHT):
+        return {"status": "skip"}
+    _proxy_jobs[file_id] = "pending"
+    threading.Thread(target=_build_proxy, args=(file_id, str(matches[0])), daemon=True).start()
+    return {"status": "pending"}
 
 
 # ── 影片縮圖 ──

@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "ljcut": {
+      "command": "backend/venv/Scripts/python.exe",
+      "args": ["scripts/ljcut_mcp.py", "--workspace", "app_data/control"],
+      "env": { "PYTHONIOENCODING": "utf-8" }
+    }
+  }
+}

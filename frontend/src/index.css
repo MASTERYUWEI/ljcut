@@ -2305,3 +2305,15 @@ body {
   font-size: 14px;
   color: #4caf50;
 }
+
+/* 快速辨識開關 */
+.fast-asr-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 16px 0;
+  font-size: 12px;
+  color: var(--fg-subtext0, #999);
+  cursor: pointer;
+  user-select: none;
+}

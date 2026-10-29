@@ -4,7 +4,8 @@ import { useRef, useCallback, useState, useEffect, useLayoutEffect, useMemo } fr
 import { useStore } from './store';
 import { api, onApiReady } from './api';
 import type { MediaItem, TimelineClip, Segment, AppSettings, RecOpts, MicDevice } from './types';
-import { formatTime, formatTimestamp, generateRulerTicks, findSnapTime, LABEL_W } from './utils';
+import { previewSrc, hasSrc } from './proxy';
+import { formatTime, formatTimestamp, generateRulerTicks, findSnapTime, LABEL_W, splitLongCues as splitLongCuesUtil } from './utils';
 import { SettingsModal } from './components/SettingsModal';
 import { RecordingSettingsModal } from './components/RecordingSettingsModal';
 import { SpeedMenu } from './components/SpeedMenu';
@@ -61,6 +62,8 @@ export default function App() {
     const [exportProgress, setExportProgress] = useState(-1); // -1=idle, 0~100=progress
     // 辨識進度：null=idle；pct<0=準備中(抽取音訊)；0~100=辨識中
     const [transProg, setTransProg] = useState<{ pct: number; cur: number; total: number } | null>(null);
+    // 快速辨識（批次推論，約 4 倍速；專有名詞準確度略降）— 記住使用者偏好
+    const [fastAsr, setFastAsr] = useState<boolean>(() => { try { return localStorage.getItem('ljcut-fast-asr') === '1'; } catch { return false; } });
     const [transElapsed, setTransElapsed] = useState(0);
     // 最近一次匯出成品路徑（YouTube 上傳用）
     const [lastExport, setLastExport] = useState<string | null>(() => localStorage.getItem('ljcut-export-path'));
@@ -746,82 +749,7 @@ export default function App() {
     }, [removeClip, activeClipId, setActiveClipId, pushUndo]);
 
     // ── Cue Splitting：超長字幕自動分段（語義斷句） ──
-    const splitLongCues = useCallback((segs: typeof segments, maxChars: number) => {
-        if (maxChars <= 0) return segs;
-        const result: typeof segments = [];
-        const punctuation = /[，。！？；：、,.!?;:]/;
-        // 中文助詞/介詞/連詞 — 在這些字「前面」斷句最自然
-        const breakBefore = new Set(
-            '的了在是把被跟和與或但而也都就會要能可讓給對向從到為那這有不很'
-                .split('')
-        );
-
-        // 容忍區間：maxChars ~ hardLimit 之間只在有好斷點時才切
-        const hardLimit = maxChars + 5;
-
-        for (const seg of segs) {
-            if (seg.text.length <= maxChars) {
-                result.push({ ...seg, id: result.length });
-                continue;
-            }
-
-            // 在容忍區間內（maxChars < len <= hardLimit）：
-            // 只在有語意斷點時才切，否則保留完整不切
-            const len = seg.text.length;
-            const isInTolerance = len <= hardLimit;
-
-            // 找最佳切割點
-            let splitIdx = -1;
-            const mid = Math.floor(len / 2);
-            // 搜尋範圍：確保兩半都不超過 maxChars
-            const lo = Math.max(1, len - maxChars);
-            const hi = Math.min(len - 1, maxChars);
-
-            // P1: 標點符號（在標點後面切）
-            for (let d = 0; splitIdx < 0; d++) {
-                const r = mid + d, l = mid - d;
-                if (r > hi && l < lo) break;
-                if (r <= hi && r < len && punctuation.test(seg.text[r])) { splitIdx = r + 1; }
-                else if (l >= lo && l >= 0 && punctuation.test(seg.text[l])) { splitIdx = l + 1; }
-            }
-
-            // P2: 空格（混合語言內容）
-            if (splitIdx <= 0 || splitIdx >= len) {
-                for (let d = 0; splitIdx < 0; d++) {
-                    const r = mid + d, l = mid - d;
-                    if (r > hi && l < lo) break;
-                    if (r <= hi && r < len && seg.text[r] === ' ') { splitIdx = r + 1; }
-                    else if (l >= lo && l >= 0 && seg.text[l] === ' ') { splitIdx = l + 1; }
-                }
-            }
-
-            // P3: 中文助詞/介詞前斷句（保持詞語完整）
-            if (splitIdx <= 0 || splitIdx >= len) {
-                for (let d = 0; splitIdx < 0; d++) {
-                    const r = mid + d, l = mid - d;
-                    if (r > hi && l < lo) break;
-                    if (r <= hi && r < len && breakBefore.has(seg.text[r])) { splitIdx = r; }
-                    else if (l >= lo && l > 0 && breakBefore.has(seg.text[l])) { splitIdx = l; }
-                }
-            }
-
-            // P4: 容忍區間內找不到好斷點 → 不切，保留完整
-            if ((splitIdx <= 0 || splitIdx >= len) && isInTolerance) {
-                result.push({ ...seg, id: result.length });
-                continue;
-            }
-
-            // P5: 超出硬上限且找不到好斷點 → 最後手段從中間硬切
-            if (splitIdx <= 0 || splitIdx >= len) splitIdx = mid;
-
-            const ratio = splitIdx / len;
-            const midTime = seg.start + (seg.end - seg.start) * ratio;
-            result.push({ ...seg, id: result.length, text: seg.text.slice(0, splitIdx).trim(), end: midTime });
-            result.push({ ...seg, id: result.length + 1, text: seg.text.slice(splitIdx).trim(), start: midTime });
-            result[result.length - 1].id = result.length - 1;
-        }
-        return result;
-    }, []);
+    const splitLongCues = splitLongCuesUtil;
 
     // ── AI 逐句潤飾字幕（修錯字／去贅字／補標點，時間碼不變）──
     const [isPolishing, setIsPolishing] = useState(false);
@@ -866,7 +794,7 @@ export default function App() {
         try {
             const result = await api.transcribe(targetFileId, language, (pct, cur, total) => {
                 setTransProg({ pct, cur: cur ?? 0, total: total ?? 0 });
-            });
+            }, fastAsr);
             pushUndo();
             updateMedia(targetFileId, { transcript: structuredClone(result) });
             // 自動 cue splitting
@@ -875,7 +803,7 @@ export default function App() {
             setClipSegments(activeClip.id, split);
         } catch (err) { alert(`辨識失敗: ${err}`); }
         finally { clearInterval(elapsedTimer); setIsTranscribing(false); setTransProg(null); }
-    }, [fileId, language, setClipSegments, setIsTranscribing, splitLongCues, subtitleStyle.maxCharsPerCue, timelineClips, activeClipId, mediaItems]);
+    }, [fileId, language, setClipSegments, setIsTranscribing, splitLongCues, subtitleStyle.maxCharsPerCue, timelineClips, activeClipId, mediaItems, fastAsr]);
 
     // ── 收集時間軸全部字幕（時間映射到時間軸；複製/匯出共用邏輯）──
     const buildTimelineSegments = useCallback((): Segment[] => {
@@ -1156,8 +1084,8 @@ export default function App() {
         if (!s) return;
         const media = mediaItems.find(m => m.id === clip.mediaId);
         if (!media) return;
-        if (s.src !== media.url && !s.src.endsWith(media.url)) {
-            s.src = media.url;
+        if (!hasSrc(s, previewSrc(media))) {
+            s.src = previewSrc(media);
             s.load();
         }
         const applySeek = () => {
@@ -1224,9 +1152,9 @@ export default function App() {
                 }).catch(() => { });
             }
         };
-        if (media && v.src !== media.url && !v.src.endsWith(media.url)) {
+        if (media && !hasSrc(v, previewSrc(media))) {
             clipReadyRef.current = false;
-            v.src = media.url;
+            v.src = previewSrc(media);
             v.load();
             const onReady = () => {
                 v.removeEventListener('loadedmetadata', onReady);
@@ -1406,8 +1334,8 @@ export default function App() {
             const clip = findClipAtTime(time);
             if (clip && v) {
                 const media = mediaItems.find(m => m.id === clip.mediaId);
-                if (media && v.src !== media.url && !v.src.endsWith(media.url)) {
-                    v.src = media.url;
+                if (media && !hasSrc(v, previewSrc(media))) {
+                    v.src = previewSrc(media);
                     v.load();
                 }
                 const mediaTime = clip.trimStart + (time - clip.startTime) * clip.speed;
@@ -1872,8 +1800,8 @@ export default function App() {
         const media = clip ? mediaItems.find(m => m.id === clip.mediaId) : primaryMedia;
         if (!media) return;
         let h: (() => void) | null = null;
-        if (v.src !== media.url && !v.src.endsWith(media.url)) {
-            v.src = media.url;
+        if (!hasSrc(v, previewSrc(media))) {
+            v.src = previewSrc(media);
             v.load();
             const mt = clip
                 ? Math.min(clip.trimEnd, clip.trimStart + Math.max(0, pos - clip.startTime) * clip.speed)
@@ -2109,6 +2037,11 @@ export default function App() {
                                                 <option value="auto">自動偵測</option>
                                             </select>
                                         </div>
+                                        <label className="fast-asr-toggle" title="批次推論，約 4 倍速，適合長片先粗剪；專有名詞準確度略降，會省略部分口語贅詞（僅 GPU 有效）">
+                                            <input type="checkbox" checked={fastAsr} disabled={isTranscribing}
+                                                onChange={(e) => { setFastAsr(e.target.checked); try { localStorage.setItem('ljcut-fast-asr', e.target.checked ? '1' : '0'); } catch { /* noop */ } }} />
+                                            快速辨識（約 4 倍速，準確度略降）
+                                        </label>
                                         <div className="action-buttons">
                                             <button className="btn btn-primary" onClick={handleTranscribe}
                                                 disabled={isTranscribing} style={{ width: '100%', justifyContent: 'center' }}>

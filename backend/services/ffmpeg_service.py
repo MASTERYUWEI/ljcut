@@ -56,7 +56,7 @@ class FFmpegService:
             file_path,
         ]
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30, creationflags=_PROCESS_FLAGS)
+            result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30, creationflags=_PROCESS_FLAGS)
             data = json.loads(result.stdout)
 
             info = {
@@ -558,7 +558,7 @@ class FFmpegService:
             "-of", "csv=p=0",
             file_path,
         ]
-        probe_result = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=30, creationflags=_PROCESS_FLAGS)
+        probe_result = subprocess.run(probe_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30, creationflags=_PROCESS_FLAGS)
         duration = float(probe_result.stdout.strip())
         total_samples = int(duration * samples_per_second)
         if total_samples <= 0:
