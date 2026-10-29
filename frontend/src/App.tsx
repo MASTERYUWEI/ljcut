@@ -6,8 +6,8 @@ import { api, onApiReady } from './api';
 import type { MediaItem, TimelineClip, Segment, AppSettings, RecOpts, MicDevice } from './types';
 import { previewSrc, hasSrc, isShowing } from './proxy';
 import { zoomAt, type ZoomRegion } from './zoom';
-import { overlayAnim, isContentOverlay, OVERLAY_KINDS, OVERLAY_LABEL, type Overlay, type OverlayKind } from './overlay';
-import { getSprite } from './overlaySprites';
+import { overlayAnim, isContentOverlay, TEMPLATE_KINDS, OVERLAY_LABEL, type Overlay, type OverlayKind } from './overlay';
+import { getSprite, getHtmlDoc } from './overlaySprites';
 import { formatTime, formatTimestamp, generateRulerTicks, findSnapTime, LABEL_W, splitLongCues as splitLongCuesUtil } from './utils';
 import { SettingsModal } from './components/SettingsModal';
 import { RecordingSettingsModal } from './components/RecordingSettingsModal';
@@ -1906,6 +1906,7 @@ export default function App() {
     const editSelectedOverlayText = useCallback(() => {
         if (!selectedOverlay) return;
         const o = selectedOverlay.overlay;
+        if (o.kind === 'html') { alert('HTML 動畫由 AI 撰寫：請在對話中描述要怎麼改，AI 會用 edit_overlay 更新。'); return; }
         const text = prompt(o.kind === 'step' ? '步驟編號（最多 3 字）' : '文字（留空 = 不顯示）', o.text ?? '');
         if (text === null) return;
         const op: Record<string, unknown> = { type: 'edit_overlay', overlayId: o.id, text: text.trim() || undefined };
@@ -1926,7 +1927,9 @@ export default function App() {
     const cycleOverlayStyle = useCallback(() => {
         if (!selectedOverlay) return;
         const o = selectedOverlay.overlay;
-        if (o.kind === 'arrow') {
+        if (o.kind === 'html') {
+            runZoomOps([{ type: 'edit_overlay', overlayId: o.id, layer: o.layer === 'content' ? 'screen' : 'content' }]);
+        } else if (o.kind === 'arrow') {
             const order = ['bottom-right', 'bottom', 'bottom-left', 'left', 'top-left', 'top', 'top-right', 'right'] as const;
             runZoomOps([{ type: 'edit_overlay', overlayId: o.id, from: order[(order.indexOf(o.from ?? 'bottom-right') + 1) % order.length] }]);
         } else if (o.kind === 'title') {
@@ -2026,6 +2029,7 @@ export default function App() {
         };
         // ── 標註疊加層預覽：內容層跟著 <video> 的位置與縮放，標題層只跟位置；貼圖與匯出同一張 ──
         const imgs = new Map<string, HTMLImageElement>();
+        const frames = new Map<string, HTMLIFrameElement>();
         const drawOverlays = () => {
             const content = overlayContentRef.current, screen = overlayScreenRef.current;
             const v = getActiveVideo();
@@ -2048,6 +2052,41 @@ export default function App() {
                 const t = v.currentTime;
                 media.overlays!.forEach((o, index) => {
                     if (t < o.start || t >= o.end) return;
+                    if (o.kind === 'html') {
+                        const doc = o.html ? getHtmlDoc(o.html, srcW, srcH) : null;
+                        if (!doc) return;
+                        let frame = frames.get(o.id);
+                        if (!frame) {
+                            frame = document.createElement('iframe');
+                            frame.className = 'overlay-html';
+                            frame.setAttribute('sandbox', 'allow-scripts');   // 不同源：碰不到 LJ Cut 本體
+                            frame.setAttribute('tabindex', '-1');
+                            frame.setAttribute('aria-hidden', 'true');
+                            frame.addEventListener('load', () => { frame!.dataset.sent = ''; });
+                            frames.set(o.id, frame);
+                        }
+                        const layer = isContentOverlay(o) ? content : screen;
+                        if (frame.parentElement !== layer) layer.appendChild(frame);
+                        if (frame.dataset.doc !== doc.doc) { frame.srcdoc = doc.doc; frame.dataset.doc = doc.doc; frame.dataset.sent = ''; }
+                        const k = fw / doc.width;
+                        frame.style.left = `${fx}px`;
+                        frame.style.top = `${fy}px`;
+                        frame.style.width = `${doc.width}px`;
+                        frame.style.height = `${doc.height}px`;
+                        frame.style.transform = `scale(${k})`;
+                        frame.style.zIndex = String(index);
+                        frame.style.display = '';
+                        // 時間有變就送；暫停時每 0.5 秒補送（iframe 載入前送出的訊息會遺失）
+                        const local = (t - o.start).toFixed(3);
+                        const now = performance.now();
+                        if (frame.dataset.sent !== local || now - Number(frame.dataset.at || 0) > 500) {
+                            frame.contentWindow?.postMessage({ ljcutT: Number(local) }, '*');
+                            frame.dataset.sent = local;
+                            frame.dataset.at = String(now);
+                        }
+                        shown.add(o.id);
+                        return;
+                    }
                     const sprite = getSprite(o, srcW, srcH);
                     if (!sprite) return;
                     let img = imgs.get(o.id);
@@ -2077,11 +2116,24 @@ export default function App() {
                 if (img.style.display !== 'none') img.style.display = 'none';
                 if (!zoomMediaRef.current.some(m => m.overlays?.some(o => o.id === id))) { img.remove(); imgs.delete(id); }
             }
+            for (const [id, frame] of frames) {
+                if (shown.has(id)) continue;
+                if (frame.style.display !== 'none') frame.style.display = 'none';
+                if (!zoomMediaRef.current.some(m => m.overlays?.some(o => o.id === id && o.kind === 'html'))) { frame.remove(); frames.delete(id); }
+            }
         };
+        // HTML 動畫 iframe 載入完成會回報 ljcutReady：立即重送目前時間
+        const onReady = (e: MessageEvent) => {
+            if (!e.data?.ljcutReady) return;
+            for (const frame of frames.values()) if (e.source === frame.contentWindow) { frame.dataset.sent = ''; frame.dataset.at = '0'; }
+        };
+        window.addEventListener('message', onReady);
         raf = requestAnimationFrame(tick);
         return () => {
+            window.removeEventListener('message', onReady);
             cancelAnimationFrame(raf);
             for (const img of imgs.values()) img.remove();   // 迴圈重啟（卸載／熱更新）時不留舊貼圖
+            for (const frame of frames.values()) frame.remove();
         };
     }, [getActiveVideo]);
 
@@ -2654,7 +2706,7 @@ export default function App() {
                                         return { ...blk, row };
                                     });
                                     const rows = Math.max(1, rowEnds.length);
-                                    const icon: Record<string, string> = { box: '▢', arrow: '➜', spotlight: '◎', step: '①', title: 'T' };
+                                    const icon: Record<string, string> = { box: '▢', arrow: '➜', spotlight: '◎', step: '①', title: 'T', html: '</>' };
                                     return (
                                         <div className="track overlay-track" style={{ height: Math.max(44, rows * 22 + 6) }}>
                                             <div className="track-label zoom-track-label" style={{ width: LABEL_W }}>
@@ -2663,7 +2715,7 @@ export default function App() {
                                                     onClick={(e) => e.stopPropagation()}
                                                     onChange={(e) => { const k = e.target.value as OverlayKind; e.target.value = ''; if (k) addOverlayAtPlayhead(k); }}>
                                                     <option value="">＋ 加入</option>
-                                                    {OVERLAY_KINDS.map(k => <option key={k} value={k}>{icon[k]} {OVERLAY_LABEL[k]}</option>)}
+                                                    {TEMPLATE_KINDS.map(k => <option key={k} value={k}>{icon[k]} {OVERLAY_LABEL[k]}</option>)}
                                                 </select>
                                             </div>
                                             <div className="track-content" style={{ width: timelineWidth }}>
@@ -2677,8 +2729,8 @@ export default function App() {
                                                             <span className="clip-text">{icon[o.kind]} {o.text ?? OVERLAY_LABEL[o.kind]}</span>
                                                             {selected && (
                                                                 <span className="zoom-clip-tools" onClick={(e) => e.stopPropagation()}>
-                                                                    <button className="zoom-mini-btn" title="編輯文字" onClick={editSelectedOverlayText}>✎</button>
-                                                                    <button className="zoom-mini-btn" title={o.kind === 'arrow' ? '換箭頭方向' : o.kind === 'title' ? '換標題位置' : '換顏色'} onClick={cycleOverlayStyle}>↻</button>
+                                                                    <button className="zoom-mini-btn" title={o.kind === 'html' ? 'HTML 動畫由 AI 撰寫' : '編輯文字'} onClick={editSelectedOverlayText}>✎</button>
+                                                                    <button className="zoom-mini-btn" title={o.kind === 'arrow' ? '換箭頭方向' : o.kind === 'title' ? '換標題位置' : o.kind === 'html' ? '切換：跟著畫面縮放／固定在畫面上' : '換顏色'} onClick={cycleOverlayStyle}>↻</button>
                                                                     <button className="zoom-mini-btn" title="刪除這個標註" onClick={() => { if (runZoomOps([{ type: 'delete_overlay', overlayId: o.id }])) setSelectedOverlayId(null); }}>×</button>
                                                                 </span>
                                                             )}

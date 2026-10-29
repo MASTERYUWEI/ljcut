@@ -13,6 +13,25 @@ function key(o: Overlay, w: number, h: number) {
     return JSON.stringify([w, h, ...RENDER_FIELDS.map(k => o[k] ?? null)]);
 }
 
+export interface HtmlDoc { doc: string; width: number; height: number }
+const docs = new Map<string, HtmlDoc | 'loading' | 'error'>();
+/** HTML 動畫外殼文件（與匯出同一份）；就緒前回 null */
+export function getHtmlDoc(html: string, srcW: number, srcH: number): HtmlDoc | null {
+    const k = JSON.stringify([srcW, srcH, html]);
+    const hit = docs.get(k);
+    if (hit && hit !== 'loading' && hit !== 'error') return hit;
+    if (!hit) {
+        docs.set(k, 'loading');
+        fetch(`${getBase()}/api/overlay/html-doc`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ html, width: srcW, height: srcH }),
+        }).then(r => r.ok ? r.json() : Promise.reject(new Error(String(r.status))))
+            .then(d => docs.set(k, d))
+            .catch(() => docs.set(k, 'error'));
+    }
+    return null;
+}
+
 /** 已就緒回傳貼圖；否則在背景請求並回 null（下一格再試） */
 export function getSprite(o: Overlay, srcW: number, srcH: number): Sprite | null {
     const k = key(o, srcW, srcH);

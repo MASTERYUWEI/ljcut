@@ -70,50 +70,67 @@ def contact_sheet(media: Path, times: list[float], out: Path, labels: list[str] 
     font = _font(max(14, min(22, thumb_width // 28)))   # 標籤別蓋住畫面重點
     tiles = []
     small = _font(max(11, thumb_width // 32))
-    for i, t in enumerate(times):
-        zoom = zooms[i] if zooms and i < len(zooms) else None
-        layer_list = overlays[i] if overlays and i < len(overlays) and overlays[i] else []
-        full_res = (bool(zoom) and zoom_mode == "crop") or bool(layer_list)
-        r = _run(["ffmpeg", "-v", "error", "-ss", f"{max(0.0, t):.3f}", "-i", str(media),
-                  "-frames:v", "1", *([] if full_res else ["-vf", f"scale={thumb_width}:-2"]), "-f", "image2pipe",
-                  "-vcodec", "png", "-"])
-        if r.returncode != 0 or not r.stdout:
-            tile = Image.new("RGB", (thumb_width, thumb_width * 9 // 16), (40, 40, 40))
-        else:
-            from io import BytesIO
-            tile = Image.open(BytesIO(r.stdout)).convert("RGB")
-        screen_layer = None
-        if layer_list and tile.width > 16:
-            # 內容層畫在原解析度畫面上（之後一起縮放）；標題另畫一層，縮放後再疊
-            base = tile.convert("RGBA")
-            screen_layer = Image.new("RGBA", base.size, (0, 0, 0, 0))
-            for o in layer_list:
-                sprite, left, top = overlay_service.render(o, base.width, base.height)
-                (base if overlay_service.is_content(o) else screen_layer).alpha_composite(sprite, (left, top))
-            tile = base.convert("RGB")
-        if zoom:
-            x0, y0, x1, y1 = zoom_window(float(zoom["x"]), float(zoom["y"]), float(zoom["scale"]))
-            w, h = tile.size
-            if full_res and zoom_mode == "crop":
-                tile = tile.crop((round(x0 * w), round(y0 * h), round(x1 * w), round(y1 * h)))
-                tile = tile.resize((thumb_width, round(thumb_width * h / w)), Image.LANCZOS)
+    html_renderer = None   # HTML 動畫要截圖時才開無頭瀏覽器，整張拼圖共用
+    try:
+        for i, t in enumerate(times):
+            zoom = zooms[i] if zooms and i < len(zooms) else None
+            layer_list = overlays[i] if overlays and i < len(overlays) and overlays[i] else []
+            full_res = (bool(zoom) and zoom_mode == "crop") or bool(layer_list)
+            r = _run(["ffmpeg", "-v", "error", "-ss", f"{max(0.0, t):.3f}", "-i", str(media),
+                      "-frames:v", "1", *([] if full_res else ["-vf", f"scale={thumb_width}:-2"]), "-f", "image2pipe",
+                      "-vcodec", "png", "-"])
+            if r.returncode != 0 or not r.stdout:
+                tile = Image.new("RGB", (thumb_width, thumb_width * 9 // 16), (40, 40, 40))
             else:
-                ImageDraw.Draw(tile).rectangle([x0 * w, y0 * h, x1 * w - 1, y1 * h - 1], outline=(255, 50, 50),
-                                               width=max(2, w // 200))
-        if full_res and tile.width != thumb_width:
-            tile = tile.resize((thumb_width, round(thumb_width * tile.height / tile.width)), Image.LANCZOS)
-        if screen_layer is not None:
-            tile = tile.convert("RGBA")
-            tile.alpha_composite(screen_layer.resize(tile.size, Image.LANCZOS))
-            tile = tile.convert("RGB")
-        if grid:
-            _draw_grid(tile, small)
-        d = ImageDraw.Draw(tile)
-        text = labels[i] if labels and i < len(labels) else fmt_time(t)
-        bbox = d.textbbox((0, 0), text, font=font)
-        d.rectangle([0, 0, bbox[2] + 12, bbox[3] + 8], fill=(0, 0, 0))
-        d.text((6, 3), text, fill=(255, 221, 0), font=font)
-        tiles.append(tile)
+                from io import BytesIO
+                tile = Image.open(BytesIO(r.stdout)).convert("RGB")
+            screen_layer = None
+            if layer_list and tile.width > 16:
+                # 內容層畫在原解析度畫面上（之後一起縮放）；標題另畫一層，縮放後再疊
+                base = tile.convert("RGBA")
+                screen_layer = Image.new("RGBA", base.size, (0, 0, 0, 0))
+                for o in layer_list:
+                    if o["kind"] == "html":
+                        # HTML 動畫：用無頭瀏覽器渲染該時間點的一格（整個拼圖共用一個瀏覽器）
+                        if html_renderer is None:
+                            from .html_overlay import Renderer
+                            html_renderer = Renderer().__enter__()
+                        from io import BytesIO
+                        html_renderer.load(o["html"], base.width, base.height)
+                        sprite = Image.open(BytesIO(html_renderer.frame(max(0.0, t - o["start"])))).convert("RGBA")
+                        if sprite.size != base.size:
+                            sprite = sprite.resize(base.size, Image.LANCZOS)
+                        left = top = 0
+                    else:
+                        sprite, left, top = overlay_service.render(o, base.width, base.height)
+                    (base if overlay_service.is_content(o) else screen_layer).alpha_composite(sprite, (left, top))
+                tile = base.convert("RGB")
+            if zoom:
+                x0, y0, x1, y1 = zoom_window(float(zoom["x"]), float(zoom["y"]), float(zoom["scale"]))
+                w, h = tile.size
+                if full_res and zoom_mode == "crop":
+                    tile = tile.crop((round(x0 * w), round(y0 * h), round(x1 * w), round(y1 * h)))
+                    tile = tile.resize((thumb_width, round(thumb_width * h / w)), Image.LANCZOS)
+                else:
+                    ImageDraw.Draw(tile).rectangle([x0 * w, y0 * h, x1 * w - 1, y1 * h - 1], outline=(255, 50, 50),
+                                                   width=max(2, w // 200))
+            if full_res and tile.width != thumb_width:
+                tile = tile.resize((thumb_width, round(thumb_width * tile.height / tile.width)), Image.LANCZOS)
+            if screen_layer is not None:
+                tile = tile.convert("RGBA")
+                tile.alpha_composite(screen_layer.resize(tile.size, Image.LANCZOS))
+                tile = tile.convert("RGB")
+            if grid:
+                _draw_grid(tile, small)
+            d = ImageDraw.Draw(tile)
+            text = labels[i] if labels and i < len(labels) else fmt_time(t)
+            bbox = d.textbbox((0, 0), text, font=font)
+            d.rectangle([0, 0, bbox[2] + 12, bbox[3] + 8], fill=(0, 0, 0))
+            d.text((6, 3), text, fill=(255, 221, 0), font=font)
+            tiles.append(tile)
+    finally:
+        if html_renderer is not None:
+            html_renderer.close()
     cols = max(1, min(cols, len(tiles)))
     rows = (len(tiles) + cols - 1) // cols
     w, h = tiles[0].size

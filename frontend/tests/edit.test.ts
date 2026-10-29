@@ -279,3 +279,21 @@ test('overlays: multi-layer add/edit/delete, validation, follow ripple, animatio
     assert.ok(Math.abs(overlayAnim(o, 2.9).opacity - 0.5) < 1e-9);
     assert.equal(overlayAnim({ kind: 'title', start: 0, end: 2 } as any, 0).slide, -40);
 });
+
+test('html overlays: add/edit layer, validation, no template animation', async () => {
+    const { overlayAnim, isContentOverlay } = await import('../src/overlay');
+    const p:any = project(); p.mediaItems[0].info.width = 1920; p.mediaItems[0].info.height = 1080;
+    const op = (o:any) => ({ trackId: 'video-main' as const, timeDomain: 'source' as const, ...o });
+    const ids = (() => { let i = 0; return () => `h${i++}`; })();
+    const d = evaluatePlan(p, 0, { ...plan(), operations: [op({ type: 'add_overlay', kind: 'html', start: 1, end: 4, html: '<div>hi</div>', text: '片頭動畫' })] } as any, ids);
+    const h = d.next.mediaItems[0].overlays![0];
+    assert.equal(h.html, '<div>hi</div>');
+    assert.equal(isContentOverlay(h), false);                                   // 預設固定在畫面上
+    const e = evaluatePlan(d.next, 0, { ...plan(), operations: [op({ type: 'edit_overlay', overlayId: h.id, layer: 'content' })] } as any, ids);
+    assert.equal(isContentOverlay(e.next.mediaItems[0].overlays![0]), true);
+    assert.deepEqual(overlayAnim(h, 1), { opacity: 1, scale: 1, slide: 0 });   // HTML 自己控制進出場
+    const bad = (o:any) => assert.throws(() => evaluatePlan(p, 0, { ...plan(), operations: [op(o)] } as any, ids), { code: 'INVALID_OVERLAY' });
+    bad({ type: 'add_overlay', kind: 'html', start: 1, end: 4 });
+    bad({ type: 'add_overlay', kind: 'html', start: 1, end: 4, html: 'x', layer: 'top' });
+    bad({ type: 'add_overlay', kind: 'html', start: 0, end: 7.9, html: 'x'.repeat(200_001) });
+});

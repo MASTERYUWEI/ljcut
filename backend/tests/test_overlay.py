@@ -93,3 +93,42 @@ class OverlayExportTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class HtmlOverlayTests(unittest.TestCase):
+    HTML = ("<style>#b{position:absolute;top:340px;left:0;width:400px;height:400px;background:#0a84ff;"
+            "animation:mv 4s linear forwards}@keyframes mv{to{left:1520px}}</style><div id=b></div>"
+            "<img src='https://example.com/should-not-load.png'>")
+
+    def test_sanitize_html(self):
+        ok = overlay.sanitize([ov(kind='html', html='<b>x</b>')])[0]
+        self.assertEqual(ok['layer'], 'screen')
+        for bad in ([ov(kind='html')], [ov(kind='html', html='x', layer='top')], [ov(kind='html', html='x' * 200_001)],
+                    [ov(kind='html', html='x', end=100)]):
+            with self.assertRaises(ValueError, msg=bad):
+                overlay.sanitize(bad)
+        self.assertIn("default-src 'none'", __import__('services.html_overlay', fromlist=['wrap']).wrap('x', 1920, 1080))
+
+    def test_export_html_animation_on_source_time(self):
+        from services import html_overlay
+        if not html_overlay.find_browser():
+            self.skipTest('沒有 Edge/Chrome')
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / 'quad.mp4'
+            quadrant_video(src)
+            out = Path(tmp) / 'out.mp4'
+            ass = Path(tmp) / 'none.ass'
+            ass.write_text('', encoding='utf-8')
+            # 來源 4–8 秒（HTML 時間 0–4）、片段從來源 2 秒起 2 倍速 → 成品 1.0–3.0 秒
+            clips = [{'video_path': str(src), 'trim_start': 2, 'trim_end': 10, 'speed': 2, 'output_duration': 4,
+                      'overlays': [ov(id='h', kind='html', start=4, end=8, html=self.HTML)]}]
+            for _ in FFmpegService.export_timeline_with_progress(clips, str(ass), str(out), use_nvenc=False,
+                                                                 video_width=640, video_height=360):
+                pass
+            self.assertAlmostEqual(FFmpegService.get_media_info(str(out))['duration'], 4, delta=0.1)
+            is_box = lambda p: p[2] > 200 and p[0] < 100 and 100 < p[1] < 170   # #0A84FF
+            self.assertFalse(is_box(pixel(out, 0.6, .05, .5)))                 # 出現前
+            self.assertTrue(is_box(pixel(out, 1.1, .08, .5)))                  # 剛出現：方塊在最左邊
+            self.assertTrue(is_box(pixel(out, 2.0, .48, .5)))                  # HTML 2 秒：left 760/1920
+            self.assertFalse(is_box(pixel(out, 2.0, .08, .5)))
+            self.assertFalse(is_box(pixel(out, 3.5, .9, .5)))                  # 結束後消失

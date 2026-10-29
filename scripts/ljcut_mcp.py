@@ -116,7 +116,9 @@ def t_status(_):
             lines.append(f"      縮放 {z['id']}  src {r2(z['start'])}–{r2(z['end'])}  中心({z['x']},{z['y']})  {z['scale']}x")
         for i, o in enumerate(m.get("overlays") or []):
             geo = f"({o['x']},{o['y']}" + (f",w{o['w']},h{o['h']}" if o.get("w") is not None else "") + ")"
-            extra = "".join(f" {k}={o[k]}" for k in ("text", "sub", "color", "from", "position") if o.get(k))
+            extra = "".join(f" {k}={o[k]}" for k in ("text", "sub", "color", "from", "position", "layer") if o.get(k))
+            if o["kind"] == "html":
+                extra += f"  html {len(o.get('html') or '')} 字元"
             lines.append(f"      標註#{i} {o['id']}  {o['kind']}  src {r2(o['start'])}–{r2(o['end'])}  {geo}{extra}")
     lines.append("時間軸片段（依順序）：")
     for i, c in enumerate(clips_sorted(s)):
@@ -386,6 +388,57 @@ def t_check_overlays(a):
     return blocks
 
 
+HTML_GUIDE = """LJ Cut 自訂 HTML 動畫撰寫規則（kind=html）
+
+畫面與座標
+- 設計畫面高 1080 px，寬依素材比例：16:9 為 1920×1080（ljcut_status 的素材解析度可推算：寬 = 1080 × 寬/高）。
+- 背景必須透明（不要幫 body 上底色），只畫要疊上去的東西；用 position:absolute 定位。
+- layer：screen（預設）固定在畫面上，適合片頭字卡、標題；content 會跟著畫面縮放一起放大，適合標在介面元素上的動畫。
+
+時間（最重要）
+- 動畫的 0 秒 = 這個疊加層的 start；LJ Cut 會暫停所有動畫並跳到指定秒數逐格截圖，所以必須能「跳到任意時間」：
+  1. 優先用 CSS @keyframes / transition（用 animation-delay 排時間），或 Web Animations API（element.animate）。
+  2. 需要 JS 計算時（數字跳動、逐字打字），定義 window.ljcutSeek = (t) => { …依 t 直接算出畫面… }，可回傳 Promise。
+  3. 不要用 setTimeout / setInterval / requestAnimationFrame 搭配時鐘推進，也不要依賴 Date.now() — 匯出時不會動。
+- 進出場自己做（例如最後 0.3 秒淡出）；LJ Cut 不會替 HTML 加淡入淡出。
+
+限制
+- 不能載入任何外部資源（網路被封鎖）：圖片請用 data: URI 或 inline SVG；字型用系統字型，中文建議 "Microsoft JhengHei"。
+- 每段最多 60 秒、200K 字元；匯出時每秒約需 3–4 秒渲染（原解析度逐格截圖），長段落會讓匯出明顯變慢。
+- 風格建議與模板一致：主色 #FF3B30（紅）/#FFCC00（黃）/#0A84FF（藍），深色半透明底 rgba(18,20,28,.88)，圓角 12–16px。
+
+範例（片頭字卡：標題滑入、底線展開、2.6 秒淡出）
+<style>
+.card{position:absolute;left:120px;bottom:140px;padding:28px 40px;border-radius:16px;background:rgba(18,20,28,.88);
+  font-family:"Microsoft JhengHei";color:#fff;animation:in .5s ease-out both, out .4s ease-in 2.6s both}
+.card h1{margin:0;font-size:64px}.card .bar{height:8px;background:#FFCC00;border-radius:4px;margin-top:12px;
+  transform-origin:left;animation:bar .6s ease-out .3s both}
+@keyframes in{from{opacity:0;transform:translateX(-60px)}}@keyframes out{to{opacity:0}}
+@keyframes bar{from{transform:scaleX(0)}}
+</style>
+<div class="card"><h1>共用參數設定</h1><div class="bar"></div></div>
+"""
+
+
+def t_html_guide(_):
+    return [text_block(HTML_GUIDE)]
+
+
+def t_html_preview(a):
+    """套用前試看：把一段 HTML 動畫疊在素材上，取幾個時間點（相對動畫起點的秒數）的畫面。"""
+    s = state()
+    mid = a.get("mediaId") or main_media_id(s)
+    m = next(m for m in s["mediaItems"] if m["id"] == mid)
+    start = float(a.get("start", 0))
+    times = [float(t) for t in (a.get("times") or [0.2, 1, 2])][:8]
+    o = {"id": "preview", "kind": "html", "start": start, "end": min(m["info"]["duration"], start + max(times) + 1),
+         "html": a["html"], "layer": a.get("layer", "screen")}
+    res = client().request("/observe/frames", {"mediaId": mid, "times": [start + t for t in times],
+                                                "labels": [f"動畫 {t}s" for t in times], "overlays": [[o]] * len(times),
+                                                "cols": 2, "thumbWidth": 640})
+    return [text_block(f"{media_name(s, mid)}：HTML 動畫試看（素材 {start}s 起；尚未加入專案）"), image_block(res["path"])]
+
+
 def t_check_zooms(a):
     """每個縮放區段取中間一格：左=原畫面＋紅框（放大範圍），右=實際放大後的畫面。"""
     s = state()
@@ -441,6 +494,8 @@ OPS_DOC = (
     "    共用：color red/yellow/blue/green/white（預設紅，標題預設黃）；座標皆為畫面比例 0–1；text 單行最多 40 字。"
     "一次說明一件事，同時出現的標註別超過 2–3 個\n"
     "- edit_overlay {overlayId, 任一欄位} / delete_overlay {overlayId}\n"
+    "- add_overlay kind=html {start,end,html,layer?,text?}：自訂 HTML 動畫（模板做不到時才用，例如片頭字卡、數字跳動、流程圖逐步出現）。"
+    "規則見 ljcut_html_guide；套用前可先用 ljcut_html_preview 看幾個時間點的畫面\n"
     "需要 clipId 的操作若要指向同批剛分割出的新片段，先 dry-run 一次取得新 clipId。"
 )
 TOOLS = [
@@ -467,6 +522,11 @@ TOOLS = [
     ("ljcut_check_cuts", "檢查剪接：每個片段接縫前後各取一格畫面，看接得順不順。", {"max": NUM, "offset": NUM}, [], t_check_cuts),
     ("ljcut_cursor", "讀取 LJ Cut 錄影時記下的滑鼠點擊（來源秒數、畫面比例座標），並給自動縮放建議（可直接當 ljcut_plan 的 operations）。"
      "沒有游標紀錄的素材請用 ljcut_frames grid=true 自己判斷位置。", {"mediaId": {"type": "string"}}, [], t_cursor),
+    ("ljcut_html_guide", "自訂 HTML 動畫（add_overlay kind=html）的撰寫規則與範例：畫面大小、時間控制、限制。寫 HTML 動畫前先讀。",
+     {}, [], t_html_guide),
+    ("ljcut_html_preview", "套用前試看 HTML 動畫：疊在素材 start 秒起，取 times（相對動畫起點的秒數）幾個時間點的畫面，不會改動專案。",
+     {"html": {"type": "string"}, "start": NUM, "times": {"type": "array", "items": NUM}, "mediaId": {"type": "string"},
+      "layer": {"type": "string", "enum": ["screen", "content"]}}, ["html"], t_html_preview),
     ("ljcut_check_overlays", "檢查標註：每個標註取一格，疊上當時所有標註並套用縮放（＝成品畫面），確認位置有沒有框對、文字是否清楚、有沒有擋到重點。",
      {"max": NUM, "offset": NUM}, [], t_check_overlays),
     ("ljcut_check_zooms", "檢查縮放：每個縮放區段中間一格：一張原畫面＋紅框、一張放大後實際畫面，確認放大的位置對不對、字看不看得清楚。",

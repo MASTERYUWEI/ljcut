@@ -3,7 +3,7 @@
    外觀只由後端 backend/services/overlay.py 畫成透明貼圖（預覽與匯出用同一張圖）；
    這裡負責驗證與進出場動畫，公式與後端 anim_filters / anim_state 相同。 */
 
-export type OverlayKind = 'box' | 'arrow' | 'spotlight' | 'step' | 'title';
+export type OverlayKind = 'box' | 'arrow' | 'spotlight' | 'step' | 'title' | 'html';
 export type OverlayColor = 'red' | 'yellow' | 'blue' | 'green' | 'white';
 export type ArrowFrom = 'right' | 'left' | 'top' | 'bottom' | 'top-right' | 'top-left' | 'bottom-right' | 'bottom-left';
 export type TitlePosition = 'bottom-left' | 'bottom-center' | 'top-left' | 'top-center';
@@ -29,12 +29,19 @@ export interface Overlay {
     from?: ArrowFrom;
     /** 標題位置（預設 bottom-left） */
     position?: TitlePosition;
+    /** 自訂 HTML 動畫（kind = html）：AI 撰寫，設計畫面高 1080 px、寬依素材比例；時間由 LJ Cut 控制 */
+    html?: string;
+    /** HTML 動畫圖層：content 跟著畫面縮放、screen 固定在畫面上（預設 screen） */
+    layer?: 'content' | 'screen';
 }
 
-export const OVERLAY_KINDS: OverlayKind[] = ['box', 'arrow', 'spotlight', 'step', 'title'];
-export const OVERLAY_LABEL: Record<OverlayKind, string> = { box: '醒目框', arrow: '箭頭', spotlight: '聚光燈', step: '步驟', title: '標題' };
-/** 內容層會跟著畫面縮放一起放大；標題固定在畫面上 */
-export const isContentOverlay = (o: Overlay) => o.kind !== 'title';
+export const OVERLAY_KINDS: OverlayKind[] = ['box', 'arrow', 'spotlight', 'step', 'title', 'html'];
+/** 介面「＋ 加入」可直接新增的模板（HTML 動畫由 AI 撰寫） */
+export const TEMPLATE_KINDS: OverlayKind[] = ['box', 'arrow', 'spotlight', 'step', 'title'];
+export const OVERLAY_LABEL: Record<OverlayKind, string> = { box: '醒目框', arrow: '箭頭', spotlight: '聚光燈', step: '步驟', title: '標題', html: 'HTML 動畫' };
+/** 內容層會跟著畫面縮放一起放大；標題固定在畫面上；HTML 動畫依 layer */
+export const isContentOverlay = (o: Overlay) => o.kind === 'html' ? o.layer === 'content' : o.kind !== 'title';
+export const HTML_LIMITS = { maxChars: 200_000, maxSeconds: 60 };
 
 const COLORS = ['red', 'yellow', 'blue', 'green', 'white'];
 const FROMS = ['right', 'left', 'top', 'bottom', 'top-right', 'top-left', 'bottom-right', 'bottom-left'];
@@ -52,6 +59,13 @@ export function checkOverlays(list: unknown, duration: number): string | null {
         ids.add(o.id);
         if (![o.start, o.end, o.x, o.y].every(finite)) return '疊加層數值無效';
         if (o.start < 0 || o.end > duration + 1e-6 || o.end - o.start < 0.3) return '疊加層需在素材範圍內且至少 0.3 秒';
+        if (o.kind === 'html') {
+            if (typeof o.html !== 'string' || !o.html.trim() || o.html.length > HTML_LIMITS.maxChars) return `HTML 動畫需提供 html（最多 ${HTML_LIMITS.maxChars / 1000}K 字元）`;
+            if (o.end - o.start > HTML_LIMITS.maxSeconds) return `HTML 動畫每段最多 ${HTML_LIMITS.maxSeconds} 秒`;
+            if (o.layer !== undefined && o.layer !== 'content' && o.layer !== 'screen') return 'HTML 動畫 layer 需為 content 或 screen';
+            if (o.text !== undefined && (typeof o.text !== 'string' || o.text.length > 40 || /[\x00-\x1f]/.test(o.text))) return 'text 需為單行文字（最多 40 字）';
+            continue;
+        }
         if (o.x < 0 || o.x > 1 || o.y < 0 || o.y > 1) return '疊加層位置 x/y 需為 0–1';
         if (o.kind === 'box' || o.kind === 'spotlight') {
             if (!finite(o.w) || !finite(o.h) || o.w < 0.01 || o.h < 0.01 || o.x + o.w > 1.0001 || o.y + o.h > 1.0001)
@@ -71,6 +85,7 @@ export function checkOverlays(list: unknown, duration: number): string | null {
 
 /** 某個來源時間的動畫狀態：不透明度、彈出縮放、標題滑入（以 1080p 為基準的像素，負值往左） */
 export function overlayAnim(o: Overlay, t: number): { opacity: number; scale: number; slide: number } {
+    if (o.kind === 'html') return { opacity: 1, scale: 1, slide: 0 };   // HTML 自己控制進出場
     const k = Math.min(1, Math.max(0, (t - o.start) / FADE_IN));
     const out = Math.min(1, Math.max(0, (o.end - t) / FADE_OUT));
     const smooth = k * k * (3 - 2 * k);

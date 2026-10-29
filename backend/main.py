@@ -35,6 +35,7 @@ from services.control import LocalControl
 from services import publication as publication_service
 from services import zoom as zoom_service
 from services import overlay as overlay_service
+from services import html_overlay
 
 # ---------- 設定 ----------
 UPLOAD_DIR = Path("./uploads")
@@ -472,6 +473,20 @@ async def overlay_render(body: dict = Body(default={})):
     info = await asyncio.to_thread(overlay_service.render_cached, o, w, h, OUTPUT_DIR / "overlays")
     return {"url": f"/outputs/overlays/{info['file']}", "left": info["left"], "top": info["top"],
             "width": info["width"], "height": info["height"]}
+
+
+@app.post("/api/overlay/html-doc")
+async def overlay_html_doc(body: dict = Body(default={})):
+    """預覽用：回傳與匯出相同外殼（時間控制、CSP）的 HTML 動畫文件，放進沙盒 iframe 播放。"""
+    try:
+        html = html_overlay.check_html(body.get("html"))
+        w, h = int(body.get("width", 0)), int(body.get("height", 0))
+    except (ValueError, TypeError) as e:
+        raise HTTPException(400, str(e))
+    if not (16 <= w <= 8192 and 16 <= h <= 8192):
+        raise HTTPException(400, "畫面尺寸無效")
+    css_w, css_h = html_overlay.design_size(w, h)
+    return {"doc": html_overlay.wrap(html, css_w, css_h), "width": css_w, "height": css_h}
 
 
 @app.get("/api/zoom-suggestions/{file_id}")

@@ -2432,3 +2432,14 @@ body {
   overflow: visible;
   z-index: 3;
 }
+
+/* HTML 動畫預覽：設計畫面大小的 iframe，以 transform 縮放到預覽畫面 */
+.overlay-html {
+  position: absolute;
+  border: 0;
+  background: transparent;
+  color-scheme: normal;
+  transform-origin: 0 0;
+  pointer-events: none;
+}
+.overlay-clip.kind-html { background: linear-gradient(180deg, rgba(166, 227, 161, 0.3), rgba(166, 227, 161, 0.12)); border-color: rgba(166, 227, 161, 0.6); color: #a6e3a1; }

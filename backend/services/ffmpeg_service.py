@@ -45,6 +45,7 @@ def _parse_frame_rate(fr: str) -> float:
 
 from . import zoom as zoom_service
 from . import overlay as overlay_service
+from . import html_overlay
 
 class FFmpegService:
     @staticmethod
@@ -315,6 +316,7 @@ class FFmpegService:
                 return None  # 還估不準
             return int(max(0, el * (1 - frac) / frac))
 
+        html_renderer = None   # HTML 動畫需要時才開無頭瀏覽器，整個匯出共用一個
         try:
             # ── Step 1: 逐 clip 產生標準化暫存檔 ──
             for idx, clip in enumerate(clips):
@@ -347,8 +349,19 @@ class FFmpegService:
                 overlays = overlay_service.visible(clip.get("overlays"), trim_start, trim_end) if src_w and src_h else []
                 sprites = []
                 for o in overlays:
+                    inp = 1 + (0 if has_audio else 1) + len(sprites)
+                    if o["kind"] == "html":
+                        # 逐格截成透明 PNG 序列（原解析度）；時間依來源秒數，倍速時一起變快
+                        if html_renderer is None:
+                            html_renderer = html_overlay.Renderer().__enter__()
+                        ta, times = html_overlay.frame_times(o, trim_start, trim_end, speed, target_fps)
+                        seq = html_overlay.render_sequence(html_renderer, o["html"], src_w, src_h, times,
+                                                           temp_dir / f"html_{idx}_{len(sprites)}")
+                        sprites.append((o, {"seq": str(seq), "ta": ta}, inp))
+                        cmd += ["-framerate", str(target_fps), "-i", str(Path(seq) / "%05d.png")]
+                        continue
                     info = overlay_service.render_cached(o, src_w, src_h, temp_dir / "overlays")
-                    sprites.append((o, info, 1 + (0 if has_audio else 1) + len(sprites)))
+                    sprites.append((o, info, inp))
                     cmd += ["-loop", "1", "-framerate", str(target_fps), "-t", f"{seg_out + 1:.3f}", "-i", info["path"]]
 
                 cmd += ['-map', '[vout]' if sprites else '0:v:0', '-map', '0:a:0' if has_audio else '1:a:0']
@@ -384,6 +397,13 @@ class FFmpegService:
                     def stack(items, scale_k, label):
                         nonlocal cur
                         for n, (o, info, inp) in enumerate(items):
+                            if o["kind"] == "html":
+                                # PNG 序列從 0 起算：平移到出現的輸出秒數；播完後讓主畫面直接通過
+                                size = "" if scale_k == 1.0 else f",scale={fit_w}:{fit_h}"
+                                graph.append(f"[{inp}:v]format=rgba{size},setpts=PTS-STARTPTS+{info['ta']:.6f}/TB[{label}s{n}]")
+                                graph.append(f"[{cur}][{label}s{n}]overlay=0:0:eof_action=pass[{label}{n}]")
+                                cur = f"{label}{n}"
+                                continue
                             chain, dx, enable = overlay_service.anim_filters(o, trim_start, speed, scale_k, src_h)
                             w0 = info["width"] * scale_k
                             x = f"{info['left'] * scale_k:.2f}+({w0:.2f}-overlay_w)/2+{dx}"
@@ -583,6 +603,8 @@ class FFmpegService:
             print(f"✅ 多 clip 匯出完成: {output_path}")
 
         finally:
+            if html_renderer is not None:
+                html_renderer.close()
             # 清理暫存檔
             import shutil
             if temp_dir.exists():

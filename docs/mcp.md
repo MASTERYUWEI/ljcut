@@ -83,6 +83,24 @@ LJ Cut 重開後不必重啟 MCP。
 - **介面**：時間軸「✏️ 標註」軌，重疊時自動分行。「＋ 加入」在播放頭加 3 秒；選取後 ✎ 改文字、↻ 換顏色／箭頭方向／標題位置、
   × 刪除；Shift+點預覽畫面移動位置（框會以點擊處為中心），Shift+拖曳重新框選框與聚光燈範圍（已放大時會換算回原畫面座標）。
 
+## 自訂 HTML 動畫（kind = html）
+
+- **用途**：模板做不到的效果，例如片頭字卡、逐字打字、數字跳動、流程圖逐步出現。由 AI 撰寫 HTML/CSS/JS，
+  存成疊加層 `{kind:'html', start, end, html, layer?, text?}`（`layer` content＝跟著縮放、screen＝固定，預設 screen；`text` 只是時間軸上的名稱）。
+- **畫面與時間**：設計畫面高 1080 px、寬依素材比例（16:9 為 1920）；背景透明。動畫 0 秒＝疊加層 start。
+  外殼會暫停所有 CSS 動畫／Web Animations 並跳到指定秒數；JS 動畫需提供 `window.ljcutSeek(t)`。
+  依賴 setTimeout／requestAnimationFrame 時鐘的動畫無法跳轉，不支援。進出場由 HTML 自己做。
+- **單一外殼**：`backend/services/html_overlay.py` 的 `wrap()`（時間控制腳本＋CSP）同時用於預覽與匯出。
+  預覽向 `/api/overlay/html-doc` 取外殼文件，放進 `sandbox="allow-scripts"` 的 iframe（不同源，碰不到 LJ Cut），
+  每格以 postMessage 送時間；iframe 載入完成會回報 `ljcutReady`，暫停時每 0.5 秒補送，避免訊息遺失。
+- **匯出**：以內建的 `websockets` 直接走 Chrome DevTools Protocol 驅動無頭 Edge／Chrome（不新增套件；
+  可用環境變數 `LJCUT_BROWSER` 指定瀏覽器），依來源秒數逐格截成原解析度透明 PNG（倍速時一起變快），
+  再當 PNG 序列疊進影片（內容層在縮放前、畫面層在縮放後）。實測每格約 0.11 秒，即每秒動畫約 3–4 秒渲染。
+- **安全**：CSP 禁止所有網路請求（只允許內嵌 data:），瀏覽器另以 `--host-resolver-rules` 讓任何網址解析失敗；
+  HTML 最多 200K 字元、每段最多 60 秒，後端重新驗證。
+- **MCP**：`ljcut_html_guide`（規則與範例）、`ljcut_html_preview`（套用前試看幾個時間點，不改專案）；
+  加入後 `ljcut_check_overlays` 也會渲染 HTML 動畫。介面上 HTML 動畫可選取、刪除、↻ 切換圖層；內容請 AI 修改。
+
 ## 相關改動
 
 - **長輪詢**：編輯器以 `/poll {wait:8}` 等待命令，後端有命令立即回應。過去靠 300ms 計時器，

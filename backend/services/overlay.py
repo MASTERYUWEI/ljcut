@@ -19,7 +19,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
-KINDS = ("box", "arrow", "spotlight", "step", "title")
+KINDS = ("box", "arrow", "spotlight", "step", "title", "html")
 CONTENT_KINDS = ("box", "arrow", "spotlight", "step")
 COLORS = {
     "red": (255, 59, 48), "yellow": (255, 204, 0), "blue": (10, 132, 255),
@@ -81,6 +81,20 @@ def sanitize(overlays) -> list[dict]:
             raise ValueError("疊加層數值無效")
         if not (c["start"] >= 0 and c["end"] - c["start"] >= 0.3):
             raise ValueError("疊加層至少 0.3 秒")
+        if o["kind"] == "html":
+            # 自訂 HTML 動畫：外觀由 HTML 決定，只需內容與圖層（content 跟著縮放／screen 固定在畫面上）
+            from .html_overlay import check_html, MAX_SECONDS
+            if c["end"] - c["start"] > MAX_SECONDS:
+                raise ValueError(f"HTML 動畫每段最多 {MAX_SECONDS} 秒")
+            layer = o.get("layer", "screen")
+            if layer not in ("content", "screen"):
+                raise ValueError("HTML 動畫 layer 需為 content 或 screen")
+            c.update(html=check_html(o.get("html")), layer=layer)
+            name = _text(o.get("text"), 40, "text")   # 只當時間軸上的名稱，不會畫到畫面
+            if name:
+                c["text"] = name
+            out.append(c)
+            continue
         if not (0 <= c["x"] <= 1 and 0 <= c["y"] <= 1):
             raise ValueError("疊加層位置 x/y 需為 0–1")
         if "w" in c and not (0.01 <= c["w"] <= 1 and 0.01 <= c["h"] <= 1
@@ -113,7 +127,9 @@ def sanitize(overlays) -> list[dict]:
 
 
 def is_content(o: dict) -> bool:
-    """內容層跟著畫面縮放；標題固定在畫面上。"""
+    """內容層跟著畫面縮放；標題固定在畫面上；HTML 動畫依 layer 決定。"""
+    if o["kind"] == "html":
+        return o.get("layer") == "content"
     return o["kind"] in CONTENT_KINDS
 
 
