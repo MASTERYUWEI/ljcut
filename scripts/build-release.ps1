@@ -63,7 +63,7 @@ $sh = Join-Path $env:TEMP "ljcut-build.sh"
     'export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""',
     'npx -y @tauri-apps/cli build'
 ) | Set-Content -Path $sh -Encoding ascii
-& "C:/Program Files/Git/bin/bash.exe" $sh.Replace('','/')
+& "C:/Program Files/Git/bin/bash.exe" ($sh -replace '\\', '/')
 if ($LASTEXITCODE -ne 0) { throw "tauri build 失敗" }
 Pop-Location
 
