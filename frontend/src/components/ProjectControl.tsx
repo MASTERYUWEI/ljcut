@@ -68,6 +68,7 @@ export function ProjectFileButtons() {
             await executeCommand(method, { ...version(), path: target });
             toast('success', method === 'save' ? `已儲存「${target}」` : `已開啟「${target}」`);
             setOpen(null);
+            if (method === 'save' && closeAfterSave.current) { closeAfterSave.current = false; await closeWindow(); }
         } catch (e) { toast('error', String(e)); }
         finally { setBusy(false); }
     };
@@ -77,10 +78,15 @@ export function ProjectFileButtons() {
         else { setPath(st.path || '教學剪輯.ljcut'); setOpen('save'); }
     };
     // 開啟時向後端列出工作區裡的專案（取代手打檔名）
-    const [projects, setProjects] = useState<{ path: string; name: string; modified: number }[]>([]);
+    const [projects, setProjects] = useState<{ path: string; name: string; modified: number; autosave?: boolean }[]>([]);
     useEffect(() => {
         if (open !== 'open') return;
-        controlRequest('/projects').then(r => setProjects(r.projects ?? [])).catch(() => setProjects([]));
+        controlRequest('/projects').then(r => {
+            const list = r.projects ?? [];
+            setProjects(r.autosave ? [{ path: r.autosave.path, name: '上次沒儲存的進度（自動存檔）', modified: r.autosave.modified, autosave: true }, ...list] : list);
+            // 焦點放到清單第一個專案（方向鍵可上下選）
+            setTimeout(() => boxRef.current?.querySelector<HTMLElement>('.project-item')?.focus(), 0);
+        }).catch(() => setProjects([]));
     }, [open]);
     // 自動存檔：有未儲存修改時每分鐘存一份隱藏備份（不影響「未儲存」狀態）
     useEffect(() => {
@@ -95,14 +101,21 @@ export function ProjectFileButtons() {
             const latest = Math.max(0, ...(r.projects ?? []).map((x: { modified: number }) => x.modified));
             if (!r.autosave || r.autosave.modified <= latest + 5 || useStore.getState().timelineClips.length) return;
             const when = new Date(r.autosave.modified * 1000).toLocaleString('zh-TW', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-            toast('info', `找到上次沒儲存的進度（${when} 自動存檔）。`, [
+            toast('info', `找到上次沒儲存的進度（${when} 自動存檔）。也可以之後從「開啟」清單最上面還原。`, [
                 { label: '還原', run: () => { void doRun('open', AUTOSAVE_PATH); } },
-            ]);
+            ], { sticky: true });
         }).catch(() => { });
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [workspace]);
     // 關窗保護：有未儲存修改時先問
     const [closing, setClosing] = useState(false);
+    const closeAfterSave = useRef(false);
+    useEffect(() => {
+        if (!closing) return;
+        const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); setClosing(false); } };
+        window.addEventListener('keydown', onKey, true);
+        return () => window.removeEventListener('keydown', onKey, true);
+    }, [closing]);
     useEffect(() => {
         const onBeforeUnload = (e: BeforeUnloadEvent) => { if (statusRef.current.dirty) { e.preventDefault(); e.returnValue = ''; } };
         window.addEventListener('beforeunload', onBeforeUnload);
@@ -148,8 +161,16 @@ export function ProjectFileButtons() {
                 <div className="pop-title">選擇要開啟的專案</div>
                 {projects.length ? <ul className="project-list" role="listbox" aria-label="專案資料夾裡的專案">
                     {projects.map(pr => <li key={pr.path}>
-                        <button type="button" role="option" aria-selected={pr.path === path} className={`project-item ${pr.path === path ? 'on' : ''}`}
-                            onClick={() => setPath(pr.path)} onDoubleClick={() => void doRun('open', pr.path)} title="按兩下直接開啟">
+                        <button type="button" role="option" aria-selected={pr.path === path} className={`project-item ${pr.path === path ? 'on' : ''} ${pr.autosave ? 'autosave' : ''}`}
+                            onClick={() => setPath(pr.path)} onDoubleClick={() => void doRun('open', pr.path)} title="按兩下或 Enter 直接開啟"
+                            onFocus={() => setPath(pr.path)}
+                            onKeyDown={e => {
+                                const items = Array.from(boxRef.current?.querySelectorAll<HTMLElement>('.project-item') ?? []);
+                                const i = items.indexOf(e.currentTarget);
+                                if (e.key === 'ArrowDown') { e.preventDefault(); items[Math.min(items.length - 1, i + 1)]?.focus(); }
+                                else if (e.key === 'ArrowUp') { e.preventDefault(); items[Math.max(0, i - 1)]?.focus(); }
+                                else if (e.key === 'Enter') { e.preventDefault(); void doRun('open', pr.path); }
+                            }}>
                             <span>{pr.name}</span><small>{new Date(pr.modified * 1000).toLocaleString('zh-TW', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</small>
                         </button>
                     </li>)}
@@ -177,7 +198,7 @@ export function ProjectFileButtons() {
                 <p id="close-desc" className="close-desc">「{status.name || '未命名專案'}」有還沒儲存的修改。</p>
                 <div className="close-actions">
                     <button className="btn btn-primary" autoFocus disabled={busy} onClick={async () => {
-                        if (!status.path) { setClosing(false); save(true); return; }      // 還沒取名：先開另存
+                        if (!status.path) { setClosing(false); closeAfterSave.current = true; save(true); return; }      // 還沒取名：先另存，存好再關
                         await doRun('save', status.path);
                         if (!statusRef.current.dirty) await closeWindow();
                     }}>儲存並關閉</button>

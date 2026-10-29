@@ -44,11 +44,11 @@ export function humanizeError(raw: string): { message: string; detail?: string }
     return { message: lead + hit[1], detail: raw };
 }
 
-export function toast(kind: ToastKind, message: string, actions?: ToastAction[]) {
+export function toast(kind: ToastKind, message: string, actions?: ToastAction[], opts?: { sticky?: boolean }) {
     const id = ++seq;
     const h = kind === 'error' ? humanizeError(message.trim()) : { message: message.trim() };
     items = [...items, { id, kind, message: h.message, detail: h.detail, actions }].slice(-4);   // 最多同時 4 則
-    if (kind !== 'error') timers.set(id, setTimeout(() => dismissToast(id), actions?.length ? 9000 : 5000));
+    if (kind !== 'error' && !opts?.sticky) timers.set(id, setTimeout(() => dismissToast(id), actions?.length ? 9000 : 5000));
     emit();
     return id;
 }

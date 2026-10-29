@@ -1,6 +1,6 @@
 /* ── LJCUT 主應用 ── */
 
-import { Clapperboard, Upload, CircleDot, Settings, Play, Pause, Square, Video, FolderOpen, Film, ZoomIn, PenLine, Captions, Plus, Sparkles, SpellCheck, Brain, Copy, Check, Download, X, Image as ImageIcon, ArrowUpRight, Type, Code, Focus, ListOrdered, Gauge, Undo2, Redo2, TriangleAlert, CheckCheck, CircleHelp, MousePointerClick } from 'lucide-react';
+import { Clapperboard, Upload, CircleDot, Settings, Play, Pause, Square, Video, FolderOpen, Film, ZoomIn, PenLine, Captions, Plus, Sparkles, SpellCheck, Brain, Copy, Check, Download, X, Image as ImageIcon, ArrowUpRight, Type, Code, Focus, ListOrdered, Gauge, Undo2, Redo2, TriangleAlert, CheckCheck, CircleHelp, MousePointerClick, Minus } from 'lucide-react';
 import { useRef, useCallback, useState, useEffect, useLayoutEffect, useMemo } from 'react';
 import { useStore } from './store';
 import { api, onApiReady, getBase } from './api';
@@ -309,7 +309,7 @@ export default function App() {
 
     // ── Resize 面板 ──
     // 窄視窗（< 1280，例如旁邊開著 AI）左欄預設窄一點，把空間留給預覽與時間軸
-    const [leftWidth, setLeftWidth] = useState(() => (window.innerWidth < 1280 ? 170 : 240));
+    const [leftWidth, setLeftWidth] = useState(() => (window.innerWidth < 1280 ? 150 : 240));
     const [rightWidth, setRightWidth] = useState(340);
     // 時間軸是剪輯主角：預設約 40% 視窗高，拖曳後記住
     const [timelineHeight, setTimelineHeight] = useState<number>(() => {
@@ -2382,7 +2382,7 @@ export default function App() {
                     </>)}
                     <span className="header-sep" aria-hidden />
                     <button className="btn btn-icon" onClick={() => setShowHelp(true)} title="說明與快捷鍵（?）" aria-label="說明與快捷鍵" style={{ padding: '6px 10px' }}><CircleHelp aria-hidden /></button>
-                    <button className="btn" onClick={() => setShowSettings(true)} title="設定" aria-label="設定" style={{ padding: '6px 10px' }}><Settings aria-hidden /></button>
+                    <button className="btn btn-icon" onClick={() => setShowSettings(true)} title="設定" aria-label="設定" style={{ padding: '6px 10px' }}><Settings aria-hidden /></button>
                 </div>
             </header>
 
@@ -2713,9 +2713,9 @@ export default function App() {
                                     <Captions aria-hidden />{burnSubs ? '燒入' : '不燒入'}
                                 </button>
                             )}
-                            <span className="time" style={{ fontSize: 12 }} title="時間軸比例（Ctrl+＋／－）" aria-label={`時間軸比例 ${Math.round(zoom * 100)}%`}><ZoomIn aria-hidden style={{ width: 12, height: 12, verticalAlign: -2 }} /> {Math.round(zoom * 100)}%</span>
-                            <button className="btn" onClick={() => setZoom(z => Math.max(z * 0.8, 0.1))} style={{ padding: '4px 8px', fontSize: 12 }} aria-label="縮小時間軸" title="縮小時間軸（Ctrl+－）">−</button>
-                            <button className="btn" onClick={() => setZoom(z => Math.min(z * 1.25, 50))} style={{ padding: '4px 8px', fontSize: 12 }} aria-label="放大時間軸" title="放大時間軸（Ctrl+＋）">+</button>
+                            <span className="time zoom-ratio" style={{ fontSize: 12 }} title="時間軸比例（Ctrl+＋／－）" aria-label={`時間軸比例 ${Math.round(zoom * 100)}%`}><ZoomIn aria-hidden style={{ width: 12, height: 12, verticalAlign: -2 }} /> {Math.round(zoom * 100)}%</span>
+                            <button className="btn" onClick={() => setZoom(z => Math.max(z * 0.8, 0.1))} style={{ padding: '4px 6px' }} aria-label="縮小時間軸" title="縮小時間軸（Ctrl+－）"><Minus aria-hidden /></button>
+                            <button className="btn" onClick={() => setZoom(z => Math.min(z * 1.25, 50))} style={{ padding: '4px 6px' }} aria-label="放大時間軸" title="放大時間軸（Ctrl+＋）"><Plus aria-hidden /></button>
                         </div>
                     )}
 
@@ -3218,10 +3218,11 @@ export default function App() {
                     return;
                 }
                 case 'Delete': case 'Backspace': {
-                    e.preventDefault();
-                    if (selectedOverlayId) { if (runZoomOps([{ type: 'delete_overlay', overlayId: selectedOverlayId }])) setSelectedOverlayId(null); }
-                    else if (selectedZoomId) { if (runZoomOps([{ type: 'delete_zoom', zoomId: selectedZoomId }])) setSelectedZoomId(null); }
-                    else if (activeClipId) { handleClipDelete(activeClipId); toast('info', '已刪除片段，按 Ctrl+Z 可復原'); }
+                    if (selectedOverlayId) { e.preventDefault(); if (runZoomOps([{ type: 'delete_overlay', overlayId: selectedOverlayId }])) { setSelectedOverlayId(null); toast('info', '已刪除標註，按 Ctrl+Z 可復原'); } }
+                    else if (selectedZoomId) { e.preventDefault(); if (runZoomOps([{ type: 'delete_zoom', zoomId: selectedZoomId }])) { setSelectedZoomId(null); toast('info', '已刪除縮放，按 Ctrl+Z 可復原'); } }
+                    else if (e.key === 'Delete' && activeClipId && el.closest?.('.video-clip')) {
+                        e.preventDefault(); handleClipDelete(activeClipId); toast('info', '已刪除片段，按 Ctrl+Z 可復原');
+                    }
                     return;
                 }
                 case 'ArrowLeft': case 'ArrowRight': {

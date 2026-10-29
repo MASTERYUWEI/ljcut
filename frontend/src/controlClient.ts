@@ -229,7 +229,8 @@ function announceExternal(method: string, result: any, params?: any) {
     if (text) {
         aiActivity.text = text; aiActivity.at = Date.now();
         const details = method === 'apply' && Array.isArray(result?.changes) ? result.changes.slice(0, 12).map(describeChange) : [];
-        aiActivity.log = [{ text, at: aiActivity.at, details }, ...aiActivity.log].slice(0, 20);
+        if (aiActivity.log[0]?.text === text && !details.length) aiActivity.log[0].at = aiActivity.at;   // 連續相同動作只留一筆
+        else aiActivity.log = [{ text, at: aiActivity.at, details }, ...aiActivity.log].slice(0, 20);
         window.dispatchEvent(new Event('ljcut-ai-activity'));
     }
 }
