@@ -36,3 +36,10 @@ export function previewSrc(media: MediaItem): string {
 export function hasSrc(el: HTMLVideoElement, url: string): boolean {
     return el.src === url || el.src.endsWith(url);
 }
+
+/** video 元素正在播的是不是這個素材（原檔或代理檔都算；代理檔可能在播放途中才就緒） */
+export function isShowing(el: HTMLVideoElement, media: MediaItem): boolean {
+    if (!el.src) return false;
+    const proxy = ready.get(media.id);
+    return hasSrc(el, media.url) || (!!proxy && hasSrc(el, proxy));
+}

@@ -114,6 +114,10 @@ def t_status(_):
         lines.append(f"  {m['id']}  {m['filename']}  {r2(info.get('duration', 0))}s  {res}  {has}")
         for z in m.get("zooms") or []:
             lines.append(f"      縮放 {z['id']}  src {r2(z['start'])}–{r2(z['end'])}  中心({z['x']},{z['y']})  {z['scale']}x")
+        for i, o in enumerate(m.get("overlays") or []):
+            geo = f"({o['x']},{o['y']}" + (f",w{o['w']},h{o['h']}" if o.get("w") is not None else "") + ")"
+            extra = "".join(f" {k}={o[k]}" for k in ("text", "sub", "color", "from", "position") if o.get(k))
+            lines.append(f"      標註#{i} {o['id']}  {o['kind']}  src {r2(o['start'])}–{r2(o['end'])}  {geo}{extra}")
     lines.append("時間軸片段（依順序）：")
     for i, c in enumerate(clips_sorted(s)):
         tag = f" [{c['bookend']}]" if c.get("bookend") else ""
@@ -336,6 +340,52 @@ def t_cursor(a):
     return [text_block("\n".join(lines)), text_block({"operations": ops})]
 
 
+def zoom_state(zooms, t):
+    """與前端 zoomAt / 後端 zoom_at 相同的公式：回傳 (scale, x, y)。"""
+    scale, x, y = 1.0, 0.5, 0.5
+    for z in zooms or []:
+        if not (z["start"] <= t < z["end"]):
+            continue
+        e = min(float(z.get("ease", 0.4)), (z["end"] - z["start"]) / 2)
+        p = max(0.0, min(1.0, min((t - z["start"]) / e, (z["end"] - t) / e)))
+        k = p * p * (3 - 2 * p)
+        scale, x, y = 1 + (z["scale"] - 1) * k, 0.5 + (z["x"] - 0.5) * k, 0.5 + (z["y"] - 0.5) * k
+        break
+    return scale, x, y
+
+
+def t_check_overlays(a):
+    """每個標註取一格：疊上當時所有標註（多層）並套用縮放，就是成品看到的畫面。"""
+    s = state()
+    items = []
+    for m in s["mediaItems"]:
+        for o in m.get("overlays") or []:
+            t = min(o["end"] - 0.01, o["start"] + min(0.6, (o["end"] - o["start"]) / 2))   # 進場動畫結束後
+            shown = [c for c in clips_sorted(s) if c["mediaId"] == m["id"] and c["trimStart"] <= t < c["trimEnd"]]
+            items.append((m, o, t, f"tl {r2(to_tl(shown[0], t))}" if shown else "已被剪掉"))
+    if not items:
+        return [text_block("目前沒有標註。")]
+    off = int(a.get("offset", 0))
+    page = items[off: off + int(a.get("max", 6))]
+    blocks = [text_block(f"標註 {off + 1}–{off + len(page)} / {len(items)}（每格疊上當時所有標註並套用縮放 = 成品畫面）")]
+    by_media = {}
+    for m, o, t, tl in page:
+        by_media.setdefault(m["id"], (m, []))[1].append((o, t, tl))
+    for mid, (m, pts) in by_media.items():
+        times, labels, layers, zooms = [], [], [], []
+        for o, t, tl in pts:
+            active = [x for x in m.get("overlays") or [] if x["start"] <= t < x["end"]]
+            sc, zx, zy = zoom_state(m.get("zooms"), t)
+            times.append(t)
+            labels.append(f"{o['kind']} {o.get('text') or ''} {tl}".strip())
+            layers.append(active)
+            zooms.append({"x": zx, "y": zy, "scale": sc} if sc > 1.0005 else None)
+        res = client().request("/observe/frames", {"mediaId": mid, "times": times, "labels": labels, "overlays": layers,
+                                                    "zooms": zooms, "zoomMode": "crop", "cols": 2, "thumbWidth": 640})
+        blocks += [text_block(media_name(s, mid)), image_block(res["path"])]
+    return blocks
+
+
 def t_check_zooms(a):
     """每個縮放區段取中間一格：左=原畫面＋紅框（放大範圍），右=實際放大後的畫面。"""
     s = state()
@@ -384,6 +434,13 @@ OPS_DOC = (
     "- add_zoom {start,end,x,y,scale,ease?}：畫面放大（x/y 為放大中心，畫面比例 0–1；scale 1.1–4，教學常用 1.6–2.2；"
     "ease 進出場秒數預設 0.4）。存在素材上，之後剪片會跟著內容走；同一素材的區段不可重疊\n"
     "- edit_zoom {zoomId, start?,end?,x?,y?,scale?,ease?} / delete_zoom {zoomId}\n"
+    "- add_overlay {kind,start,end,...}：標註疊加層，可多層重疊（後加的在上層），存在素材上、跟著剪輯與縮放走。kind：\n"
+    "    box {x,y,w,h,text?}=醒目框（x,y 左上角）；spotlight {x,y,w,h,text?}=聚光燈（框外變暗）；"
+    "arrow {x,y,from?,text?}=箭頭（x,y 為尖端，from 為箭尾方向 right/left/top/bottom/top-right/top-left/bottom-right/bottom-left，預設 bottom-right）；"
+    "step {x,y,text}=步驟編號圓圈（text 最多 3 字）；title {text,sub?,position?}=標題條（bottom-left/bottom-center/top-left/top-center）\n"
+    "    共用：color red/yellow/blue/green/white（預設紅，標題預設黃）；座標皆為畫面比例 0–1；text 單行最多 40 字。"
+    "一次說明一件事，同時出現的標註別超過 2–3 個\n"
+    "- edit_overlay {overlayId, 任一欄位} / delete_overlay {overlayId}\n"
     "需要 clipId 的操作若要指向同批剛分割出的新片段，先 dry-run 一次取得新 clipId。"
 )
 TOOLS = [
@@ -410,6 +467,8 @@ TOOLS = [
     ("ljcut_check_cuts", "檢查剪接：每個片段接縫前後各取一格畫面，看接得順不順。", {"max": NUM, "offset": NUM}, [], t_check_cuts),
     ("ljcut_cursor", "讀取 LJ Cut 錄影時記下的滑鼠點擊（來源秒數、畫面比例座標），並給自動縮放建議（可直接當 ljcut_plan 的 operations）。"
      "沒有游標紀錄的素材請用 ljcut_frames grid=true 自己判斷位置。", {"mediaId": {"type": "string"}}, [], t_cursor),
+    ("ljcut_check_overlays", "檢查標註：每個標註取一格，疊上當時所有標註並套用縮放（＝成品畫面），確認位置有沒有框對、文字是否清楚、有沒有擋到重點。",
+     {"max": NUM, "offset": NUM}, [], t_check_overlays),
     ("ljcut_check_zooms", "檢查縮放：每個縮放區段中間一格：一張原畫面＋紅框、一張放大後實際畫面，確認放大的位置對不對、字看不看得清楚。",
      {"max": NUM, "offset": NUM}, [], t_check_zooms),
     ("ljcut_undo", "復原上一批變更（與 LJ Cut 介面共用 Ctrl+Z 堆疊）。", {}, [], t_undo),
@@ -450,6 +509,8 @@ def handle(msg):
                                     "ljcut_plan 試算 → 摘要給使用者確認 → ljcut_apply → ljcut_check_cuts 驗證 → ljcut_export。"
                                     "畫面放大：LJ Cut 錄影先用 ljcut_cursor 取得依點擊的建議，其他素材用 ljcut_frames grid=true 判斷位置；"
                                     "add_zoom 試算套用後用 ljcut_check_zooms 確認位置。"
+                                    "標註（醒目框/箭頭/聚光燈/步驟/標題）：先用 ljcut_frames grid=true 找座標（有游標紀錄時可參考 ljcut_cursor 的點擊位置），"
+                                    "add_overlay 套用後用 ljcut_check_overlays 確認。"
                                     "刪除與加速都要使用者確認；靜音不等於可刪。"})
     elif method == "ping":
         reply(mid, {})

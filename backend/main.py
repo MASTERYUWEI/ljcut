@@ -34,6 +34,7 @@ from services.youtube_service import YouTubeService
 from services.control import LocalControl
 from services import publication as publication_service
 from services import zoom as zoom_service
+from services import overlay as overlay_service
 
 # ---------- 設定 ----------
 UPLOAD_DIR = Path("./uploads")
@@ -315,6 +316,7 @@ async def export_timeline(body: dict = Body(default={})):
         segments = clip.get("segments", [])
         try:
             zoom_service.sanitize(clip.get("zooms"))
+            overlay_service.sanitize(clip.get("overlays"))
         except ValueError as e:
             raise HTTPException(400, str(e))
 
@@ -336,6 +338,7 @@ async def export_timeline(body: dict = Body(default={})):
             "output_duration": output_duration,
             "transition_in": clip.get('transition_in'),
             "zooms": clip.get('zooms') or [],
+            "overlays": clip.get('overlays') or [],
         })
 
         # 字幕資訊（含時間偏移）
@@ -454,6 +457,21 @@ def _build_proxy(file_id: str, src: str) -> None:
             return
     tmp.unlink(missing_ok=True)
     _proxy_jobs[file_id] = "failed"
+
+
+@app.post("/api/overlay/render")
+async def overlay_render(body: dict = Body(default={})):
+    """預覽用：把一個標註畫成透明貼圖（與匯出同一個繪製程式），回傳圖檔網址與在原解析度畫面上的位置。"""
+    try:
+        o = overlay_service.sanitize([body.get("overlay")])[0]
+        w, h = int(body.get("width", 0)), int(body.get("height", 0))
+    except (ValueError, TypeError, IndexError) as e:
+        raise HTTPException(400, str(e))
+    if not (16 <= w <= 8192 and 16 <= h <= 8192):
+        raise HTTPException(400, "畫面尺寸無效")
+    info = await asyncio.to_thread(overlay_service.render_cached, o, w, h, OUTPUT_DIR / "overlays")
+    return {"url": f"/outputs/overlays/{info['file']}", "left": info["left"], "top": info["top"],
+            "width": info["width"], "height": info["height"]}
 
 
 @app.get("/api/zoom-suggestions/{file_id}")

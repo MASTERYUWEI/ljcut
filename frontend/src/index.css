@@ -2367,7 +2367,68 @@ body {
   z-index: 3;
 }
 .zoom-clip-tools {
+  /* 顯示在區段上方：區段很窄時也不會蓋住區段本身 */
+  position: absolute;
+  bottom: calc(100% + 2px);
+  left: 0;
   display: flex;
   gap: 2px;
-  margin-left: auto;
+  padding: 2px;
+  background: rgba(17, 17, 27, 0.92);
+  border-radius: 4px;
+  z-index: 5;
+}
+
+/* ── 標註疊加層預覽 ── */
+.overlay-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+  z-index: 4;
+}
+.overlay-sprite {
+  position: absolute;
+  transform-origin: center center;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* ── 標註軌 ── */
+.overlay-add {
+  width: 64px;
+  height: 18px;
+  font-size: 10px;
+  padding: 0 2px;
+  background: rgba(137, 180, 250, 0.12);
+  color: var(--fg-text, #cdd6f4);
+  border: 1px solid rgba(137, 180, 250, 0.45);
+  border-radius: 3px;
+  cursor: pointer;
+}
+.overlay-track .track-content {
+  position: relative;
+}
+.overlay-clip {
+  position: absolute;
+  background: linear-gradient(180deg, rgba(137, 180, 250, 0.3), rgba(137, 180, 250, 0.14));
+  border: 1px solid rgba(137, 180, 250, 0.6);
+  border-radius: 4px;
+  color: #b4cdfa;
+  font-size: 10px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 4px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.overlay-clip.kind-title { background: linear-gradient(180deg, rgba(249, 226, 175, 0.3), rgba(249, 226, 175, 0.12)); border-color: rgba(249, 226, 175, 0.6); color: #f9e2af; }
+.overlay-clip.kind-spotlight { background: linear-gradient(180deg, rgba(203, 166, 247, 0.3), rgba(203, 166, 247, 0.12)); border-color: rgba(203, 166, 247, 0.6); color: #cba6f7; }
+.overlay-clip.selected {
+  border-color: #89b4fa;
+  box-shadow: 0 0 0 1px #89b4fa inset;
+  overflow: visible;
+  z-index: 3;
 }

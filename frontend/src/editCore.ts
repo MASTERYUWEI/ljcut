@@ -2,6 +2,7 @@ import type { MediaItem, Segment, TimelineClip } from './types';
 import type { SubtitleStyle } from './store';
 import { TRANSITIONS, type TransitionKind } from './transitions';
 import { checkZooms, type ZoomRegion } from './zoom';
+import { checkOverlays, OVERLAY_KINDS, type Overlay } from './overlay';
 
 export const TRACKS = [{ id: 'video-main', index: 0, kind: 'video-with-audio' as const },
     { id: 'subtitles-main', index: 1, kind: 'clip-subtitles' as const }];
@@ -70,6 +71,8 @@ export function validateProject(p: ProjectData, continuous = false): void {
             && m.info && finite(m.info.duration) && m.info.duration > 0, 'INVALID_MEDIA', '素材 ID 或長度無效');
         const zoomError = checkZooms(m.zooms, m.info.duration);
         requireEdit(!zoomError, 'INVALID_ZOOM', zoomError!);
+        const overlayError = checkOverlays(m.overlays, m.info.duration);
+        requireEdit(!overlayError, 'INVALID_OVERLAY', overlayError!);
         mediaIds.add(m.id);
     }
     const ids = new Set<string>();
@@ -116,7 +119,8 @@ export function validateProject(p: ProjectData, continuous = false): void {
 
 export type EditOperation = {
     type: 'ripple_delete' | 'add_subtitle' | 'split' | 'set_speed' | 'move_clip'
-        | 'delete_clip' | 'edit_subtitle' | 'delete_subtitle' | 'add_zoom' | 'edit_zoom' | 'delete_zoom';
+        | 'delete_clip' | 'edit_subtitle' | 'delete_subtitle' | 'add_zoom' | 'edit_zoom' | 'delete_zoom'
+        | 'add_overlay' | 'edit_overlay' | 'delete_overlay';
     /** 省略時依來源秒數（start / at）自動找片段；同批前面的操作分割過也能正確定位 */
     clipId?: string;
     /** 省略 clipId 時可指定素材，避免同一來源時間出現在多個片段 */
@@ -141,6 +145,15 @@ export type EditOperation = {
     scale?: number;
     ease?: number;
     zoomId?: string;
+    /** add_overlay / edit_overlay：疊加層欄位（見 overlay.ts）；edit / delete 用 overlayId 指定 */
+    overlayId?: string;
+    kind?: Overlay['kind'];
+    w?: number;
+    h?: number;
+    sub?: string;
+    color?: Overlay['color'];
+    from?: Overlay['from'];
+    position?: Overlay['position'];
     review?: 'confirmed' | 'needs_review';
     reason?: string;
 };
@@ -222,19 +235,8 @@ function applyZoomOp(next: ProjectData, op: EditOperation, id: () => string): ob
     let media: ProjectData['mediaItems'][number] | undefined;
     let zoom: ZoomRegion | undefined;
     if (op.type === 'add_zoom') {
-        requireEdit(finite(op.start) && finite(op.end), 'INVALID_RANGE', 'add_zoom 需提供來源秒數 start、end');
-        let mediaId = op.mediaId ?? (op.clipId ? next.timelineClips.find(c => c.id === op.clipId)?.mediaId : undefined);
-        if (!mediaId) {
-            const ids = [...new Set(next.timelineClips.filter(c => !c.bookend && op.start! >= c.trimStart && op.start! < c.trimEnd)
-                .map(c => c.mediaId))];
-            requireEdit(ids.length > 0, 'CLIP_NOT_FOUND', `沒有片段包含來源時間 ${op.start}`);
-            requireEdit(ids.length === 1, 'CLIP_AMBIGUOUS', `來源時間 ${op.start} 出現在多個素材，請指定 mediaId：${ids.join('、')}`);
-            mediaId = ids[0];
-        }
-        media = next.mediaItems.find(m => m.id === mediaId);
-        requireEdit(media, 'MEDIA_NOT_FOUND', `找不到素材 ${mediaId}`);
-        requireEdit(media.info.width && media.info.height, 'UNSUPPORTED_MEDIA', '純音訊素材不能縮放');
-        zoom = { id: id(), start: op.start, end: op.end, x: op.x ?? 0.5, y: op.y ?? 0.5, scale: op.scale ?? 2,
+        media = mediaForAdd(next, op);
+        zoom = { id: id(), start: op.start!, end: op.end!, x: op.x ?? 0.5, y: op.y ?? 0.5, scale: op.scale ?? 2,
             ...(op.ease !== undefined ? { ease: op.ease } : {}) };
         media.zooms = [...(media.zooms ?? []), zoom].sort((a, b) => a.start - b.start);
     } else {
@@ -252,13 +254,63 @@ function applyZoomOp(next: ProjectData, op: EditOperation, id: () => string): ob
     }
     const error = checkZooms(media.zooms, media.info.duration);
     requireEdit(!error, 'INVALID_ZOOM', error!);
-    const visible = next.timelineClips.filter(c => c.mediaId === media!.id && c.trimStart < zoom!.end && c.trimEnd > zoom!.start)
-        .map(c => [toTimelineTime(c, Math.max(c.trimStart, zoom!.start)), toTimelineTime(c, Math.min(c.trimEnd, zoom!.end))]);
+    const visible = visibleOnTimeline(next, media.id, zoom.start, zoom.end);
     return { type: op.type, zoomId: zoom.id, mediaId: media.id, source: [zoom.start, zoom.end],
         center: [zoom.x, zoom.y], scale: zoom.scale, timeline: visible,
         ...(visible.length ? {} : { warning: '此區段目前不在時間軸上（已被剪掉），不會出現在成品' }) };
 }
 
+/** add_zoom / add_overlay：依 start 所在片段決定素材（可用 mediaId 或 clipId 指定）。 */
+function mediaForAdd(next: ProjectData, op: EditOperation) {
+    requireEdit(finite(op.start) && finite(op.end), 'INVALID_RANGE', `${op.type} 需提供來源秒數 start、end`);
+    let mediaId = op.mediaId ?? (op.clipId ? next.timelineClips.find(c => c.id === op.clipId)?.mediaId : undefined);
+    if (!mediaId) {
+        const ids = [...new Set(next.timelineClips.filter(c => !c.bookend && op.start! >= c.trimStart && op.start! < c.trimEnd)
+            .map(c => c.mediaId))];
+        requireEdit(ids.length > 0, 'CLIP_NOT_FOUND', `沒有片段包含來源時間 ${op.start}`);
+        requireEdit(ids.length === 1, 'CLIP_AMBIGUOUS', `來源時間 ${op.start} 出現在多個素材，請指定 mediaId：${ids.join('、')}`);
+        mediaId = ids[0];
+    }
+    const media = next.mediaItems.find(m => m.id === mediaId);
+    requireEdit(media, 'MEDIA_NOT_FOUND', `找不到素材 ${mediaId}`);
+    requireEdit(media.info.width && media.info.height, 'UNSUPPORTED_MEDIA', '純音訊素材沒有畫面');
+    return media;
+}
+/** 疊加層在時間軸上實際出現的範圍（剪掉的部分不顯示） */
+function visibleOnTimeline(next: ProjectData, mediaId: string, start: number, end: number) {
+    return next.timelineClips.filter(c => c.mediaId === mediaId && c.trimStart < end && c.trimEnd > start)
+        .map(c => [toTimelineTime(c, Math.max(c.trimStart, start)), toTimelineTime(c, Math.min(c.trimEnd, end))]);
+}
+const OVERLAY_FIELDS = ['start', 'end', 'x', 'y', 'w', 'h', 'text', 'sub', 'color', 'from', 'position'] as const;
+function applyOverlayOp(next: ProjectData, op: EditOperation, id: () => string): object {
+    let media: ProjectData['mediaItems'][number] | undefined;
+    let overlay: Overlay;
+    if (op.type === 'add_overlay') {
+        requireEdit(op.kind && OVERLAY_KINDS.includes(op.kind), 'INVALID_OVERLAY', `add_overlay 需指定 kind：${OVERLAY_KINDS.join('/')}`);
+        media = mediaForAdd(next, op);
+        overlay = { id: id(), kind: op.kind, start: op.start!, end: op.end!, x: op.x ?? 0.5, y: op.y ?? 0.5 };
+        if (op.kind === 'box' || op.kind === 'spotlight') { overlay.w = op.w ?? 0.2; overlay.h = op.h ?? 0.2; }
+        for (const k of ['text', 'sub', 'color', 'from', 'position'] as const) if (op[k] !== undefined) (overlay as unknown as Record<string, unknown>)[k] = op[k];
+        media.overlays = [...(media.overlays ?? []), overlay];
+    } else {
+        requireEdit(typeof op.overlayId === 'string', 'OVERLAY_REQUIRED', `${op.type} 需提供 overlayId`);
+        media = next.mediaItems.find(m => m.overlays?.some(o => o.id === op.overlayId));
+        requireEdit(media, 'OVERLAY_NOT_FOUND', `找不到疊加層 ${op.overlayId}`);
+        const before = media.overlays!.find(o => o.id === op.overlayId)!;
+        if (op.type === 'delete_overlay') {
+            media.overlays = media.overlays!.filter(o => o.id !== op.overlayId);
+            return { type: op.type, overlayId: before.id, mediaId: media.id, removed: before };
+        }
+        overlay = { ...before };
+        for (const k of OVERLAY_FIELDS) if (op[k] !== undefined) (overlay as unknown as Record<string, unknown>)[k] = op[k];
+        media.overlays = media.overlays!.map(o => o.id === overlay.id ? overlay : o);
+    }
+    const error = checkOverlays(media.overlays, media.info.duration);
+    requireEdit(!error, 'INVALID_OVERLAY', error!);
+    const timeline = visibleOnTimeline(next, media.id, overlay.start, overlay.end);
+    return { type: op.type, overlayId: overlay.id, mediaId: media.id, kind: overlay.kind, source: [overlay.start, overlay.end],
+        timeline, ...(timeline.length ? {} : { warning: '此疊加層目前不在時間軸上（已被剪掉），不會出現在成品' }) };
+}
 /** 依操作的來源時間找出唯一包含它的片段（不含片頭片尾）。 */
 function locateClip(clips: TimelineClip[], op: EditOperation): TimelineClip {
     const point = op.type === 'split';
@@ -285,6 +337,10 @@ export function evaluatePlan(project: ProjectData, revision: number, plan: EditP
         requireEdit(op.review !== 'needs_review', 'REVIEW_REQUIRED', '待確認段落不可套用，請先人工確認');
         if (op.type === 'add_zoom' || op.type === 'edit_zoom' || op.type === 'delete_zoom') {
             changes.push(applyZoomOp(next, op, id));
+            continue;
+        }
+        if (op.type === 'add_overlay' || op.type === 'edit_overlay' || op.type === 'delete_overlay') {
+            changes.push(applyOverlayOp(next, op, id));
             continue;
         }
         const c = op.clipId ? next.timelineClips.find(c => c.id === op.clipId) : locateClip(next.timelineClips, op);

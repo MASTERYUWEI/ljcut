@@ -44,6 +44,7 @@ def _parse_frame_rate(fr: str) -> float:
 
 
 from . import zoom as zoom_service
+from . import overlay as overlay_service
 
 class FFmpegService:
     @staticmethod
@@ -339,7 +340,18 @@ class FFmpegService:
                 has_audio = bool(media_info.get('audio_codec'))
                 if not has_audio:
                     cmd += ['-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=48000']
-                cmd += ['-map', '0:v:0', '-map', '0:a:0' if has_audio else '1:a:0']
+                src_w, src_h = media_info.get('width') or 0, media_info.get('height') or 0
+                seg_out = (clip_dur / speed) if clip_dur > 0 else 0
+
+                # 標註疊加層：每個畫成一張透明貼圖，當成額外輸入（循環靜態圖）依時間疊上
+                overlays = overlay_service.visible(clip.get("overlays"), trim_start, trim_end) if src_w and src_h else []
+                sprites = []
+                for o in overlays:
+                    info = overlay_service.render_cached(o, src_w, src_h, temp_dir / "overlays")
+                    sprites.append((o, info, 1 + (0 if has_audio else 1) + len(sprites)))
+                    cmd += ["-loop", "1", "-framerate", str(target_fps), "-t", f"{seg_out + 1:.3f}", "-i", info["path"]]
+
+                cmd += ['-map', '[vout]' if sprites else '0:v:0', '-map', '0:a:0' if has_audio else '1:a:0']
                 if clip_dur > 0:
                     cmd += ["-t", str(clip_dur / speed)]
 
@@ -348,27 +360,52 @@ class FFmpegService:
                 # setpts=(PTS-STARTPTS)/speed：把每段起點歸零，順便套變速（speed=1 即純歸零）
                 speed_expr = f"(PTS-STARTPTS)/{speed}" if speed != 1.0 else "PTS-STARTPTS"
                 fit_step = [f"scale={video_width}:{video_height}:force_original_aspect_ratio=decrease"]
+                fit_w, fit_h = (zoom_service.fit_size(src_w, src_h, video_width, video_height)
+                                if src_w and src_h else (video_width, video_height))
                 zooms = zoom_service.overlapping(clip.get("zooms"), trim_start, trim_end)
-                if zooms and media_info.get('width') and media_info.get('height'):
+                if zooms and src_w and src_h:
                     # 畫面縮放：從原檔解析度直接放大再裁切，放大後的小字仍清楚
-                    fit_w, fit_h = zoom_service.fit_size(media_info['width'], media_info['height'], video_width, video_height)
                     fit_step = zoom_service.zoom_filters(zooms, trim_start, speed, fit_w, fit_h)
-                vf_parts = [
-                    f"setpts={speed_expr}",
-                    *fit_step,
+                elif sprites:
+                    fit_step = [f"scale={fit_w}:{fit_h}"]   # 明確尺寸，畫面層貼圖才能精準對位
+                tail = [
                     f"pad={video_width}:{video_height}:(ow-iw)/2:(oh-ih)/2:black",
                     "setsar=1",
                     f"fps={target_fps}",  # 統一影格率 → 強制 CFR
                 ]
                 transition_video, transition_audio = transition_filters(clips, idx)
-                vf_parts.extend(transition_video)
-                if zooms:
+                tail.extend(transition_video)
+                if sprites:
+                    # 內容層（框／箭頭／聚光燈／步驟）疊在原解析度畫面上，會跟著縮放；標題在縮放之後疊、固定在畫面上
+                    graph = [f"[0:v]setpts={speed_expr}[v0]"]
+                    cur = "v0"
+                    k = fit_w / src_w
+
+                    def stack(items, scale_k, label):
+                        nonlocal cur
+                        for n, (o, info, inp) in enumerate(items):
+                            chain, dx, enable = overlay_service.anim_filters(o, trim_start, speed, scale_k, src_h)
+                            w0 = info["width"] * scale_k
+                            x = f"{info['left'] * scale_k:.2f}+({w0:.2f}-overlay_w)/2+{dx}"
+                            y = f"{info['top'] * scale_k:.2f}+({info['height'] * scale_k:.2f}-overlay_h)/2"
+                            graph.append(f"[{inp}:v]{chain}[{label}s{n}]")
+                            graph.append(f"[{cur}][{label}s{n}]overlay=x='{x}':y='{y}':enable='{enable}':eval=frame[{label}{n}]")
+                            cur = f"{label}{n}"
+                    stack([s for s in sprites if overlay_service.is_content(s[0])], 1.0, "c")
+                    graph.append(f"[{cur}]{','.join(fit_step)}[vf]")
+                    cur = "vf"
+                    stack([s for s in sprites if not overlay_service.is_content(s[0])], k, "t")
+                    graph.append(f"[{cur}]{','.join(tail)}[vout]")
+                    script = temp_dir / f"clip_{idx}.fc.txt"
+                    script.write_text(";\n".join(graph), encoding="utf-8")
+                    cmd += ["-filter_complex_script", str(script)]
+                elif zooms:
                     # 縮放表達式可能很長：寫成檔案讀入，避開 Windows 命令列 32K 字元上限
                     vf_file = temp_dir / f"clip_{idx}.vf.txt"
-                    vf_file.write_text(",".join(vf_parts), encoding="utf-8")
+                    vf_file.write_text(",".join([f"setpts={speed_expr}", *fit_step, *tail]), encoding="utf-8")
                     cmd += ["-filter_script:v", str(vf_file)]
                 else:
-                    cmd += ["-vf", ",".join(vf_parts)]
+                    cmd += ["-vf", ",".join([f"setpts={speed_expr}", *fit_step, *tail])]
 
                 # 音訊：重置 PTS（+ 變速）並統一格式
                 af_parts = ["asetpts=PTS-STARTPTS"]

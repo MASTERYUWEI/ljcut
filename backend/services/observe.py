@@ -55,22 +55,25 @@ def _draw_grid(tile, font):
 
 def contact_sheet(media: Path, times: list[float], out: Path, labels: list[str] | None = None,
                   thumb_width: int = 384, cols: int = 4, grid: bool = False,
-                  zooms: list | None = None, zoom_mode: str = "box") -> dict:
+                  zooms: list | None = None, zoom_mode: str = "box", overlays: list | None = None) -> dict:
     """指定時間點各抓一格，拼成一張附時間標籤的縮圖網格。
 
     grid=True 疊上 10% 座標格線（給 AI 判斷放大中心 x/y）；
     zooms[i] = {x,y,scale} 時，zoom_mode="box" 畫出放大範圍框，"crop" 直接顯示放大後的畫面（從原解析度裁切）。
+    overlays[i] = [疊加層…] 時，以完整顯示狀態疊上（內容層在縮放前、標題在縮放後），呈現成品看到的畫面。
     """
+    from . import overlay as overlay_service
     if not times:
         raise ValueError("至少需要 1 個時間點")
     if len(times) > 24:
         raise ValueError("一次最多 24 個時間點")
-    font = _font(max(14, thumb_width // 18))
+    font = _font(max(14, min(22, thumb_width // 28)))   # 標籤別蓋住畫面重點
     tiles = []
     small = _font(max(11, thumb_width // 32))
     for i, t in enumerate(times):
         zoom = zooms[i] if zooms and i < len(zooms) else None
-        full_res = bool(zoom) and zoom_mode == "crop"
+        layer_list = overlays[i] if overlays and i < len(overlays) and overlays[i] else []
+        full_res = (bool(zoom) and zoom_mode == "crop") or bool(layer_list)
         r = _run(["ffmpeg", "-v", "error", "-ss", f"{max(0.0, t):.3f}", "-i", str(media),
                   "-frames:v", "1", *([] if full_res else ["-vf", f"scale={thumb_width}:-2"]), "-f", "image2pipe",
                   "-vcodec", "png", "-"])
@@ -79,15 +82,30 @@ def contact_sheet(media: Path, times: list[float], out: Path, labels: list[str] 
         else:
             from io import BytesIO
             tile = Image.open(BytesIO(r.stdout)).convert("RGB")
+        screen_layer = None
+        if layer_list and tile.width > 16:
+            # 內容層畫在原解析度畫面上（之後一起縮放）；標題另畫一層，縮放後再疊
+            base = tile.convert("RGBA")
+            screen_layer = Image.new("RGBA", base.size, (0, 0, 0, 0))
+            for o in layer_list:
+                sprite, left, top = overlay_service.render(o, base.width, base.height)
+                (base if overlay_service.is_content(o) else screen_layer).alpha_composite(sprite, (left, top))
+            tile = base.convert("RGB")
         if zoom:
             x0, y0, x1, y1 = zoom_window(float(zoom["x"]), float(zoom["y"]), float(zoom["scale"]))
             w, h = tile.size
-            if full_res:
+            if full_res and zoom_mode == "crop":
                 tile = tile.crop((round(x0 * w), round(y0 * h), round(x1 * w), round(y1 * h)))
                 tile = tile.resize((thumb_width, round(thumb_width * h / w)), Image.LANCZOS)
             else:
                 ImageDraw.Draw(tile).rectangle([x0 * w, y0 * h, x1 * w - 1, y1 * h - 1], outline=(255, 50, 50),
                                                width=max(2, w // 200))
+        if full_res and tile.width != thumb_width:
+            tile = tile.resize((thumb_width, round(thumb_width * tile.height / tile.width)), Image.LANCZOS)
+        if screen_layer is not None:
+            tile = tile.convert("RGBA")
+            tile.alpha_composite(screen_layer.resize(tile.size, Image.LANCZOS))
+            tile = tile.convert("RGB")
         if grid:
             _draw_grid(tile, small)
         d = ImageDraw.Draw(tile)

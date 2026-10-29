@@ -286,7 +286,7 @@ export const api = {
 
     /** 多 clip 時間軸匯出（含字幕）— 含存檔對話框 + 進度回報 */
     async exportTimeline(
-        clips: { fileId: string; trimStart: number; trimEnd: number; speed: number; segments: Segment[]; captionSegments: Segment[]; bookend?: string; transitionIn?: import('./types').TimelineClip['transitionIn']; zooms?: import('./zoom').ZoomRegion[] }[],
+        clips: { fileId: string; trimStart: number; trimEnd: number; speed: number; segments: Segment[]; captionSegments: Segment[]; bookend?: string; transitionIn?: import('./types').TimelineClip['transitionIn']; zooms?: import('./zoom').ZoomRegion[]; overlays?: import('./overlay').Overlay[] }[],
         style: Record<string, unknown>,
         defaultFileName: string,
         videoWidth: number,
@@ -316,6 +316,7 @@ export const api = {
                     bookend: c.bookend,
                     transition_in: c.transitionIn,
                     zooms: c.zooms ?? [],
+                    overlays: c.overlays ?? [],
                     trim_start: c.trimStart,
                     trim_end: c.trimEnd,
                     speed: c.speed,

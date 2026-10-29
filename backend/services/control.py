@@ -24,6 +24,7 @@ from .transitions import validate_transitions
 from . import publication as publications
 from . import observe
 from . import zoom as zoom_service
+from . import overlay as overlay_service
 
 
 def fail(code, message, status=400):
@@ -44,6 +45,10 @@ def project_payload(p):
             zoom_service.sanitize(m.get('zooms'))
         except ValueError as error:
             fail('INVALID_ZOOM', str(error))
+        try:
+            overlay_service.sanitize(m.get('overlays'))
+        except ValueError as error:
+            fail('INVALID_OVERLAY', str(error))
         ids.add(m['id'])
     clip_ids = set()
     for c in p['timelineClips']:
@@ -430,11 +435,19 @@ class LocalControl:
             mode = body.get("zoomMode", "box")
             if mode not in ("box", "crop"):
                 fail("INVALID_PARAM", "zoomMode 需為 box 或 crop")
+            layers = body.get("overlays")
+            if layers is not None:
+                if not isinstance(layers, list):
+                    fail("INVALID_PARAM", "overlays 需為每個時間點一個疊加層陣列（或 null）")
+                try:
+                    layers = [overlay_service.sanitize(x) if x else None for x in layers]
+                except ValueError as error:
+                    fail("INVALID_OVERLAY", str(error))
             out = self.root / "observe" / f"frames-{uuid.uuid4().hex[:10]}.jpg"
             try:
                 res = await asyncio.to_thread(observe.contact_sheet, src, [float(t) for t in times], out,
                                               [str(x) for x in labels] if labels else None, width, cols,
-                                              body.get("grid") is True, zooms, mode)
+                                              body.get("grid") is True, zooms, mode, layers)
             except ValueError as e:
                 fail("INVALID_PARAM", str(e))
             res["path"] = out.relative_to(self.root).as_posix()
@@ -553,6 +566,7 @@ class LocalControl:
             medias = {m['id']: self.media_path(m) for m in project.get('mediaItems', [])}
             infos = {mid: await asyncio.to_thread(FFmpegService.get_media_info, str(path)) for mid, path in medias.items()}
             zooms_by_media = {m['id']: m.get('zooms') or [] for m in project.get('mediaItems', [])}
+            overlays_by_media = {m['id']: m.get('overlays') or [] for m in project.get('mediaItems', [])}
             clips = []
             subtitle_clips = []
             offset = 0.0
@@ -572,7 +586,8 @@ class LocalControl:
                     fail('INVALID_RANGE', '片段長度不一致')
                 clips.append({"video_path": str(medias[c['mediaId']]), "trim_start": start,
                               "trim_end": end, "speed": speed, "output_duration": length, "transition_in": c.get('transitionIn'),
-                              "zooms": zooms_by_media.get(c['mediaId'], [])})
+                              "zooms": zooms_by_media.get(c['mediaId'], []),
+                              "overlays": overlays_by_media.get(c['mediaId'], [])})
                 subtitle_clips.append({"segments": c['segments'], "trim_start": start, "trim_end": end,
                                        "speed": speed, "time_offset": offset, "bookend": c.get('bookend')})
                 offset += length

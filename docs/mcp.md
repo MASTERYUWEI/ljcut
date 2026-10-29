@@ -65,6 +65,24 @@ LJ Cut 重開後不必重啟 MCP。
 - **介面**：時間軸「🔍 縮放」軌：＋ 在播放頭加 3 秒 2 倍、✨ 依滑鼠點擊自動加入；點選區段後 −／+ 調倍率、× 刪除，
   Shift+點預覽畫面設定放大中心（已放大時會換算回原畫面座標）。
 
+## 標註疊加層（醒目框、箭頭、聚光燈、步驟編號、標題條）
+
+- **概念**：影片上方可疊多層標註，陣列順序越後面越上層。存在素材上（`MediaItem.overlays`，來源秒數），
+  剪掉或加速片段時跟著內容走。框／箭頭／聚光燈／步驟屬「內容層」，會跟著畫面縮放一起放大（框住的按鈕不會跑掉）；
+  標題屬「畫面層」，固定在畫面上。
+- **欄位**：`{id, kind, start, end, x, y, w?, h?, text?, sub?, color?, from?, position?}`，座標為畫面比例 0–1。
+  box／spotlight 的 x,y 是左上角並需 w,h；arrow 的 x,y 是尖端、`from` 為箭尾方向；step 的 x,y 是圓心、text 最多 3 字；
+  title 用 `position`（bottom-left／bottom-center／top-left／top-center）與 `text`／`sub`。顏色 red／yellow／blue／green／white。
+- **單一繪製來源**：`backend/services/overlay.py` 用 PIL 畫成透明貼圖（依外觀參數雜湊快取）。預覽向 `/api/overlay/render`
+  要同一張圖放在播放器上；匯出把貼圖當循環靜態輸入，用 FFmpeg `overlay` 依時間疊上（內容層在縮放前、標題在縮放後，
+  以 `-filter_complex_script` 讀入）。進出場動畫（淡入 0.25 秒、淡出 0.2 秒；框／箭頭／步驟從 0.8 倍彈出；標題從左滑入）
+  在 `overlay.ts` 與 `overlay.py` 用同一套公式，依來源秒數定義，倍速時一起變快。數值在後端重新驗證。
+- **剪輯指令**：`add_overlay`、`edit_overlay`、`delete_overlay`，走 dry-run → 確認 → apply。
+- **MCP**：`ljcut_check_overlays` 每個標註取一格，疊上當時所有標註並套用縮放（＝成品畫面）。
+  實測抓到過自己把框放在對話框打開前的時間點，修正後才對上，所以套用後務必檢查。
+- **介面**：時間軸「✏️ 標註」軌，重疊時自動分行。「＋ 加入」在播放頭加 3 秒；選取後 ✎ 改文字、↻ 換顏色／箭頭方向／標題位置、
+  × 刪除；Shift+點預覽畫面移動位置（框會以點擊處為中心），Shift+拖曳重新框選框與聚光燈範圍（已放大時會換算回原畫面座標）。
+
 ## 相關改動
 
 - **長輪詢**：編輯器以 `/poll {wait:8}` 等待命令，後端有命令立即回應。過去靠 300ms 計時器，

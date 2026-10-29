@@ -244,3 +244,38 @@ test('zoom: easing math, add/edit/delete ops, media-level storage survives rippl
     const audio:any = project();
     assert.throws(() => evaluatePlan(audio, 0, { ...plan(), operations: [op({ type: 'add_zoom', start: 1, end: 2 })] } as any, ids), { code: 'UNSUPPORTED_MEDIA' });
 });
+
+test('overlays: multi-layer add/edit/delete, validation, follow ripple, animation matches backend', async () => {
+    const { overlayAnim } = await import('../src/overlay');
+    const p:any = project(); p.mediaItems[0].info.width = 1920; p.mediaItems[0].info.height = 1080;
+    const op = (o:any) => ({ trackId: 'video-main' as const, timeDomain: 'source' as const, ...o });
+    const ids = (() => { let i = 0; return () => `ov${i++}`; })();
+    const d = evaluatePlan(p, 0, { ...plan(), operations: [
+        op({ type: 'add_overlay', kind: 'spotlight', start: 4, end: 7, x: 0.1, y: 0.1, w: 0.3, h: 0.3 }),
+        op({ type: 'add_overlay', kind: 'box', start: 5, end: 6, x: 0.12, y: 0.12, w: 0.2, h: 0.2, text: '這裡' }),   // 與聚光燈重疊 = 多層
+        op({ type: 'add_overlay', kind: 'step', start: 5, end: 6, x: 0.5, y: 0.5, text: '1', color: 'blue' }),
+        op({ type: 'ripple_delete', start: 1, end: 3 }),
+    ] } as any, ids);
+    const list = d.next.mediaItems[0].overlays!;
+    assert.deepEqual(list.map(o => o.kind), ['spotlight', 'box', 'step']);   // 順序 = 圖層，後面在上
+    assert.deepEqual((d.changes[1] as any).timeline, [[5, 6]]);               // 新增當下（同批刪除之前）
+    const right = d.next.timelineClips.find(c => c.trimStart === 3)!;
+    assert.equal(toTimelineTime(right, list[1].start), 3);                    // 剪掉 2 秒後：來源 5 秒 → 成品 3 秒
+    const boxId = list[1].id;
+    const e = evaluatePlan(d.next, 0, { ...plan(), operations: [op({ type: 'edit_overlay', overlayId: boxId, color: 'yellow', x: 0.5 })] } as any, ids);
+    assert.deepEqual([e.next.mediaItems[0].overlays![1].color, e.next.mediaItems[0].overlays![1].x], ['yellow', 0.5]);
+    const del = evaluatePlan(e.next, 0, { ...plan(), operations: [op({ type: 'delete_overlay', overlayId: boxId })] } as any, ids);
+    assert.equal(del.next.mediaItems[0].overlays!.length, 2);
+    const bad = (o:any, code:string) => assert.throws(() => evaluatePlan(d.next, 0, { ...plan(), operations: [op(o)] } as any, ids), { code });
+    bad({ type: 'add_overlay', kind: 'laser', start: 4, end: 5 }, 'INVALID_OVERLAY');
+    bad({ type: 'add_overlay', kind: 'box', start: 4, end: 5, x: 0.9, w: 0.5, h: 0.1 }, 'INVALID_OVERLAY');   // 超出畫面
+    bad({ type: 'add_overlay', kind: 'step', start: 4, end: 5 }, 'INVALID_OVERLAY');                         // 步驟需要編號
+    bad({ type: 'add_overlay', kind: 'title', start: 4, end: 5, text: 'a\nb' }, 'INVALID_OVERLAY');
+    bad({ type: 'edit_overlay', overlayId: 'nope', x: 0.1 }, 'OVERLAY_NOT_FOUND');
+    // 與後端 anim_state 相同的數值
+    const o:any = { kind: 'box', start: 1, end: 3 };
+    assert.deepEqual(overlayAnim(o, 1), { opacity: 0, scale: 0.8, slide: 0 });
+    assert.deepEqual(overlayAnim(o, 2), { opacity: 1, scale: 1, slide: 0 });
+    assert.ok(Math.abs(overlayAnim(o, 2.9).opacity - 0.5) < 1e-9);
+    assert.equal(overlayAnim({ kind: 'title', start: 0, end: 2 } as any, 0).slide, -40);
+});
