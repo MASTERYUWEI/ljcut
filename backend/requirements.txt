@@ -2,5 +2,7 @@ fastapi>=0.115.0
 uvicorn[standard]>=0.34.0
 python-multipart>=0.0.18
 faster-whisper>=1.1.0
+# 辨識引擎：4.8.4 已驗證（與 4.7.1 輸出逐字逐秒一致，GPU float16 / CPU int8 皆正常）
+ctranslate2==4.8.4
 httpx>=0.27.0
 python-dotenv>=1.0.0
