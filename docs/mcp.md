@@ -65,4 +65,9 @@ LJ Cut 重開後不必重啟 MCP。
 overview／silences（18 段，與產生時的 8–11 秒靜音完全吻合）／scenes（180.0）／audio levels →
 不帶 clipId 的 4 個操作 dry-run → apply → check_cuts（接縫 4 的換色正好在 src 180）→ undo／redo →
 transcribe fast → save → export（355.000 秒，與計畫一致）。前端 `npm test` 10 項、後端 unittest 24 項通過。
-未在桌面版 Tauri 視窗實跑 MCP；未用真人語音驗證 MCP 的 transcribe 品質（辨識速度另以真實錄影量測）。
+
+**桌面版（Tauri，`scripts/launch-current.ps1`，工作區 `app_data/control`）**：匯入 Revit 教學前 2 分鐘（2656×1440，
+會產生 720p 預覽代理檔）＋色塊測試片後，**把視窗最小化**再透過 MCP 操作：精準辨識 2 分鐘真人語音 12.6 秒（43 句，
+與成品燒錄字幕一致）、改 2 句字幕＋刪開場靜音＋區間 2 倍速 dry-run／apply 各 0.7 秒、check_cuts 1.6 秒、
+undo／redo 各 1 秒、preview 0.6 秒、另存、匯出 475.838 秒（與試算一致，原解析度、SRT 含修正字幕）。
+還原視窗後介面狀態與 MCP 一致。兩支素材來源時間重疊時不帶 mediaId 會回 `CLIP_AMBIGUOUS` 並列出候選，不會猜。

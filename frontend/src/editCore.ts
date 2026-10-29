@@ -217,7 +217,8 @@ function locateClip(clips: TimelineClip[], op: EditOperation): TimelineClip {
     const hits = clips.filter(c => !c.bookend && (!op.mediaId || c.mediaId === op.mediaId)
         && (point ? t > c.trimStart && t < c.trimEnd : t >= c.trimStart && op.end! <= c.trimEnd));
     requireEdit(hits.length > 0, 'CLIP_NOT_FOUND', `沒有片段完整包含來源時間 ${t}${point ? '' : '–' + op.end}（可能已被刪除，或跨越兩個片段）`);
-    requireEdit(hits.length === 1, 'CLIP_AMBIGUOUS', `來源時間 ${t} 出現在 ${hits.length} 個片段，請指定 clipId 或 mediaId`);
+    requireEdit(hits.length === 1, 'CLIP_AMBIGUOUS', `來源時間 ${t} 出現在 ${hits.length} 個片段，請指定 clipId 或 mediaId：`
+        + hits.map(c => `clipId=${c.id} mediaId=${c.mediaId}`).join('；'));
     return hits[0];
 }
 export function evaluatePlan(project: ProjectData, revision: number, plan: EditPlan, id: () => string) {
