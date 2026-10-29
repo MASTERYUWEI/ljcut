@@ -103,7 +103,7 @@ body {
 .app-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 16px;
   padding: 0 24px;
   background: var(--glass);
   border-bottom: 1px solid var(--border);
@@ -440,7 +440,7 @@ body {
   border-radius: var(--radius);
   margin-bottom: 4px;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease, box-shadow 0.2s ease, opacity 0.2s ease, transform 0.2s ease;
   align-items: flex-start;
   border: 1px solid transparent;
 }
@@ -495,7 +495,7 @@ body {
 }
 
 .subtitle-item .index {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   font-family: var(--font-mono);
   color: var(--fg-overlay0);
@@ -508,7 +508,7 @@ body {
 }
 
 .subtitle-item .time-range {
-  font-size: 11px;
+  font-size: 12px;
   font-family: var(--font-mono);
   color: var(--accent-teal);
   margin-bottom: 4px;
@@ -592,7 +592,7 @@ body {
   position: absolute;
   top: 5px;
   left: 4px;
-  font-size: 11px;
+  font-size: 12px;
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
   color: var(--fg-subtext0);
@@ -667,7 +667,7 @@ body {
   padding: 0 6px;
   overflow: hidden;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease, box-shadow 0.2s ease, opacity 0.2s ease, transform 0.2s ease;
 }
 
 .track-clip:hover {
@@ -695,7 +695,7 @@ body {
 }
 
 .clip-text {
-  font-size: 11px;
+  font-size: 12px;
   font-family: var(--font);
   white-space: nowrap;
   overflow: hidden;
@@ -864,7 +864,7 @@ body {
   font-size: 13px;
   font-weight: 500;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease, box-shadow 0.2s ease, opacity 0.2s ease, transform 0.2s ease;
   font-family: var(--font);
   display: inline-flex;
   align-items: center;
@@ -926,7 +926,7 @@ body {
   border-radius: var(--radius);
   text-align: center;
   cursor: pointer;
-  transition: all 0.3s ease;
+  transition: background-color 0.3s ease, border-color 0.3s ease, color 0.3s ease, box-shadow 0.3s ease, opacity 0.3s ease, transform 0.3s ease;
   background: transparent;
 }
 
@@ -1168,7 +1168,7 @@ body {
   cursor: pointer;
   padding: 3px 7px;
   border-radius: var(--radius-sm);
-  transition: all 0.2s;
+  transition: background-color 0.2s, border-color 0.2s, color 0.2s, opacity 0.2s, transform 0.2s;
 }
 
 .ai-refresh-btn:hover:not(:disabled) {
@@ -1200,7 +1200,7 @@ body {
   background: transparent;
   color: var(--fg-overlay0);
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease, box-shadow 0.2s ease, opacity 0.2s ease, transform 0.2s ease;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1251,7 +1251,7 @@ body {
   background: var(--bg-surface0);
   color: var(--fg-text);
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease, box-shadow 0.2s ease, opacity 0.2s ease, transform 0.2s ease;
   white-space: nowrap;
 }
 
@@ -1298,7 +1298,7 @@ body {
   background: var(--bg-surface0);
   color: var(--accent-green);
   cursor: pointer;
-  transition: all 0.2s;
+  transition: background-color 0.2s, border-color 0.2s, color 0.2s, opacity 0.2s, transform 0.2s;
 }
 
 .ai-result .copy-btn:hover {
@@ -1466,7 +1466,7 @@ body {
   background: var(--bg-surface0);
   border: 1px solid var(--border);
   cursor: grab;
-  transition: all 0.15s ease;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, opacity 0.15s ease, transform 0.15s ease;
   position: relative;
 }
 
@@ -1506,7 +1506,7 @@ body {
 }
 
 .media-name {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--fg-text);
   white-space: nowrap;
   overflow: hidden;
@@ -1514,7 +1514,7 @@ body {
 }
 
 .media-duration {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--fg-subtext0);
   font-family: var(--font-mono);
 }
@@ -1527,7 +1527,7 @@ body {
   font-size: 14px;
   padding: 2px 4px;
   border-radius: 4px;
-  transition: all 0.15s;
+  transition: background-color 0.15s, border-color 0.15s, color 0.15s, opacity 0.15s, transform 0.15s;
   flex-shrink: 0;
 }
 
@@ -1586,7 +1586,7 @@ body {
   border-radius: var(--radius-sm);
   cursor: pointer;
   text-align: center;
-  transition: all 0.15s;
+  transition: background-color 0.15s, border-color 0.15s, color 0.15s, opacity 0.15s, transform 0.15s;
   background: transparent;
   display: flex;
   align-items: center;
@@ -1627,7 +1627,7 @@ body {
   font-weight: 500;
   letter-spacing: 1px;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: background-color 0.15s, border-color 0.15s, color 0.15s, opacity 0.15s, transform 0.15s;
   position: relative;
 }
 
@@ -2109,7 +2109,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: all 0.15s;
+  transition: background-color 0.15s, border-color 0.15s, color 0.15s, opacity 0.15s, transform 0.15s;
 }
 
 .rec-ctrl-btn:hover {
@@ -2209,7 +2209,7 @@ body {
   background: var(--bg-base);
   color: var(--fg-subtext0);
   cursor: pointer;
-  transition: all 0.15s;
+  transition: background-color 0.15s, border-color 0.15s, color 0.15s, opacity 0.15s, transform 0.15s;
   font-family: var(--font-mono);
 }
 
@@ -2401,9 +2401,9 @@ body {
   height: 20px;
   font-size: 11px;
   padding: 0 2px;
-  background: rgba(137, 180, 250, 0.12);
+  background: color-mix(in srgb, var(--accent-blue) 12%, transparent);
   color: var(--fg-text, #cdd6f4);
-  border: 1px solid rgba(137, 180, 250, 0.45);
+  border: 1px solid color-mix(in srgb, var(--accent-blue) 45%, transparent);
   border-radius: 3px;
   cursor: pointer;
 }
@@ -2412,8 +2412,8 @@ body {
 }
 .overlay-clip {
   position: absolute;
-  background: rgba(137, 180, 250, 0.2);
-  border: 1px solid rgba(137, 180, 250, 0.6);
+  background: color-mix(in srgb, var(--accent-blue) 20%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent-blue) 60%, transparent);
   border-radius: 4px;
   color: #b4cdfa;
   font-size: 11px;
@@ -2834,3 +2834,61 @@ kbd {
 .st-more { display: grid; gap: 6px; }
 .st-more > summary { cursor: pointer; font-size: 12px; color: var(--fg-subtext0); padding: 2px 0; }
 .st-more[open] > summary { margin-bottom: 4px; }
+
+/* ── 標題列：依流程分組 ── */
+.header-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.header-sep { width: 1px; height: 22px; background: var(--bg-surface2); margin: 0 2px; }
+.project-name {
+  display: inline-flex; align-items: center; gap: 8px;
+  max-width: 220px; padding: 0 4px;
+  font-size: 13px; color: var(--fg-subtext1);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.dirty-mark { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--warn); }
+.dirty-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--warn); }
+.project-file { align-items: center; }
+.project-file-pop { left: 0; right: auto; }
+.stale-tag {
+  margin-left: 6px; padding: 0 6px; border-radius: 999px;
+  font-size: 11px; line-height: 18px;
+  background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--warn);
+}
+.stale-banner { display: flex; align-items: center; gap: 10px; margin: 4px 0 10px; padding: 8px 10px;
+  border-radius: var(--radius-sm); background: color-mix(in srgb, var(--warn) 10%, transparent); }
+.stale-banner .status-text { flex: 1; }
+
+/* ── 播放列：字幕是否燒入 ── */
+.preview-sub-chip { padding: 2px 8px; font-size: 12px; color: var(--fg-subtext1); white-space: nowrap; flex-shrink: 0; }
+.video-controls .time { white-space: nowrap; flex-shrink: 0; }
+.preview-sub-chip.burn { color: var(--accent-amber); }
+
+/* 表單控制項一律用介面字型（原本 select 會掉回 Arial） */
+button, select, input, textarea { font-family: inherit; }
+
+/* 文字輸入框也要看得到鍵盤焦點 */
+.st-input:focus-visible, .subtitle-item textarea:focus-visible, select:focus-visible,
+input[type="number"]:focus-visible, input[type="text"]:focus-visible, textarea:focus-visible {
+  outline: 2px solid var(--accent-amber);
+  outline-offset: 1px;
+}
+
+/* ── 標題列：AI 助理狀態 ── */
+.ai-status {
+  display: inline-flex; align-items: center; gap: 6px;
+  max-width: 260px; padding: 3px 10px; border-radius: 999px;
+  border: 1px solid var(--bg-surface2);
+  font-size: 12px; color: var(--fg-subtext0); white-space: nowrap;
+}
+.ai-status .lucide { width: 14px; height: 14px; flex-shrink: 0; }
+.ai-status-text { overflow: hidden; text-overflow: ellipsis; }
+.ai-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); flex-shrink: 0; }
+.ai-status.recent { border-color: var(--accent-teal); color: var(--accent-teal); }
+@media (prefers-reduced-motion: no-preference) {
+  .ai-status.recent .ai-dot { animation: ai-pulse 1s ease-in-out 3; }
+}
+@keyframes ai-pulse { 50% { opacity: 0.3; } }
+@media (max-width: 1180px) { .ai-status-text { display: none; } }
+
+/* 隱藏手勢的就地提示 */
+.sub-edit-hint { margin-top: 4px; font-size: 12px; color: var(--fg-overlay0); }
+.preview-hint { font-size: 12px; color: var(--accent-teal); white-space: nowrap; }

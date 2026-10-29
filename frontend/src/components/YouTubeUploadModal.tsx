@@ -1,6 +1,7 @@
 /* Export-bound captions, Codex cover selection and YouTube upload. */
 import { X, Upload, ExternalLink, Play } from 'lucide-react';
 import { StatusText } from './StatusText';
+import { formatTime } from '../utils';
 import { useEffect, useRef, useState } from 'react';
 import { useDialog } from '../useDialog';
 import { notify } from '../toast';
@@ -14,6 +15,8 @@ interface Props {
     defaultDescription: string;
     publicationId: string;
     thumbnailTime: number;
+    stale?: boolean;
+    onReexport?: () => void;
     onClose: () => void;
 }
 
@@ -25,7 +28,7 @@ const STAGE_LABEL: Record<string, string> = {
     publish: '設定影片公開狀態…',
 };
 
-export function YouTubeUploadModal({ videoPath, defaultTitle, defaultDescription, publicationId, thumbnailTime, onClose }: Props) {
+export function YouTubeUploadModal({ videoPath, defaultTitle, defaultDescription, publicationId, thumbnailTime, stale, onReexport, onClose }: Props) {
     const dialogRef = useRef<HTMLDivElement>(null);
     useDialog(dialogRef);
     const uploadingRef = useRef(false);
@@ -68,6 +71,8 @@ export function YouTubeUploadModal({ videoPath, defaultTitle, defaultDescription
         controlRequest(`/publications/${publicationId}`).then(p => {
             if (!active) return;
             setPublication(p); setThumbSel(p.selected?.file ?? '');
+            // 還沒有任何 AI 封面時，預設用播放頭畫面，避免卡在「請先選封面」
+            if (!p.selected && !(p.batches?.length)) setThumbMode('frame');
             if (p.selected) { setTitle(p.title); setDesc(p.description || ''); }
         }).catch(e => { if (active) setError(String(e)); });
         return () => { active = false; };
@@ -121,6 +126,12 @@ export function YouTubeUploadModal({ videoPath, defaultTitle, defaultDescription
                     <button className="btn" onClick={onClose} disabled={uploading} style={{ padding: '4px 6px' }} aria-label="關閉" title="關閉（Esc）"><X aria-hidden /></button>
                 </div>
 
+                {stale && !result && (
+                    <div className="stale-banner">
+                        <StatusText kind="warn" text="匯出後專案又改過了，這支成品不含之後的修改。要上傳最新版本，請先重新匯出。" />
+                        {onReexport && <button className="btn" onClick={onReexport} disabled={uploading}>重新匯出</button>}
+                    </div>
+                )}
                 {!publication && <p role="status">{error || "正在讀取這次匯出的影片與字幕…"}</p>}
                 {connected === false && (
                     <StatusText kind="warn" text="尚未連結 YouTube 帳號：請先到右上角「設定」完成連結。" />
@@ -128,7 +139,7 @@ export function YouTubeUploadModal({ videoPath, defaultTitle, defaultDescription
                 {publication && !result && (
                     <>
                         <div style={{ fontSize: 12, color: 'var(--ok)', marginBottom: 8 }}>頻道：{channel || '(已連結)'}</div>
-                        <p style={{ fontSize: 12 }}>本次成品 {publication.duration.toFixed(2)} 秒；主片從 {publication.mainStart.toFixed(2)} 秒開始。字幕已含片頭、裁切及變速換算，不會再次加偏移。匯出後的剪輯修改需重新匯出才會使用。</p>
+                        <p style={{ fontSize: 12, color: 'var(--fg-subtext1)' }}>這支成品長 {formatTime(publication.duration)}。字幕時間已配合片頭、剪接和變速對好，直接上傳即可。</p>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
 
                             <div>
@@ -140,7 +151,7 @@ export function YouTubeUploadModal({ videoPath, defaultTitle, defaultDescription
                                 <label>影片說明
                                     <textarea aria-label="影片說明" value={desc} onChange={e => setDesc(e.target.value)} rows={4}
                                         style={{ ...inputStyle, resize: 'vertical', fontFamily: 'inherit' }} disabled={uploading}
-                                        placeholder="選用下方封面後帶入 Codex 整理的標題與說明，也可手動修改" />
+                                        placeholder="選用下方 AI 封面後會帶入 AI 整理的標題與說明，也可直接手寫" />
                                 </label>
                             </div>
 
@@ -166,7 +177,7 @@ export function YouTubeUploadModal({ videoPath, defaultTitle, defaultDescription
                                 <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', fontSize: 13 }}>
                                     {([
                                         ['frame', '播放頭畫面'],
-                                        ['ai', 'AI 生成封面（2.5D 像素風）'],
+                                        ['ai', 'AI 封面（由 AI 助理準備）'],
                                         ['none', '不設定'],
                                     ] as const).map(([mode, label]) => (
                                         <label key={mode} style={{ display: 'flex', gap: 4, alignItems: 'center', cursor: 'pointer' }}>

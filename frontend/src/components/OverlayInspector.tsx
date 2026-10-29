@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ArrowDown, ArrowDownLeft, ArrowDownRight, ArrowLeft, ArrowRight, ArrowUp, ArrowUpLeft, ArrowUpRight, Trash2, X } from 'lucide-react';
 import type { MediaItem, TimelineClip } from '../types';
 import type { Overlay, OverlayColor, ArrowFrom, TitlePosition } from '../overlay';
@@ -39,15 +39,16 @@ function Field({ label, value, onCommit, type = 'text', step, min, max, suffix, 
     step?: number; min?: number; max?: number; suffix?: string; maxLength?: number;
 }) {
     const [draft, setDraft] = useState(String(value));
-    useEffect(() => setDraft(String(value)), [value]);
-    const commit = () => { if (draft !== String(value)) onCommit(draft); };
+    const sent = useRef(String(value));          // 最後送出的值：Enter 送出後緊接的 blur 不重送
+    useEffect(() => { setDraft(String(value)); sent.current = String(value); }, [value]);
+    const commit = () => { if (draft !== sent.current) { sent.current = draft; onCommit(draft); } };
     return (
         <label className="insp-field">
             <span>{label}</span>
             <span className="insp-input-wrap">
                 <input className="st-input" type={type} value={draft} step={step} min={min} max={max} maxLength={maxLength}
                     onChange={e => setDraft(e.target.value)} onBlur={commit}
-                    onKeyDown={e => { if (e.key === 'Enter') { e.currentTarget.blur(); } if (e.key === 'Escape') { setDraft(String(value)); e.stopPropagation(); } }} />
+                    onKeyDown={e => { if (e.key === 'Enter') { commit(); e.currentTarget.blur(); } if (e.key === 'Escape') { setDraft(String(value)); e.stopPropagation(); } }} />
                 {suffix && <span className="insp-suffix">{suffix}</span>}
             </span>
         </label>
@@ -187,7 +188,7 @@ export function OverlayInspector({ media, overlay, zoom, clips, onOps, onClose }
                 <label className="insp-check"><input type="checkbox" checked={overlay!.layer === 'content'}
                     onChange={e => edit({ layer: e.target.checked ? 'content' : 'screen' })} /> 跟著畫面縮放一起放大</label>
             )}
-            {kind === 'html' && <p className="insp-note">HTML 動畫的內容由 AI 撰寫：在對話中描述要怎麼改即可。</p>}
+            {kind === 'html' && <p className="insp-note">HTML 動畫的內容由剪輯 AI 助理撰寫：在你和 AI 助理的對話裡描述要怎麼改，它會更新這段動畫。這裡可調時間與圖層。</p>}
 
             {zoom && (
                 <div className="insp-grid">

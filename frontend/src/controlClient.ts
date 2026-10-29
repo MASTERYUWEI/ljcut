@@ -10,6 +10,12 @@ import type { MediaItem } from './types';
 let token = '';
 let latestControlExport = 0;
 export let controlWorkspace = '';
+/** 目前專案檔：路徑與最後存檔時的版本（判斷「未儲存」用）；存檔／開啟成功後更新並發出事件 */
+export const projectFile = { path: '', savedRevision: -1 };
+function markProjectFile(path: string, savedRevision: number) {
+    projectFile.path = path; projectFile.savedRevision = savedRevision;
+    window.dispatchEvent(new Event('ljcut-project-file'));
+}
 let previewReader: (() => { sourceTime: number; ready: boolean; subtitle: string; paused: boolean }) | undefined;
 export function registerPreviewReader(reader: typeof previewReader) { previewReader = reader; }
 export function controlHeaders() {
@@ -137,7 +143,11 @@ export async function executeCommand(method: string, params: any = {}): Promise<
     if (method === 'save') {
         const p = projectData();
         validateProject(p);
-        return controlRequest('/save', { path: params.path, project: p, revision: params.expectedRevision });
+        // 儲存到目前開啟／上次存的同一個檔才允許覆寫；另存成既有檔名仍會被後端拒絕
+        const saved = await controlRequest('/save', { path: params.path, project: p, revision: params.expectedRevision,
+            overwrite: !!projectFile.path && params.path === projectFile.path });
+        markProjectFile(params.path, readState().revision);
+        return saved;
     }
     if (method === 'open') {
         const p: ProjectData = await controlRequest('/open', { path: params.path });
@@ -145,7 +155,9 @@ export async function executeCommand(method: string, params: any = {}): Promise<
             m.url = api.mediaUrl(m.url);
             m.thumbnailUrl = api.getThumbnailUrl(m.id);
         }
-        return replaceProject(p, params);
+        const opened = replaceProject(p, params);
+        markProjectFile(params.path, readState().revision);
+        return opened;
     }
     if (method === 'export') {
         const p = projectData();
@@ -176,12 +188,21 @@ const EXTERNAL_LABEL: Record<string, string> = {
     undo: 'AI 復原了上一步', redo: 'AI 重做了一步', open: 'AI 開啟了另一個專案',
     import: 'AI 匯入了素材', transcribe: 'AI 完成字幕辨識',
 };
+/** 最近一次 AI 動作（標題列常駐顯示，不只 5 秒通知） */
+export const aiActivity = { text: '', at: 0 };
 function announceExternal(method: string, result: any) {
+    let text = '';
     if (method === 'apply') {
         const n = Array.isArray(result?.changes) ? result.changes.length : 0;
-        toast('info', `AI 修改了時間軸${n ? `（${n} 項變更）` : ''}，可按 Ctrl+Z 復原`);
+        text = `AI 修改了時間軸${n ? `（${n} 項變更）` : ''}`;
+        toast('info', `${text}，可按 Ctrl+Z 復原`);
     } else if (EXTERNAL_LABEL[method]) {
-        toast('info', EXTERNAL_LABEL[method]);
+        text = EXTERNAL_LABEL[method];
+        toast('info', text);
+    }
+    if (text) {
+        aiActivity.text = text; aiActivity.at = Date.now();
+        window.dispatchEvent(new Event('ljcut-ai-activity'));
     }
 }
 

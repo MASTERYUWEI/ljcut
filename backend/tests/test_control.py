@@ -102,6 +102,14 @@ class ControlTests(unittest.TestCase):
         saved=self.post('/save',{'path':'saved.ljcut','project':project,'revision':2})
         self.assertEqual(saved.status_code,200,saved.text)
         self.assertEqual(self.post('/save',{'path':'saved.ljcut','project':project}).status_code,409)
+        # 「儲存」目前開啟的專案：明確 overwrite 才能覆寫，且只能覆寫專案資料夾
+        project2=dict(project,language='en')
+        self.assertEqual(self.post('/save',{'path':'saved.ljcut','project':project2,'overwrite':True}).status_code,200)
+        self.assertEqual(self.post('/open',{'path':'saved.ljcut'}).json()['language'],'en')
+        self.assertEqual(self.post('/save',{'path':'saved.ljcut','project':project,'overwrite':True}).status_code,200)
+        (self.control.root/'notproject.ljcut').mkdir()
+        self.assertEqual(self.post('/save',{'path':'notproject.ljcut','project':project,'overwrite':True}).status_code,409)
+        self.assertFalse(any(x.name.startswith(('.replaced-','.saving-')) for x in self.control.root.iterdir()))
         # Simulate the old uploads cleanup: bundle assets must survive independently.
         self.control.media_path(media).unlink()
         reopened=self.post('/open',{'path':'saved.ljcut'}).json()

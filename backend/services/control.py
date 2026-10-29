@@ -531,8 +531,10 @@ class LocalControl:
             if target.suffix != '.ljcut':
                 fail('INVALID_PROJECT_PATH', '另存路徑需以 .ljcut 結尾（專案資料夾）')
             sources = [(m, self.media_path(m)) for m in p.get('mediaItems', [])]
-            if target.exists():
-                fail('DESTINATION_EXISTS', '另存專案不可覆寫既有路徑', 409)
+            # 覆寫只限「儲存目前開啟的專案」：編輯器明確帶 overwrite，且目標確實是專案資料夾
+            overwrite = target.exists()
+            if overwrite and not (body.get('overwrite') is True and (target / 'project.json').is_file()):
+                fail('DESTINATION_EXISTS', '已有同名專案；請換一個檔名，或開啟它後再按「儲存」', 409)
             staging = self.root / ('.saving-' + uuid.uuid4().hex)
             staging.mkdir()
             try:
@@ -543,8 +545,18 @@ class LocalControl:
                     media.pop('thumbnailUrl', None)
                 (staging / 'project.json').write_text(json.dumps(p, ensure_ascii=False, indent=2), encoding='utf-8')
                 target.parent.mkdir(parents=True, exist_ok=True)
-                # Windows rename refuses an existing destination; never replace a saved project.
-                staging.rename(target)
+                if overwrite:
+                    # 先把舊專案移開再換上新的；任何一步失敗都還原舊專案（Windows rename 不能直接蓋過）
+                    backup = self.root / ('.replaced-' + uuid.uuid4().hex)
+                    target.rename(backup)
+                    try:
+                        staging.rename(target)
+                    except Exception:
+                        backup.rename(target)
+                        raise
+                    shutil.rmtree(backup, ignore_errors=True)
+                else:
+                    staging.rename(target)
             finally:
                 if staging.exists():
                     shutil.rmtree(staging)

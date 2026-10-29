@@ -1,6 +1,6 @@
 /* ── LJCUT 主應用 ── */
 
-import { Clapperboard, Upload, CircleDot, Settings, Play, Pause, Square, Video, FolderOpen, Film, ZoomIn, PenLine, Captions, Plus, Sparkles, SpellCheck, Brain, Copy, Check, Download, X, Image as ImageIcon, ArrowUpRight, Type, Code, Focus, ListOrdered, Gauge, Undo2, Redo2, TriangleAlert, CheckCheck, CircleHelp } from 'lucide-react';
+import { Clapperboard, Upload, CircleDot, Settings, Play, Pause, Square, Video, FolderOpen, Film, ZoomIn, PenLine, Captions, Plus, Sparkles, SpellCheck, Brain, Copy, Check, Download, X, Image as ImageIcon, ArrowUpRight, Type, Code, Focus, ListOrdered, Gauge, Undo2, Redo2, TriangleAlert, CheckCheck, CircleHelp, MousePointerClick } from 'lucide-react';
 import { useRef, useCallback, useState, useEffect, useLayoutEffect, useMemo } from 'react';
 import { useStore } from './store';
 import { api, onApiReady, getBase } from './api';
@@ -20,6 +20,7 @@ import { BookendControls } from './components/BookendControls';
 import Toaster from './components/Toaster';
 import { StatusText } from './components/StatusText';
 import { ShortcutHelp } from './components/ShortcutHelp';
+import { AiStatus } from './components/AiStatus';
 import { OverlayInspector } from './components/OverlayInspector';
 import { notify, toast } from './toast';
 import { useDialog } from './useDialog';
@@ -79,6 +80,8 @@ export default function App() {
     // 最近一次匯出成品路徑（YouTube 上傳用）
     const [lastExport, setLastExport] = useState<string | null>(() => localStorage.getItem('ljcut-export-path'));
     const [publicationId, setPublicationId] = useState(() => localStorage.getItem('ljcut-publication-id') || '');
+    // 匯出當下的專案版本；之後又改過剪輯 → 成品「較舊」（上次啟動留下的成品版本未知，不標示）
+    const [exportRevision, setExportRevision] = useState<number | null>(null);
     useEffect(() => {
         if (lastExport && publicationId) {
             localStorage.setItem('ljcut-export-path', lastExport);
@@ -89,6 +92,7 @@ export default function App() {
         const ready = (event: Event) => {
             const result = (event as CustomEvent).detail;
             setLastExport(result.outputPath); setPublicationId(result.publicationId);
+            setExportRevision(readState().revision);
         };
         window.addEventListener('ljcut-export-ready', ready);
         return () => window.removeEventListener('ljcut-export-ready', ready);
@@ -336,6 +340,7 @@ export default function App() {
     } = useStore();
 
     const duration = getDuration();
+    const exportStale = !!lastExport && exportRevision !== null && readState().revision !== exportRevision;
     // 第一個有 video 的媒體（向後相容：用於辨識/匯出/燒入）
     const primaryMedia = mediaItems.find(m => m.info.width && m.info.width > 0) || mediaItems[0] || null;
     const fileId = primaryMedia?.id ?? null;
@@ -604,15 +609,14 @@ export default function App() {
                 const { check } = await import('@tauri-apps/plugin-updater');
                 const update = await check();
                 if (update) {
-                    const yes = window.confirm(
-                        `🔄 LJCUT 有新版本 v${update.version}（目前 v${update.currentVersion}）\n\n`
-                        + `${update.body || ''}\n\n現在下載並安裝？（完成後自動重啟）`
-                    );
-                    if (yes) {
-                        await update.downloadAndInstall();
-                        const { relaunch } = await import('@tauri-apps/plugin-process');
-                        await relaunch();
-                    }
+                    toast('info', `LJCUT 有新版本 v${update.version}（目前 v${update.currentVersion}）。安裝完成後會自動重新啟動。`, [
+                        { label: '下載並安裝', run: () => { void (async () => {
+                            toast('info', '正在下載更新…');
+                            await update.downloadAndInstall();
+                            const { relaunch } = await import('@tauri-apps/plugin-process');
+                            await relaunch();
+                        })().catch(e => notify(`更新失敗：${e}`)); } },
+                    ]);
                 }
             } catch { /* 開發模式或離線：靜默 */ }
         }, 3000);
@@ -989,6 +993,7 @@ export default function App() {
         setExportProgress(0);
         setExportEta(null);
         setExportStage('準備中');
+        const revisionAtExport = readState().revision;
         try {
             validateProject(projectData(), true);
             const v = videoRef.current;
@@ -1033,6 +1038,7 @@ export default function App() {
                 setExportProgress(100);
                 setLastExport(result.outputPath);
                 setPublicationId(result.publicationId);
+                setExportRevision(revisionAtExport);
                 setTimeout(async () => {
                     setExportProgress(-1);
                     const folderPath = result!.outputPath.replace(/[\\/][^\\/]+$/, '');
@@ -1050,8 +1056,6 @@ export default function App() {
                         { label: '開啟資料夾', run: () => { void openFolder(); } },
                         { label: '上傳到 YouTube', run: () => setShowYtUpload(true) },
                     ]);
-                    // 沿用原本行為：自動開啟匯出檔案所在資料夾
-                    await openFolder();
                 }, 300);
             } else {
                 setExportProgress(-1); // 用戶取消
@@ -2343,19 +2347,22 @@ export default function App() {
             {/* Header */}
             <header className="app-header">
                 <h1>LJCUT</h1>
-                <div style={{ display: 'flex', gap: 8 }}>
+                <ProjectFileButtons />
+                <AiStatus />
+                <div className="header-actions">
+                    <button className="btn" onClick={() => setShowRecSettings(true)}><CircleDot aria-hidden />螢幕錄影</button>
                     {/* 匯出影片：只要時間軸上有片段就能匯出（純剪輯、無字幕也可） */}
                     {hasTimeline && (<>
+                        <span className="header-sep" aria-hidden />
                         <button className="btn btn-accent" onClick={() => setShowExportModal(true)} disabled={isBurning}>
                             {isBurning ? `匯出中 ${exportProgress >= 0 ? exportProgress + '%' : '…'}` : <><Clapperboard aria-hidden />匯出影片</>}
                         </button>
                         <button className="btn" onClick={() => setShowYtUpload(true)} disabled={!lastExport || isBurning}
-                            title={lastExport ? `上傳最近匯出的成品到 YouTube\n${lastExport}` : '請先匯出影片，再上傳 YouTube'}>
-                            <Upload aria-hidden />YouTube
+                            title={!lastExport ? '請先匯出影片，再上傳 YouTube' : exportStale ? `匯出後專案又改過，這支成品不含之後的修改\n${lastExport}` : `上傳最近匯出的成品到 YouTube\n${lastExport}`}>
+                            <Upload aria-hidden />YouTube{exportStale && <span className="stale-tag">成品較舊</span>}
                         </button>
                     </>)}
-                    <ProjectFileButtons />
-                    <button className="btn" onClick={() => setShowRecSettings(true)}><CircleDot aria-hidden />螢幕錄影</button>
+                    <span className="header-sep" aria-hidden />
                     <button className="btn btn-icon" onClick={() => setShowHelp(true)} title="說明與快捷鍵（?）" aria-label="說明與快捷鍵" style={{ padding: '6px 10px' }}><CircleHelp aria-hidden /></button>
                     <button className="btn" onClick={() => setShowSettings(true)} title="設定" aria-label="設定" style={{ padding: '6px 10px' }}><Settings aria-hidden /></button>
                 </div>
@@ -2408,7 +2415,7 @@ export default function App() {
 
             <div className={`app-body ${isResizing ? 'resizing' : ''}`}>
                 {/* 左側 — 媒體庫 */}
-                <aside className="panel-left" style={{ width: leftWidth }}>
+                <aside className="panel-left" style={{ width: leftWidth }} aria-label="媒體與辨識">
                     {/* 頁籤切換 */}
                     <div className="left-tabs" role="tablist" aria-label="左側面板"
                         onKeyDown={(e) => {
@@ -2418,7 +2425,7 @@ export default function App() {
                             setLeftTab(next);
                             document.getElementById(`left-tab-${next}`)?.focus();
                         }}>
-                        {([['media', '媒體'], ['subtitle', '字幕']] as const).map(([key, label]) => (
+                        {([['media', '媒體'], ['subtitle', '辨識']] as const).map(([key, label]) => (
                             <button key={key} id={`left-tab-${key}`} role="tab" aria-selected={leftTab === key} aria-controls="left-tab-panel"
                                 tabIndex={leftTab === key ? 0 : -1}
                                 className={`left-tab ${leftTab === key ? 'active' : ''}`} onClick={() => setLeftTab(key)}>{label}</button>
@@ -2431,6 +2438,8 @@ export default function App() {
                             <>
                                 {/* 上傳區 */}
                                 <div className="upload-zone upload-zone-compact" onClick={() => fileInputRef.current?.click()}
+                                    role="button" tabIndex={0} aria-label="新增素材：選擇影片或音訊檔"
+                                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileInputRef.current?.click(); } }}
                                     onDrop={handleDrop} onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}>
                                     <p>{isUploading ? '上傳中...' : '點擊新增 或 拖放檔案'}</p>
                                     <input ref={fileInputRef} type="file" accept="video/*,audio/*" hidden multiple
@@ -2676,7 +2685,17 @@ export default function App() {
                                 onChange={(e) => seekTo(Number(e.target.value))}
                                 style={{ flex: 1, accentColor: 'var(--accent-amber)' }} />
                             {activeClipSpeed !== 1 && <span style={{ fontSize: 11, color: 'var(--accent-amber)', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 2 }}><Gauge aria-hidden />{activeClipSpeed}x</span>}
-                            <span className="time" style={{ fontSize: 11 }}>{Math.round(zoom * 100)}%</span>
+                            {(selectedOverlayId || selectedZoomId) && (
+                                <span className="preview-hint">Shift＋點畫面{selectedOverlayId ? '移動／Shift＋拖曳框出範圍' : '設定放大中心'}</span>
+                            )}
+                            {segments.length > 0 && (
+                                <button className={`btn preview-sub-chip ${burnSubs ? 'burn' : ''}`} onClick={() => setShowExportModal(true)}
+                                    aria-label={burnSubs ? '匯出時字幕會燒進畫面，開啟匯出設定' : '匯出時字幕不燒入畫面（另附 SRT），開啟匯出設定'}
+                                    title={burnSubs ? '匯出時字幕會燒進畫面（點一下到匯出設定修改）' : '預覽上的字幕只供校對；匯出為乾淨畫面＋獨立 SRT（點一下到匯出設定修改）'}>
+                                    <Captions aria-hidden />{burnSubs ? '燒入' : '不燒入'}
+                                </button>
+                            )}
+                            <span className="time" style={{ fontSize: 12 }} title="時間軸縮放比例（Ctrl+＋／－）"><ZoomIn aria-hidden style={{ width: 12, height: 12, verticalAlign: -2 }} /> {Math.round(zoom * 100)}%</span>
                             <button className="btn" onClick={() => setZoom(z => Math.max(z * 0.8, 0.1))} style={{ padding: '4px 8px', fontSize: 12 }} aria-label="縮小時間軸" title="縮小時間軸（Ctrl+－）">−</button>
                             <button className="btn" onClick={() => setZoom(z => Math.min(z * 1.25, 50))} style={{ padding: '4px 8px', fontSize: 12 }} aria-label="放大時間軸" title="放大時間軸（Ctrl+＋）">+</button>
                         </div>
@@ -2779,7 +2798,7 @@ export default function App() {
                                                 <button className="zoom-mini-btn" title="在播放頭加入 3 秒、2 倍的縮放（選取後 Shift+點預覽畫面設定放大位置）"
                                                     onClick={(e) => { e.stopPropagation(); addZoomAtPlayhead(); }} aria-label="在播放頭加入縮放"><Plus aria-hidden /></button>
                                                 <button className="zoom-mini-btn" title="依錄影時的滑鼠點擊自動加入縮放（限 LJ Cut 錄影）" disabled={zoomBusy}
-                                                    onClick={(e) => { e.stopPropagation(); void autoZoom(); }} aria-label="依滑鼠點擊自動加入縮放"><Sparkles aria-hidden /></button>
+                                                    onClick={(e) => { e.stopPropagation(); void autoZoom(); }} aria-label="依滑鼠點擊自動加入縮放"><MousePointerClick aria-hidden /></button>
                                             </span>
                                         </div>
                                         <div className="track-content" style={{ width: timelineWidth }}>
@@ -2796,7 +2815,7 @@ export default function App() {
                                                             onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); (e.currentTarget as HTMLElement).click(); } }}
                                                             style={{ left, width }}
                                                             onClick={(e) => { e.stopPropagation(); selectZoom(z.id); seekTo(toTimelineTime(clip, Math.min(b - 0.01, (z.start + z.end) / 2))); }}
-                                                            title={`放大 ${z.scale}x　中心 (${z.x}, ${z.y})\n${formatTimestamp(z.start)} → ${formatTimestamp(z.end)}（素材時間）\n點一下在右欄編輯屬性`}>
+                                                            title={`放大 ${z.scale}x　中心 (${z.x}, ${z.y})\n${formatTimestamp(z.start)} → ${formatTimestamp(z.end)}（原始影片時間）\n點一下在右欄編輯屬性`}>
                                                             <span className="clip-text">{z.scale}x</span>
                                                         </div>
                                                     );
@@ -2849,7 +2868,7 @@ export default function App() {
                                                             onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); (e.currentTarget as HTMLElement).click(); } }}
                                                             style={{ left, width, top: 4 + row * 28, height: 24 }}
                                                             onClick={(e) => { e.stopPropagation(); selectOverlay(o.id); seekTo(toTimelineTime(clip, Math.min(b - 0.01, a + Math.min(0.6, (b - a) / 2)))); }}
-                                                            title={`${OVERLAY_LABEL[o.kind]}${o.text ? `：${o.text}` : ''}\n${formatTimestamp(o.start)} → ${formatTimestamp(o.end)}（素材時間）\n點一下在右欄編輯屬性`}>
+                                                            title={`${OVERLAY_LABEL[o.kind]}${o.text ? `：${o.text}` : ''}\n${formatTimestamp(o.start)} → ${formatTimestamp(o.end)}（原始影片時間）\n點一下在右欄編輯屬性`}>
                                                             <span className="clip-text">{icon[o.kind]}{width >= 56 || selected ? ` ${o.text ?? OVERLAY_LABEL[o.kind]}` : null}</span>
                                                         </div>
                                                     );
@@ -2928,7 +2947,7 @@ export default function App() {
                 <div className="resize-handle-v" onMouseDown={(e) => startResize('right', e)} />
 
                 {/* 右側：字幕 */}
-                <aside className="panel-right" style={{ width: rightWidth }}>
+                <aside className="panel-right" style={{ width: rightWidth }} aria-label="字幕校對與屬性">
                     {(selectedOverlay || selectedZoom) && (
                         <OverlayInspector
                             key={selectedOverlay?.overlay.id ?? selectedZoom?.zoom.id}
@@ -2975,8 +2994,8 @@ export default function App() {
                                     <button className="btn st-btn" onClick={handleExportSrt} title="匯出 SRT 檔案到資料夾"><Download aria-hidden />SRT 檔</button>
                                 </div>
                                 <div className="st-row st-split">
-                                    <span className="st-label">每段上限</span>
-                                    <input type="number" min={5} max={50} value={subtitleStyle.maxCharsPerCue}
+                                    <label className="st-label" htmlFor="max-chars-per-cue">每段上限</label>
+                                    <input id="max-chars-per-cue" type="number" min={5} max={50} value={subtitleStyle.maxCharsPerCue}
                                         onChange={e => setSubtitleStyle({ maxCharsPerCue: Number(e.target.value) })} />
                                     <span className="st-label">字</span>
                                     <button className="btn st-btn" onClick={handleResplit} title="依上限重新分段（可復原）">重新分段</button>
@@ -3019,7 +3038,7 @@ export default function App() {
                         {segments.length === 0 ? (
                             <div className="empty-state">
                                 <p>尚無字幕</p>
-                                <p style={{ fontSize: 11 }}>上傳影片後在「字幕」頁籤點擊開始辨識</p>
+                                <p style={{ fontSize: 11 }}>匯入影片後，到左側「辨識」頁籤按「開始辨識」</p>
                             </div>
                         ) : (
                             <>
@@ -3059,6 +3078,9 @@ export default function App() {
                                                         }
                                                     }}
                                                     onClick={(e) => e.stopPropagation()} rows={2} />
+                                            ) : null}
+                                            {seg.id === activeSegmentId && !selectedSegIds.has(seg.id) ? (
+                                                <div className="sub-edit-hint">Enter 在游標處分成兩句 · Ctrl＋點其他句可多選合併</div>
                                             ) : (
                                                 <div className="text">{seg.text}</div>
                                             )}
@@ -3242,7 +3264,7 @@ export default function App() {
                                     <dt>片頭／片尾</dt><dd>{intro ? '有' : '無'}／{outro ? '有' : '無'}</dd>
                                     <dt>字幕</dt><dd>{subs} 句{subs === 0 ? '（上傳時不會有 CC）' : ''}</dd>
                                     <dt>縮放／標註</dt><dd>{zooms} 段／{overlays} 個</dd>
-                                    <dt>存檔位置</dt><dd>按「開始匯出」後選擇</dd>
+                                    <dt>存檔位置</dt><dd>{settings.outputDir ? `${settings.outputDir}（開始後可改）` : '按「開始匯出」後選擇'}</dd>
                                 </dl>
                             );
                         })()}
@@ -3309,6 +3331,8 @@ export default function App() {
             {showYtUpload && lastExport && (
                 <YouTubeUploadModal
                     videoPath={lastExport}
+                    stale={exportStale}
+                    onReexport={() => { setShowYtUpload(false); setShowExportModal(true); }}
                     publicationId={publicationId}
                     defaultTitle={(primaryMedia?.filename || 'LJCUT 影片').replace(/\.[^.]+$/, '')}
                     defaultDescription={''}
