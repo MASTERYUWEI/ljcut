@@ -1,5 +1,6 @@
 /* ── LJCUT 主應用 ── */
 
+import { Clapperboard, Upload, CircleDot, Settings, Play, Pause, Square, Video, FolderOpen, Film, ZoomIn, PenLine, Captions, Plus, Sparkles, SpellCheck, Brain, Copy, Check, Download, X, Image as ImageIcon, ArrowUpRight, Type, Code, Focus, ListOrdered, Gauge } from 'lucide-react';
 import { useRef, useCallback, useState, useEffect, useLayoutEffect, useMemo } from 'react';
 import { useStore } from './store';
 import { api, onApiReady, getBase } from './api';
@@ -2368,15 +2369,15 @@ export default function App() {
                     {/* 匯出影片：只要時間軸上有片段就能匯出（純剪輯、無字幕也可） */}
                     {hasTimeline && (<>
                         <button className="btn btn-accent" onClick={() => setShowExportModal(true)} disabled={isBurning}>
-                            {isBurning ? `⏳ 匯出中 ${exportProgress >= 0 ? exportProgress + '%' : '...'}` : '🎬 匯出影片'}
+                            {isBurning ? `匯出中 ${exportProgress >= 0 ? exportProgress + '%' : '…'}` : <><Clapperboard aria-hidden />匯出影片</>}
                         </button>
                         <button className="btn" onClick={() => setShowYtUpload(true)} disabled={!lastExport || isBurning}
                             title={lastExport ? `上傳最近匯出的成品到 YouTube\n${lastExport}` : '請先匯出影片，再上傳 YouTube'}>
-                            ⬆️ YouTube
+                            <Upload aria-hidden />YouTube
                         </button>
                     </>)}
-                    <button className="btn" onClick={() => setShowRecSettings(true)}>⏺ 螢幕錄影</button>
-                    <button className="btn" onClick={() => setShowSettings(true)} title="設定" style={{ padding: '6px 10px' }}>⚙</button>
+                    <button className="btn" onClick={() => setShowRecSettings(true)}><CircleDot aria-hidden />螢幕錄影</button>
+                    <button className="btn" onClick={() => setShowSettings(true)} title="設定" aria-label="設定" style={{ padding: '6px 10px' }}><Settings aria-hidden /></button>
                 </div>
             </header>
             <ProjectControl />
@@ -2403,16 +2404,16 @@ export default function App() {
                     {encoderInfo && (() => {
                         const e = encoderInfo;
                         let label: string, cls: string, tip: string;
-                        if (!e.hw) { label = '🟡 軟體編碼'; cls = 'sw'; tip = '本機無硬體 H.264 編碼器，使用 CPU 軟體編碼'; }
-                        else if (e.nvenc_active === false) { label = '🟡 掉回軟體'; cls = 'warn'; tip = '偵測到硬體編碼器，但這次錄影未在使用（可能 NVENC session 被其他程式占用），已掉回 CPU 軟體編碼'; }
-                        else if (e.nvenc_active === true) { label = '🟢 NVENC'; cls = 'hw'; tip = `硬體編碼運作中：${e.name}`; }
-                        else { label = '🟢 硬體編碼'; cls = 'hw'; tip = `硬體編碼器：${e.name}（執行期確認中…）`; }
-                        return <span className={`enc-badge enc-${cls}`} title={tip}>{label}</span>;
+                        if (!e.hw) { label = '軟體編碼'; cls = 'sw'; tip = '本機無硬體 H.264 編碼器，使用 CPU 軟體編碼'; }
+                        else if (e.nvenc_active === false) { label = '掉回軟體'; cls = 'warn'; tip = '偵測到硬體編碼器，但這次錄影未在使用（可能 NVENC session 被其他程式占用），已掉回 CPU 軟體編碼'; }
+                        else if (e.nvenc_active === true) { label = 'NVENC'; cls = 'hw'; tip = `硬體編碼運作中：${e.name}`; }
+                        else { label = '硬體編碼'; cls = 'hw'; tip = `硬體編碼器：${e.name}（執行期確認中…）`; }
+                        return <span className={`enc-badge enc-${cls}`} title={tip}><span className={`encoder-dot ${cls === 'hw' ? '' : 'warn'}`} aria-hidden />{label}</span>;
                     })()}
-                    <button className="rec-ctrl-btn" onClick={handlePauseRec} title={isPaused ? '繼續' : '暫停'}>
-                        {isPaused ? '▶' : '⏸'}
+                    <button className="rec-ctrl-btn" onClick={handlePauseRec} title={isPaused ? '繼續' : '暫停'} aria-label={isPaused ? '繼續錄影' : '暫停錄影'}>
+                        {isPaused ? <Play aria-hidden /> : <Pause aria-hidden />}
                     </button>
-                    <button className="rec-ctrl-btn rec-stop" onClick={handleStopRec} title="停止 (F10)">⏹</button>
+                    <button className="rec-ctrl-btn rec-stop" onClick={handleStopRec} title="停止 (F10)" aria-label="停止錄影"><Square aria-hidden /></button>
                     <span className="rec-hotkey-hint">按 F10 結束</span>
                 </div>
             )}
@@ -2466,7 +2467,7 @@ export default function App() {
                                                     {item.thumbnailUrl ? (
                                                         <img src={item.thumbnailUrl} alt="" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />
                                                     ) : (
-                                                        <span>🎥</span>
+                                                        <Video aria-hidden />
                                                     )}
                                                 </div>
                                                 <div className="media-meta">
@@ -2480,7 +2481,7 @@ export default function App() {
                                                             const { invoke } = await import('@tauri-apps/api/core');
                                                             await invoke('reveal_media', { filename: item.filename, fileId: item.id });
                                                         } catch (err) { notify(`開啟資料夾失敗: ${err}`); }
-                                                    }} title="開啟檔案所在資料夾">📂</button>
+                                                    }} title="開啟檔案所在資料夾" aria-label="開啟檔案所在資料夾"><FolderOpen aria-hidden /></button>
                                                 )}
                                                 <button className="media-remove" onClick={(e) => { e.stopPropagation(); pushUndo(); removeMedia(item.id); }} title="從媒體庫移除（不會刪除磁碟上的檔案）">×</button>
                                             </div>
@@ -2512,9 +2513,11 @@ export default function App() {
                                             快速辨識（約 4 倍速，準確度略降）
                                         </label>
                                         <div className="action-buttons">
-                                            <button className="btn btn-primary" onClick={handleTranscribe}
-                                                disabled={isTranscribing} style={{ width: '100%', justifyContent: 'center' }}>
-                                                {isTranscribing ? '辨識中...' : '開始辨識'}
+                                            {/* 已經有字幕時降為次要按鈕並明示會取代，避免誤點重跑辨識、蓋掉校對好的字幕 */}
+                                            <button className={timelineClips.some(c => c.segments.length > 0) ? 'btn' : 'btn btn-primary'} onClick={handleTranscribe}
+                                                disabled={isTranscribing} style={{ width: '100%', justifyContent: 'center' }}
+                                                title={timelineClips.some(c => c.segments.length > 0) ? '重新辨識會取代目前的字幕（可 Ctrl+Z 復原）' : undefined}>
+                                                {isTranscribing ? '辨識中…' : timelineClips.some(c => c.segments.length > 0) ? '重新辨識（取代目前字幕）' : '開始辨識'}
                                             </button>
                                             {isTranscribing && (
                                                 <div className="transcribe-prog">
@@ -2580,7 +2583,7 @@ export default function App() {
                             </>
                         ) : (
                             <div className="video-placeholder">
-                                <div className="icon">🎬</div><p>請上傳影片或音頻</p>
+                                <div className="icon"><Film aria-hidden /></div><p>請上傳影片或音頻</p>
                             </div>
                         )}
 
@@ -2675,13 +2678,13 @@ export default function App() {
                     {(hasTimeline || primaryMedia) && (
                         <div className="video-controls">
                             <button className="btn" onClick={togglePlay} style={{ padding: '6px 12px' }} aria-label={isPlaying ? '暫停（空白鍵）' : '播放（空白鍵）'} title={isPlaying ? '暫停（空白鍵／K）' : '播放（空白鍵／L）'}>
-                                {isPlaying ? '⏸' : '▶'}
+                                {isPlaying ? <Pause aria-hidden /> : <Play aria-hidden />}
                             </button>
                             <span className="time" ref={timeDisplayRef}>{formatTime(currentTime)} / {formatTime(duration)}</span>
                             <input type="range" ref={rangeSliderRef} aria-label="播放位置" min={0} max={duration || 0} step={0.1} defaultValue={currentTime}
                                 onChange={(e) => seekTo(Number(e.target.value))}
                                 style={{ flex: 1, accentColor: 'var(--accent-amber)' }} />
-                            {activeClipSpeed !== 1 && <span style={{ fontSize: 11, color: '#fbbf24', fontWeight: 600 }}>⚡{activeClipSpeed}x</span>}
+                            {activeClipSpeed !== 1 && <span style={{ fontSize: 11, color: 'var(--accent-amber)', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 2 }}><Gauge aria-hidden />{activeClipSpeed}x</span>}
                             <span className="time" style={{ fontSize: 11 }}>{Math.round(zoom * 100)}%</span>
                             <button className="btn" onClick={() => setZoom(z => Math.max(z * 0.8, 0.1))} style={{ padding: '4px 8px', fontSize: 12 }} aria-label="縮小時間軸" title="縮小時間軸（Ctrl+－）">−</button>
                             <button className="btn" onClick={() => setZoom(z => Math.min(z * 1.25, 50))} style={{ padding: '4px 8px', fontSize: 12 }} aria-label="放大時間軸" title="放大時間軸（Ctrl+＋）">+</button>
@@ -2715,7 +2718,7 @@ export default function App() {
                                 <div className="timeline-tracks-inner">
                                 {/* 影片軌（多 clip） */}
                                 <div className="track track-video">
-                                    <div className="track-label" style={{ width: LABEL_W }}>🎬 影片</div>
+                                    <div className="track-label" style={{ width: LABEL_W }}><Film aria-hidden />&nbsp;影片</div>
                                     <div className="track-content" style={{ width: timelineWidth }}>
                                         {timelineClips.filter(c => c.trackIndex === 0).map(clip => {
                                             const media = mediaItems.find(m => m.id === clip.mediaId);
@@ -2772,12 +2775,12 @@ export default function App() {
                                 {mediaItems.some(m => m.info.width) && (
                                     <div className="track zoom-track">
                                         <div className="track-label zoom-track-label" style={{ width: LABEL_W }}>
-                                            <span>🔍 縮放</span>
+                                            <span><ZoomIn aria-hidden /> 縮放</span>
                                             <span className="zoom-track-actions">
                                                 <button className="zoom-mini-btn" title="在播放頭加入 3 秒、2 倍的縮放（選取後 Shift+點預覽畫面設定放大位置）"
-                                                    onClick={(e) => { e.stopPropagation(); addZoomAtPlayhead(); }}>＋</button>
+                                                    onClick={(e) => { e.stopPropagation(); addZoomAtPlayhead(); }} aria-label="在播放頭加入縮放"><Plus aria-hidden /></button>
                                                 <button className="zoom-mini-btn" title="依錄影時的滑鼠點擊自動加入縮放（限 LJ Cut 錄影）" disabled={zoomBusy}
-                                                    onClick={(e) => { e.stopPropagation(); void autoZoom(); }}>✨</button>
+                                                    onClick={(e) => { e.stopPropagation(); void autoZoom(); }} aria-label="依滑鼠點擊自動加入縮放"><Sparkles aria-hidden /></button>
                                             </span>
                                         </div>
                                         <div className="track-content" style={{ width: timelineWidth }}>
@@ -2829,19 +2832,20 @@ export default function App() {
                                         return { ...blk, row };
                                     });
                                     const rows = Math.max(1, rowEnds.length);
-                                    const icon: Record<string, string> = { box: '▢', arrow: '➜', spotlight: '◎', step: '①', title: 'T', html: '</>', media: '🖼' };
+                                    const icon: Record<string, React.ReactNode> = { box: <Square aria-hidden />, arrow: <ArrowUpRight aria-hidden />, spotlight: <Focus aria-hidden />,
+                                        step: <ListOrdered aria-hidden />, title: <Type aria-hidden />, html: <Code aria-hidden />, media: <ImageIcon aria-hidden /> };
                                     return (
                                         <div className="track overlay-track" style={{ height: Math.max(40, rows * 28 + 8) }}>
                                             <div className="track-label zoom-track-label" style={{ width: LABEL_W }}>
-                                                <span>✏️ 標註</span>
+                                                <span><PenLine aria-hidden /> 標註</span>
                                                 <input ref={assetInputRef} type="file" hidden accept="image/png,image/jpeg,image/webp,image/bmp,video/*,.gif"
                                                     onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) void addMediaFromFile(f); }} />
                                                 <select className="overlay-add" value="" title="在播放頭加入 3 秒的標註；選取後 Shift+點或拖曳預覽畫面設定位置"
                                                     onClick={(e) => e.stopPropagation()}
                                                     onChange={(e) => { const k = e.target.value as OverlayKind; e.target.value = ''; if (k) addOverlayAtPlayhead(k); }}>
                                                     <option value="">＋ 加入</option>
-                                                    {TEMPLATE_KINDS.map(k => <option key={k} value={k}>{icon[k]} {OVERLAY_LABEL[k]}</option>)}
-                                                    <option value="media">🖼 圖片／影片（子母畫面）…</option>
+                                                    {TEMPLATE_KINDS.map(k => <option key={k} value={k}>{OVERLAY_LABEL[k]}</option>)}
+                                                    <option value="media">圖片／影片（子母畫面）…</option>
                                                 </select>
                                             </div>
                                             <div className="track-content" style={{ width: timelineWidth }}>
@@ -2854,7 +2858,7 @@ export default function App() {
                                                             style={{ left, width, top: 4 + row * 28, height: 24 }}
                                                             onClick={(e) => { e.stopPropagation(); selectOverlay(o.id); seekTo(toTimelineTime(clip, Math.min(b - 0.01, a + Math.min(0.6, (b - a) / 2)))); }}
                                                             title={`${OVERLAY_LABEL[o.kind]}${o.text ? `：${o.text}` : ''}\n${formatTimestamp(o.start)} → ${formatTimestamp(o.end)}（素材時間）\n選取後 Shift+點／拖曳預覽畫面設定位置`}>
-                                                            <span className="clip-text">{width >= 56 || selected ? `${icon[o.kind]} ${o.text ?? OVERLAY_LABEL[o.kind]}` : icon[o.kind]}</span>
+                                                            <span className="clip-text">{icon[o.kind]}{width >= 56 || selected ? ` ${o.text ?? OVERLAY_LABEL[o.kind]}` : null}</span>
                                                             {selected && (
                                                                 <span className="zoom-clip-tools" onClick={(e) => e.stopPropagation()}>
                                                                     <button className="zoom-mini-btn" title={o.kind === 'html' ? 'HTML 動畫由 AI 撰寫' : o.kind === 'media' ? '調整音量' : '編輯文字'} onClick={editSelectedOverlayText}>✎</button>
@@ -2872,7 +2876,7 @@ export default function App() {
 
                                 {/* 字幕軌 */}
                                 <div className="track track-subtitle">
-                                    <div className="track-label" style={{ width: LABEL_W }}>💬 字幕</div>
+                                    <div className="track-label" style={{ width: LABEL_W }}><Captions aria-hidden />&nbsp;字幕</div>
                                     <div className="track-content" style={{ width: timelineWidth }}>
                                         {timelineClips.filter(c => c.trackIndex === 0 && c.segments.length > 0).map(clip =>
                                             clippedSegments(clip.segments, clip.trimStart, clip.trimEnd).map((seg) => {
@@ -2950,18 +2954,18 @@ export default function App() {
                         <div className="subtitle-toolbar">
                             <div className="st-row">
                                 <button className="btn st-btn" onClick={handlePolishSubtitles} disabled={isPolishing || isTranscribing}
-                                    title="AI 修錯字、去贅字、補標點（時間碼不變、Ctrl+Z 可復原）">{isPolishing ? '✨ 潤飾中' : '✨ 潤飾'}</button>
+                                    title="AI 修錯字、去贅字、補標點（時間碼不變、Ctrl+Z 可復原）"><Sparkles aria-hidden />{isPolishing ? '潤飾中' : '潤飾'}</button>
                                 <button className="btn st-btn" onClick={handleScanTypos} disabled={isScanningTypos}
-                                    title="AI 掃描重複出現的可疑錯字，一鍵全部取代">{isScanningTypos ? '🔍 掃描中' : '🔍 掃錯字'}</button>
+                                    title="AI 掃描重複出現的可疑錯字，一鍵全部取代"><SpellCheck aria-hidden />{isScanningTypos ? '掃描中' : '掃錯字'}</button>
                                 <button className="btn st-btn" onClick={handleScanFlow} disabled={isScanningFlow}
-                                    title="AI 找出語意不通順的句子，點擊定位手動修改">{isScanningFlow ? '🧠 掃描中' : '🧠 掃語意'}</button>
+                                    title="AI 找出語意不通順的句子，點擊定位手動修改"><Brain aria-hidden />{isScanningFlow ? '掃描中' : '掃語意'}</button>
                             </div>
                             <div className="st-row">
                                 <button className="btn st-btn" onClick={() => handleCopySubtitles('text')} title="複製全部字幕文字（不含時間碼，貼給 AI 潤稿用）">
-                                    {copyMsg === 'text' ? '✅ 已複製' : '📋 全文'}</button>
+                                    {copyMsg === 'text' ? <><Check aria-hidden />已複製</> : <><Copy aria-hidden />全文</>}</button>
                                 <button className="btn st-btn" onClick={() => handleCopySubtitles('srt')} title="複製完整 SRT 內容（含時間碼）">
-                                    {copyMsg === 'srt' ? '✅ 已複製' : '📋 SRT'}</button>
-                                <button className="btn st-btn" onClick={handleExportSrt} title="匯出 SRT 檔案到資料夾">💾 SRT 檔</button>
+                                    {copyMsg === 'srt' ? <><Check aria-hidden />已複製</> : <><Copy aria-hidden />SRT</>}</button>
+                                <button className="btn st-btn" onClick={handleExportSrt} title="匯出 SRT 檔案到資料夾"><Download aria-hidden />SRT 檔</button>
                             </div>
                             <div className="st-row st-split">
                                 <span className="st-label">每段上限</span>
@@ -3197,8 +3201,8 @@ export default function App() {
                 <div className="modal-overlay" onClick={() => setShowExportModal(false)}>
                     <div className="modal-box" ref={exportDialogRef} role="dialog" aria-modal="true" aria-labelledby="export-title" onClick={e => e.stopPropagation()} style={{ maxWidth: 430 }}>
                         <div className="modal-header">
-                            <h3 id="export-title">🎬 匯出影片</h3>
-                            <button className="btn" onClick={() => setShowExportModal(false)} style={{ padding: '2px 8px' }} aria-label="關閉" title="關閉（Esc）">✕</button>
+                            <h3 id="export-title">匯出影片</h3>
+                            <button className="btn" onClick={() => setShowExportModal(false)} style={{ padding: '4px 6px' }} aria-label="關閉" title="關閉（Esc）"><X aria-hidden /></button>
                         </div>
                         <div className="style-row" title="關閉＝匯出乾淨畫面（推薦：YouTube 觀眾用 CC 字幕，之後改錯字免重傳影片）；開啟＝字幕燒進畫面">
                             <label>燒入字幕到畫面</label>
@@ -3209,7 +3213,7 @@ export default function App() {
                         </div>
                         {!burnSubs && (
                             <div style={{ fontSize: 12, color: '#7cb27c', padding: '2px 0 6px' }}>
-                                ✅ 乾淨畫面匯出 — 上傳 YouTube 時會自動掛 SRT 字幕（CC）
+                                乾淨畫面匯出：上傳 YouTube 時會自動掛 SRT 字幕（CC）
                             </div>
                         )}
                         {burnSubs && (
@@ -3255,7 +3259,7 @@ export default function App() {
                         )}
                         <button className="btn btn-primary" style={{ width: '100%', justifyContent: 'center', marginTop: 10 }}
                             onClick={() => { setShowExportModal(false); handleExportVideo(); }}>
-                            🎬 開始匯出
+                            <Clapperboard aria-hidden />開始匯出
                         </button>
                     </div>
                 </div>

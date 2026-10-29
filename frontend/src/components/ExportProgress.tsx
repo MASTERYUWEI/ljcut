@@ -16,7 +16,7 @@ export function ExportProgress({ progress, etaSeconds, stage }: Props) {
     return (
         <div className="export-progress-backdrop">
             <div className="export-progress-modal">
-                <div className="export-progress-title">🎬 匯出影片中...</div>
+                <div className="export-progress-title">匯出影片中…</div>
                 <div className="export-progress-bar-track">
                     <div className="export-progress-bar-fill" style={{ width: `${progress}%` }} />
                 </div>

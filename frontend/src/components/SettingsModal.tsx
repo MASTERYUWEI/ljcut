@@ -1,4 +1,5 @@
 /* ── 設定 Modal（輸出目錄 / SRT 目錄 / Gemini API Key）── */
+import { X, Folder, Eye, EyeOff, KeyRound, Stethoscope, Link, RefreshCw } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { useDialog } from '../useDialog';
 import { notify } from '../toast';
@@ -201,20 +202,20 @@ export function SettingsModal({ settings, setSettings, onClose }: Props) {
             <div className="modal-box" ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="settings-title" onClick={e => e.stopPropagation()}>
                 <div className="modal-header">
                     <h3 id="settings-title">設定</h3>
-                    <button className="btn" onClick={onClose} style={{ padding: '2px 8px' }} aria-label="關閉" title="關閉（Esc）">✕</button>
+                    <button className="btn" onClick={onClose} style={{ padding: '4px 6px' }} aria-label="關閉" title="關閉（Esc）"><X aria-hidden /></button>
                 </div>
                 <div className="style-row">
                     <label>輸出目錄</label>
                     <button className="folder-pick-btn" onClick={() => pickDir('outputDir', '選擇輸出目錄')}>
                         <span>{settings.outputDir || '點擊選擇資料夾...'}</span>
-                        <span className="folder-icon">📁</span>
+                        <span className="folder-icon"><Folder aria-hidden /></span>
                     </button>
                 </div>
                 <div className="style-row">
                     <label>SRT 存放目錄</label>
                     <button className="folder-pick-btn" onClick={() => pickDir('srtDir', '選擇 SRT 存放目錄')}>
                         <span>{settings.srtDir || '預設：與輸出相同'}</span>
-                        <span className="folder-icon">📁</span>
+                        <span className="folder-icon"><Folder aria-hidden /></span>
                     </button>
                 </div>
 
@@ -248,7 +249,7 @@ export function SettingsModal({ settings, setSettings, onClose }: Props) {
                                 />
                                 <button className="btn" onClick={() => setShowKey(s => !s)}
                                     title={showKey ? '隱藏' : '顯示'} style={{ padding: '0 10px' }}>
-                                    {showKey ? '🙈' : '👁'}
+                                    {showKey ? <EyeOff aria-hidden /> : <Eye aria-hidden />}
                                 </button>
                                 <button className="btn btn-primary" onClick={saveKey}
                                     disabled={saving || !keyInput.trim()} style={{ padding: '0 12px' }}>
@@ -263,14 +264,14 @@ export function SettingsModal({ settings, setSettings, onClose }: Props) {
                             </div>
                             <button className="btn" onClick={applyKey} style={{ justifyContent: 'center' }}
                                 title="開啟 Google AI Studio 申請金鑰">
-                                🔑 一鍵申請 API Key
+                                <KeyRound aria-hidden />一鍵申請 API Key
                             </button>
                         </>
                     )}
                     <button className="btn" disabled={testing || !keyInfo.has_key} onClick={testKey}
                         style={{ justifyContent: 'center' }}
                         title="實際呼叫一次 Gemini API，確認金鑰真的能拿到回應">
-                        {testing ? '🩺 測試中...' : '🩺 測試金鑰健康度'}
+                        <Stethoscope aria-hidden />{testing ? '測試中…' : '測試金鑰健康度'}
                     </button>
                     {health && (
                         <div style={{ fontSize: 12, whiteSpace: 'pre-wrap', color: health.startsWith('✅') ? '#7cb27c' : '#ff8a80' }}>
@@ -335,7 +336,7 @@ export function SettingsModal({ settings, setSettings, onClose }: Props) {
                             <button className="btn" disabled={ytBusy || !yt?.configured} onClick={connectYt}
                                 style={{ justifyContent: 'center' }}
                                 title={yt?.configured ? '開啟瀏覽器完成 Google 授權（一次性）' : '請先儲存 OAuth 憑證'}>
-                                {ytBusy ? '⏳ 等待授權中...' : '🔗 連結 YouTube 帳號'}
+                                <Link aria-hidden />{ytBusy ? '等待授權中…' : '連結 YouTube 帳號'}
                             </button>
                             {yt?.configured && (
                                 <button className="btn" style={{ justifyContent: 'center', fontSize: 12 }}
@@ -356,7 +357,7 @@ export function SettingsModal({ settings, setSettings, onClose }: Props) {
                         <button className="btn" disabled={updBusy} onClick={checkUpdate}
                             style={{ marginLeft: 'auto', padding: '0 12px' }}
                             title="向 GitHub Releases 檢查是否有新版本">
-                            {updBusy ? '⏳ 檢查中...' : '🔄 檢查更新'}
+                            <RefreshCw aria-hidden />{updBusy ? '檢查中…' : '檢查更新'}
                         </button>
                     </div>
                     {updMsg && <div style={{ fontSize: 12, color: updMsg.startsWith('❌') ? '#ff8a80' : '#7cb27c' }}>{updMsg}</div>}

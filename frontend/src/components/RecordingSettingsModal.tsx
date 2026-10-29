@@ -1,4 +1,5 @@
 /* ── 螢幕錄影設定 Modal ── */
+import { X, Volume2, Mic, SlidersHorizontal, MonitorPlay, Film, MousePointer2, EyeOff, Sun, MousePointerClick, CircleDot } from 'lucide-react';
 import { useRef, useState } from 'react';
 import { useDialog } from '../useDialog';
 import type { RecOpts, RecQuality, RecFps, MicDevice } from '../types';
@@ -53,10 +54,10 @@ export function RecordingSettingsModal({
             <div className="modal-box" ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="rec-settings-title" onClick={e => e.stopPropagation()}>
                 <div className="modal-header">
                     <h3 id="rec-settings-title">螢幕錄影設定</h3>
-                    <button className="btn" onClick={onClose} style={{ padding: '2px 8px' }} aria-label="關閉" title="關閉（Esc）">✕</button>
+                    <button className="btn" onClick={onClose} style={{ padding: '4px 6px' }} aria-label="關閉" title="關閉（Esc）"><X aria-hidden /></button>
                 </div>
                 <div className="rec-setting-row">
-                    <label>🔊 系統聲音</label>
+                    <label><Volume2 aria-hidden /> 系統聲音</label>
                     <label className="toggle-switch" title={isTauri ? '需安裝 loopback 音訊裝置（如 VB-Cable）' : ''}>
                         <input type="checkbox" checked={recOpts.sysAudio}
                             disabled={isTauri && !recOpts.sysAudioDevice}
@@ -77,7 +78,7 @@ export function RecordingSettingsModal({
                     </div>
                 )}
                 <div className="rec-setting-row">
-                    <label>🎤 麥克風</label>
+                    <label><Mic aria-hidden /> 麥克風</label>
                     <label className="toggle-switch">
                         <input type="checkbox" checked={recOpts.mic}
                             onChange={e => setRecOpts(o => ({ ...o, mic: e.target.checked }))} />
@@ -120,7 +121,7 @@ export function RecordingSettingsModal({
                 {recOpts.sysAudio && recOpts.mic && (
                     <div className="rec-setting-row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 8 }}>
                         <label title="正值＝延後麥克風（麥克風超前時用）；負值＝延後系統聲音">
-                            🎚️ 音訊同步（麥克風延後 ms）
+                            音訊同步（麥克風延後 ms）
                         </label>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                             <input type="number" step={10} value={recOpts.audioSyncMs}
@@ -130,7 +131,7 @@ export function RecordingSettingsModal({
                             <button className="btn" onClick={calibrate} disabled={calibrating}
                                 style={{ marginLeft: 'auto', padding: '0 12px' }}
                                 title="用喇叭播放音樂時，自動量出麥克風超前多少毫秒">
-                                {calibrating ? '校正中…' : '🎚️ 一鍵校正'}
+                                <SlidersHorizontal aria-hidden />{calibrating ? '校正中…' : '一鍵校正'}
                             </button>
                         </div>
                         <div style={{ fontSize: 11, color: '#888', lineHeight: 1.5 }}>
@@ -140,7 +141,7 @@ export function RecordingSettingsModal({
                     </div>
                 )}
                 <div className="rec-setting-row">
-                    <label>🎬 畫質</label>
+                    <label><MonitorPlay aria-hidden /> 畫質</label>
                     <div style={{ display: 'flex', gap: 6 }}>
                         {(['720p', '1080p', '4k'] as RecQuality[]).map(q => (
                             <button key={q}
@@ -150,7 +151,7 @@ export function RecordingSettingsModal({
                     </div>
                 </div>
                 <div className="rec-setting-row">
-                    <label>🎞️ FPS</label>
+                    <label><Film aria-hidden /> FPS</label>
                     <div style={{ display: 'flex', gap: 6 }}>
                         {([24, 30, 60] as RecFps[]).map(f => (
                             <button key={f}
@@ -160,7 +161,7 @@ export function RecordingSettingsModal({
                     </div>
                 </div>
                 <div className="rec-setting-row">
-                    <label>🔍 游標大小</label>
+                    <label><MousePointer2 aria-hidden /> 游標大小</label>
                     <div style={{ display: 'flex', gap: 6, marginLeft: 'auto' }}>
                         {[1, 1.5, 2].map(s => (
                             <button key={s}
@@ -171,7 +172,7 @@ export function RecordingSettingsModal({
                     </div>
                 </div>
                 <div className="rec-setting-row">
-                    <label>🚫 隱藏游標</label>
+                    <label><EyeOff aria-hidden /> 隱藏游標</label>
                     <label className="toggle-switch">
                         <input type="checkbox" checked={recOpts.cursorHidden}
                             onChange={e => setRecOpts(o => ({ ...o, cursorHidden: e.target.checked }))} />
@@ -179,7 +180,7 @@ export function RecordingSettingsModal({
                     </label>
                 </div>
                 <div className="rec-setting-row">
-                    <label>🖱️ 滑鼠光暈</label>
+                    <label><Sun aria-hidden /> 滑鼠光暈</label>
                     {recOpts.cursorGlow && (
                         <input type="color" value={recOpts.glowColor}
                             onChange={e => setRecOpts(o => ({ ...o, glowColor: e.target.value }))}
@@ -193,7 +194,7 @@ export function RecordingSettingsModal({
                     </label>
                 </div>
                 <div className="rec-setting-row">
-                    <label>✨ 點擊特效</label>
+                    <label><MousePointerClick aria-hidden /> 點擊特效</label>
                     {recOpts.clickEffect && (
                         <input type="color" value={recOpts.clickColor}
                             onChange={e => setRecOpts(o => ({ ...o, clickColor: e.target.value }))}
@@ -208,7 +209,7 @@ export function RecordingSettingsModal({
                 </div>
                 <button className="btn btn-accent" onClick={onStartRec}
                     style={{ width: '100%', justifyContent: 'center', marginTop: 16, padding: '10px 0', fontSize: 14 }}>
-                    ⏺ 開始錄影
+                    <CircleDot aria-hidden />開始錄影
                 </button>
             </div>
         </div>

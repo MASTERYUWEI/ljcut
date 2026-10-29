@@ -1,4 +1,5 @@
 /* ── 片段右鍵選單（分割 / 刪除 / 倍速）── */
+import { Scissors, Trash2, Gauge } from 'lucide-react';
 import type { TimelineClip } from '../types';
 import { formatTimestamp } from '../utils';
 
@@ -32,7 +33,7 @@ export function SpeedMenu({ clip, x, y, canSplit, splitTime, onSplit, onDelete, 
                     title={canSplit ? '在播放線位置把此片段切成兩段' : '請先把播放線(時間軸游標)移到此片段中間'}
                     onClick={onSplit}
                 >
-                    {canSplit ? `✂️ 在播放線分割 (${formatTimestamp(splitTime)})` : '✂️ 分割（播放線不在此片段）'}
+                    <Scissors aria-hidden /> {canSplit ? `在播放線分割（${formatTimestamp(splitTime)}）　S` : '分割（播放線不在此片段）'}
                 </button>
                 <button
                     className="speed-preset-btn"
@@ -40,9 +41,9 @@ export function SpeedMenu({ clip, x, y, canSplit, splitTime, onSplit, onDelete, 
                     onClick={onDelete}
                     title="從時間軸刪除此片段"
                 >
-                    🗑️ 刪除片段
+                    <Trash2 aria-hidden /> 刪除片段　Delete
                 </button>
-                <div className="speed-menu-title">⚡ 影片速度</div>
+                <div className="speed-menu-title"><Gauge aria-hidden /> 影片速度</div>
                 <div className="speed-menu-value">{clip.speed.toFixed(1)}x</div>
                 <input type="range" className="speed-slider"
                     min={1} max={5} step={0.1}

@@ -1,4 +1,5 @@
 /* Export-bound captions, Codex cover selection and YouTube upload. */
+import { X, Upload, ExternalLink, Play } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { useDialog } from '../useDialog';
 import { notify } from '../toast';
@@ -107,8 +108,8 @@ export function YouTubeUploadModal({ videoPath, defaultTitle, defaultDescription
         <div className="modal-overlay" onClick={uploading ? undefined : onClose}>
             <div className="modal-box" ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="yt-upload-title" onClick={e => e.stopPropagation()} style={{ maxWidth: 1000, maxHeight: '88vh', overflowY: 'auto' }}>
                 <div className="modal-header">
-                    <h3 id="yt-upload-title">⬆️ 上傳到 YouTube</h3>
-                    <button className="btn" onClick={onClose} disabled={uploading} style={{ padding: '2px 8px' }} aria-label="關閉" title="關閉（Esc）">✕</button>
+                    <h3 id="yt-upload-title">上傳到 YouTube</h3>
+                    <button className="btn" onClick={onClose} disabled={uploading} style={{ padding: '4px 6px' }} aria-label="關閉" title="關閉（Esc）"><X aria-hidden /></button>
                 </div>
 
                 {!publication && <p role="status">{error || "正在讀取這次匯出的影片與字幕…"}</p>}
@@ -179,7 +180,7 @@ export function YouTubeUploadModal({ videoPath, defaultTitle, defaultDescription
 
                             <button className="btn btn-primary" onClick={doUpload} disabled={uploading || !!partialStudio || !title.trim() || !connected || (thumbMode === 'ai' && !thumbSel)}
                                 style={{ justifyContent: 'center', marginTop: 4 }}>
-                                {uploading ? `⬆️ ${STAGE_LABEL[stage] || '上傳中'} ${progress}%` : '⬆️ 開始上傳'}
+                                <Upload aria-hidden />{uploading ? `${STAGE_LABEL[stage] || '上傳中'} ${progress}%` : '開始上傳'}
                             </button>
                             {uploading && (
                                 <div className="progress-bar">
@@ -198,10 +199,10 @@ export function YouTubeUploadModal({ videoPath, defaultTitle, defaultDescription
                             <div key={i} style={{ fontSize: 12, color: '#ffb74d' }}>⚠ {w}</div>
                         ))}
                         <button className="btn" onClick={() => openUrl(result.studio_url)} style={{ justifyContent: 'center' }}>
-                            🛠 到 YouTube Studio 檢查/發佈
+                            <ExternalLink aria-hidden />到 YouTube Studio 檢查／發佈
                         </button>
                         <button className="btn" onClick={() => openUrl(result.watch_url)} style={{ justifyContent: 'center' }}>
-                            ▶️ 觀看影片頁
+                            <Play aria-hidden />觀看影片頁
                         </button>
                         <button className="btn btn-primary" onClick={onClose} style={{ justifyContent: 'center' }}>完成</button>
                     </div>

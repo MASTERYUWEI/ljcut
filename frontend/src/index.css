@@ -37,17 +37,21 @@
   /* ── Utility ── */
   --border: rgba(255, 255, 255, 0.06);
   --border-glow: rgba(240, 176, 80, 0.15);
-  --glass: rgba(20, 20, 30, 0.75);
-  --glass-light: rgba(30, 30, 48, 0.6);
+  --glass: #13131c;          /* 原為半透明毛玻璃，改實色表面 */
+  --glass-light: #1c1c2a;
   --radius: 10px;
   --radius-sm: 6px;
   --font: 'Outfit', 'Microsoft JhengHei', system-ui, sans-serif;
   --font-mono: 'JetBrains Mono', 'Consolas', monospace;
 
   /* ── Glow ── */
-  --glow-amber: 0 0 20px rgba(240, 176, 80, 0.15);
-  --glow-teal: 0 0 12px rgba(110, 204, 192, 0.12);
-  --glow-subtle: 0 2px 16px rgba(0, 0, 0, 0.4);
+  --glow-amber: none;
+  --glow-teal: none;
+  --glow-subtle: 0 2px 8px rgba(0, 0, 0, 0.35);
+  /* 主要動作：全產品只有這一種顏色（琥珀），青綠留給「選取」狀態 */
+  --action: #f0b050;
+  --action-hover: #f6c46e;
+  --action-ink: #1b1306;
 }
 
 * {
@@ -78,11 +82,7 @@ body {
   display: flex;
   flex-direction: column;
   height: 100vh;
-  background:
-    radial-gradient(ellipse at 20% 0%, rgba(240, 176, 80, 0.03) 0%, transparent 50%),
-    radial-gradient(ellipse at 80% 100%, rgba(110, 204, 192, 0.02) 0%, transparent 50%),
-    var(--bg-base);
-  animation: appFadeIn 0.6s ease-out;
+  background: var(--bg-base);
 }
 
 @keyframes appFadeIn {
@@ -102,8 +102,6 @@ body {
   justify-content: space-between;
   padding: 0 24px;
   background: var(--glass);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
   border-bottom: 1px solid var(--border);
   height: 52px;
   flex-shrink: 0;
@@ -114,10 +112,7 @@ body {
   font-size: 17px;
   font-weight: 700;
   letter-spacing: 3px;
-  background: linear-gradient(135deg, var(--accent-amber), var(--accent-warm));
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
+  color: var(--accent-amber);
   text-transform: uppercase;
 }
 
@@ -155,7 +150,6 @@ body {
 .resize-handle-v:hover,
 .resize-handle-v:active {
   background: var(--accent-amber);
-  box-shadow: 0 0 8px rgba(240, 176, 80, 0.3);
 }
 
 .resize-handle-v::after {
@@ -188,7 +182,6 @@ body {
 .resize-handle-h:hover,
 .resize-handle-h:active {
   background: var(--accent-amber);
-  box-shadow: 0 0 8px rgba(240, 176, 80, 0.3);
 }
 
 .resize-handle-h::after {
@@ -212,8 +205,6 @@ body {
 .panel-left {
   /* width controlled by React state */
   background: var(--glass);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
   border-right: none;
   display: flex;
   flex-direction: column;
@@ -270,8 +261,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  background:
-    radial-gradient(ellipse at center, rgba(20, 20, 30, 0.5) 0%, var(--bg-crust) 100%);
+  background: var(--bg-crust);
   position: relative;
   min-height: 0;
   overflow: hidden; /* 畫面縮放時不溢出到其他面板 */
@@ -382,8 +372,6 @@ body {
   gap: 12px;
   padding: 8px 18px;
   background: var(--glass);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
   border-top: 1px solid var(--border);
 }
 
@@ -398,8 +386,6 @@ body {
 .panel-right {
   /* width controlled by React state */
   background: var(--glass);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
   border-left: none;
   display: flex;
   flex-direction: column;
@@ -452,25 +438,24 @@ body {
   cursor: pointer;
   transition: all 0.2s ease;
   align-items: flex-start;
-  border-left: 3px solid transparent;
-  animation: slideIn 0.25s ease-out;
+  border: 1px solid transparent;
 }
 
 .subtitle-item:hover {
   background: var(--bg-surface0);
-  border-left-color: rgba(240, 176, 80, 0.3);
 }
 
+/* 播放中：琥珀淡底＋序號轉琥珀；已選取（合併用）：青綠淡底＋細框 */
 .subtitle-item.active {
-  background: linear-gradient(135deg, rgba(240, 176, 80, 0.15), rgba(240, 176, 80, 0.06));
-  border-left: 3px solid var(--accent-amber);
-  box-shadow: inset 0 0 24px rgba(240, 176, 80, 0.06), 0 0 8px rgba(240, 176, 80, 0.05);
+  background: rgba(240, 176, 80, 0.1);
+}
+.subtitle-item.active .index {
+  color: var(--accent-amber);
 }
 
 .subtitle-item.selected {
-  background: linear-gradient(135deg, rgba(110, 204, 192, 0.18), rgba(110, 204, 192, 0.06));
-  border-left: 3px solid var(--accent-teal);
-  box-shadow: inset 0 0 20px rgba(110, 204, 192, 0.06);
+  background: rgba(110, 204, 192, 0.1);
+  border-color: rgba(110, 204, 192, 0.45);
 }
 
 .merge-float-btn {
@@ -486,7 +471,6 @@ body {
   border-color: var(--accent-amber);
   font-size: 12px;
   padding: 5px 14px;
-  backdrop-filter: blur(8px);
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
 }
 
@@ -559,8 +543,7 @@ body {
 .timeline-area {
   /* height controlled by React state */
   min-height: 120px;
-  background:
-    linear-gradient(180deg, var(--bg-crust) 0%, var(--bg-void) 100%);
+  background: var(--bg-crust);
   border-top: 1px solid var(--border);
   flex-shrink: 0;
   position: relative;
@@ -572,8 +555,6 @@ body {
 .timeline-ruler {
   height: 26px;
   background: var(--glass);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
   border-bottom: 1px solid var(--border);
   display: flex;
   overflow-x: hidden;
@@ -652,8 +633,6 @@ body {
   letter-spacing: 0.02em;
   color: var(--fg-subtext0);
   background: var(--glass);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
   border-right: 1px solid var(--border);
   z-index: 5;
   position: sticky;
@@ -714,7 +693,7 @@ body {
 
 /* 影片軌 */
 .video-clip {
-  background: linear-gradient(135deg, rgba(106, 158, 240, 0.12), rgba(106, 158, 240, 0.05));
+  background: rgba(106, 158, 240, 0.09);
   border: 1px solid rgba(106, 158, 240, 0.2);
   border-radius: var(--radius-sm);
   color: var(--fg-subtext0);
@@ -722,7 +701,7 @@ body {
 
 /* 字幕軌 */
 .subtitle-clip {
-  background: linear-gradient(180deg, rgba(110, 204, 192, 0.08), rgba(110, 204, 192, 0.03));
+  background: rgba(110, 204, 192, 0.06);
   border-top: 1px solid rgba(110, 204, 192, 0.3);
   border-bottom: 1px solid rgba(110, 204, 192, 0.3);
   border-left: 1px solid rgba(110, 204, 192, 0.15);
@@ -742,7 +721,7 @@ body {
 }
 
 .subtitle-clip.active {
-  background: linear-gradient(180deg, rgba(110, 204, 192, 0.2), rgba(110, 204, 192, 0.08));
+  background: rgba(110, 204, 192, 0.16);
   border-color: var(--accent-teal);
   box-shadow: var(--glow-teal);
   z-index: 2;
@@ -817,13 +796,11 @@ body {
   z-index: 10;
   pointer-events: auto;
   cursor: grabbing;
-  box-shadow: 0 0 8px rgba(232, 120, 136, 0.3);
 }
 
 .timeline-playhead:hover,
 .timeline-playhead.dragging {
   width: 3px;
-  box-shadow: 0 0 14px rgba(232, 120, 136, 0.5);
 }
 
 .timeline-playhead::before {
@@ -886,35 +863,36 @@ body {
 .btn:hover {
   background: var(--bg-surface1);
   border-color: rgba(255, 255, 255, 0.1);
-  transform: translateY(-1px);
-  box-shadow: var(--glow-subtle);
 }
 
 .btn:active {
-  transform: translateY(0);
+  background: var(--bg-surface2);
 }
 
-.btn-primary {
-  background: linear-gradient(135deg, var(--accent-amber), var(--accent-gold));
-  color: #0a0a0f;
-  border-color: transparent;
-  font-weight: 600;
-}
-
-.btn-primary:hover {
-  background: linear-gradient(135deg, #f5c060, var(--accent-amber));
-  box-shadow: var(--glow-amber);
-}
-
+/* 主要動作（匯出、開始錄影、開始上傳、開始匯出…）：全部同一個琥珀實色 */
+.btn-primary,
 .btn-accent {
-  background: linear-gradient(135deg, var(--accent-teal), #5abcb0);
-  color: #0a0a0f;
+  background: var(--action);
+  color: var(--action-ink);
   border-color: transparent;
   font-weight: 600;
 }
 
+.btn-primary:hover,
 .btn-accent:hover {
-  box-shadow: var(--glow-teal);
+  background: var(--action-hover);
+}
+
+.btn-primary:active,
+.btn-accent:active {
+  background: var(--accent-gold);
+}
+
+.btn-primary:disabled,
+.btn-accent:disabled {
+  background: var(--bg-surface1);
+  color: var(--fg-overlay0);
+  opacity: 1;
 }
 
 .btn-danger {
@@ -924,10 +902,8 @@ body {
 }
 
 .btn:disabled {
-  opacity: 0.35;
+  opacity: 0.45;
   cursor: not-allowed;
-  transform: none;
-  box-shadow: none;
 }
 
 /* ══ UPLOAD ZONE ══ */
@@ -940,15 +916,12 @@ body {
   text-align: center;
   cursor: pointer;
   transition: all 0.3s ease;
-  background:
-    radial-gradient(ellipse at center, rgba(240, 176, 80, 0.02) 0%, transparent 70%);
+  background: transparent;
 }
 
 .upload-zone:hover {
   border-color: var(--accent-amber);
-  background:
-    radial-gradient(ellipse at center, rgba(240, 176, 80, 0.06) 0%, transparent 70%);
-  box-shadow: var(--glow-amber);
+  background: rgba(240, 176, 80, 0.05);
 }
 
 .upload-zone .icon {
@@ -1043,7 +1016,7 @@ body {
 
 .progress-bar .fill {
   height: 100%;
-  background: linear-gradient(90deg, var(--accent-amber), var(--accent-warm));
+  background: var(--action);
   border-radius: 2px;
   transition: width 0.3s;
   box-shadow: 0 0 8px rgba(240, 176, 80, 0.3);
@@ -1160,7 +1133,7 @@ body {
   border-top: 1px solid var(--border);
   padding: 14px;
   flex-shrink: 0;
-  background: linear-gradient(180deg, transparent, rgba(184, 156, 240, 0.02));
+  background: transparent;
 }
 
 .ai-header {
@@ -1287,7 +1260,7 @@ body {
   margin-top: 10px;
   padding: 12px;
   background:
-    linear-gradient(135deg, rgba(184, 156, 240, 0.03), transparent);
+    transparent;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   max-height: 300px;
@@ -1333,7 +1306,7 @@ body {
 .subtitle-style-panel {
   margin-top: 12px;
   padding: 12px;
-  background: linear-gradient(135deg, rgba(240, 176, 80, 0.04), transparent);
+  background: transparent;
   border-radius: var(--radius);
   border: 1px solid var(--border-glow);
 }
@@ -1709,7 +1682,6 @@ body {
   position: fixed;
   inset: 0;
   background: rgba(0, 0, 0, 0.6);
-  backdrop-filter: blur(4px);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1930,7 +1902,6 @@ body {
   align-items: center;
   gap: 12px;
   background: rgba(30, 30, 46, 0.92);
-  backdrop-filter: blur(12px);
   border: 1px solid rgba(220, 38, 38, 0.5);
   border-radius: 40px;
   padding: 8px 20px;
@@ -2150,7 +2121,6 @@ body {
   padding: 16px;
   min-width: 200px;
   box-shadow: 0 12px 48px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(240, 176, 80, 0.1);
-  backdrop-filter: blur(16px);
   animation: speedMenuIn 0.15s ease-out;
 }
 
@@ -2243,7 +2213,6 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  backdrop-filter: blur(4px);
 }
 
 .export-progress-modal {
@@ -2288,7 +2257,7 @@ body {
 .export-progress-bar-fill {
   height: 100%;
   border-radius: 6px;
-  background: linear-gradient(90deg, var(--accent-amber), #f0c060, var(--accent-amber));
+  background: var(--action);
   background-size: 200% 100%;
   animation: progressShimmer 1.5s ease-in-out infinite;
   transition: width 0.3s ease;
@@ -2358,7 +2327,7 @@ body {
   cursor: wait;
 }
 .zoom-clip {
-  background: linear-gradient(180deg, rgba(250, 179, 135, 0.28), rgba(250, 179, 135, 0.12));
+  background: rgba(250, 179, 135, 0.18);
   border: 1px solid rgba(250, 179, 135, 0.55);
   border-radius: 4px;
   color: #fab387;
@@ -2421,7 +2390,7 @@ body {
 }
 .overlay-clip {
   position: absolute;
-  background: linear-gradient(180deg, rgba(137, 180, 250, 0.3), rgba(137, 180, 250, 0.14));
+  background: rgba(137, 180, 250, 0.2);
   border: 1px solid rgba(137, 180, 250, 0.6);
   border-radius: 4px;
   color: #b4cdfa;
@@ -2434,8 +2403,8 @@ body {
   overflow: hidden;
   white-space: nowrap;
 }
-.overlay-clip.kind-title { background: linear-gradient(180deg, rgba(249, 226, 175, 0.3), rgba(249, 226, 175, 0.12)); border-color: rgba(249, 226, 175, 0.6); color: #f9e2af; }
-.overlay-clip.kind-spotlight { background: linear-gradient(180deg, rgba(203, 166, 247, 0.3), rgba(203, 166, 247, 0.12)); border-color: rgba(203, 166, 247, 0.6); color: #cba6f7; }
+.overlay-clip.kind-title { background: rgba(249, 226, 175, 0.2); border-color: rgba(249, 226, 175, 0.6); color: #f9e2af; }
+.overlay-clip.kind-spotlight { background: rgba(203, 166, 247, 0.2); border-color: rgba(203, 166, 247, 0.6); color: #cba6f7; }
 .overlay-clip.selected {
   border-color: #89b4fa;
   box-shadow: 0 0 0 1px #89b4fa inset;
@@ -2452,7 +2421,7 @@ body {
   transform-origin: 0 0;
   pointer-events: none;
 }
-.overlay-clip.kind-html { background: linear-gradient(180deg, rgba(166, 227, 161, 0.3), rgba(166, 227, 161, 0.12)); border-color: rgba(166, 227, 161, 0.6); color: #a6e3a1; }
+.overlay-clip.kind-html { background: rgba(166, 227, 161, 0.2); border-color: rgba(166, 227, 161, 0.6); color: #a6e3a1; }
 
 /* ── 鍵盤焦點：只在用鍵盤操作時顯示，清楚但不搶眼 ── */
 :where(button, [role="button"], select, a, input[type="checkbox"], input[type="range"], summary):focus-visible {
@@ -2578,3 +2547,22 @@ body {
   color: var(--fg-overlay0);
   opacity: 1;
 }
+
+/* ── 線條圖示（lucide）：與文字同高、同色，筆畫一致 ── */
+.lucide {
+  width: 1.1em;
+  height: 1.1em;
+  stroke-width: 1.85;
+  flex-shrink: 0;
+  vertical-align: -0.15em;
+}
+.track-label .lucide { width: 14px; height: 14px; }
+.encoder-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 6px;
+  background: var(--accent-green);
+}
+.encoder-dot.warn { background: var(--accent-amber); }

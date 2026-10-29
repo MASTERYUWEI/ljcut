@@ -1,4 +1,5 @@
 /* ── AI 文案助手面板（可折疊）── */
+import { RefreshCw } from 'lucide-react';
 import type { RefObject } from 'react';
 
 interface AiTab {
@@ -31,7 +32,7 @@ export function AiPanel({
                     {expanded ? '▾' : '▸'} AI 助手
                 </button>
                 <button className="ai-refresh-btn" disabled={!!loadingType}
-                    onClick={onRefresh} title="重新生成" aria-label="重新生成 AI 助手內容">🔄</button>
+                    onClick={onRefresh} title="重新生成" aria-label="重新生成 AI 助手內容"><RefreshCw aria-hidden /></button>
             </div>
             {expanded && (
                 <div className="ai-assistant">
