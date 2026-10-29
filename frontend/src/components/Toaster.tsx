@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { X } from 'lucide-react';
 import { dismissToast, subscribeToasts, type Toast } from '../toast';
 
 const LABEL: Record<Toast['kind'], string> = { success: '完成', error: '錯誤', info: '提示' };
@@ -30,7 +31,7 @@ export default function Toaster() {
                             </div>
                         )}
                     </div>
-                    <button className="toast-close" aria-label="關閉通知" onClick={() => dismissToast(t.id)}>✕</button>
+                    <button className="toast-close" aria-label="關閉通知" onClick={() => dismissToast(t.id)}><X aria-hidden /></button>
                 </div>
             ))}
         </div>

@@ -1,6 +1,6 @@
 /* ── LJCUT 主應用 ── */
 
-import { Clapperboard, Upload, CircleDot, Settings, Play, Pause, Square, Video, FolderOpen, Film, ZoomIn, PenLine, Captions, Plus, Sparkles, SpellCheck, Brain, Copy, Check, Download, X, Image as ImageIcon, ArrowUpRight, Type, Code, Focus, ListOrdered, Gauge } from 'lucide-react';
+import { Clapperboard, Upload, CircleDot, Settings, Play, Pause, Square, Video, FolderOpen, Film, ZoomIn, PenLine, Captions, Plus, Sparkles, SpellCheck, Brain, Copy, Check, Download, X, Image as ImageIcon, ArrowUpRight, Type, Code, Focus, ListOrdered, Gauge, Undo2, Redo2, TriangleAlert, CheckCheck } from 'lucide-react';
 import { useRef, useCallback, useState, useEffect, useLayoutEffect, useMemo } from 'react';
 import { useStore } from './store';
 import { api, onApiReady, getBase } from './api';
@@ -15,8 +15,11 @@ import { RecordingSettingsModal } from './components/RecordingSettingsModal';
 import { SpeedMenu } from './components/SpeedMenu';
 import { ExportProgress } from './components/ExportProgress';
 import { YouTubeUploadModal } from './components/YouTubeUploadModal';
-import { ProjectControl } from './components/ProjectControl';
+import { ProjectFileButtons, useControlWorkspace } from './components/ProjectControl';
+import { BookendControls } from './components/BookendControls';
 import Toaster from './components/Toaster';
+import { StatusText } from './components/StatusText';
+import { OverlayInspector } from './components/OverlayInspector';
 import { notify, toast } from './toast';
 import { useDialog } from './useDialog';
 import { pushUndo, undo, redo, projectData, dryRun, applyPlan, readState } from './editSession';
@@ -296,7 +299,8 @@ export default function App() {
     }, [recOpts.mic, recOpts.micDevice, showRecSettings]);
 
     // ── Resize 面板 ──
-    const [leftWidth, setLeftWidth] = useState(240);
+    // 窄視窗（< 1280，例如旁邊開著 AI）左欄預設窄一點，把空間留給預覽與時間軸
+    const [leftWidth, setLeftWidth] = useState(() => (window.innerWidth < 1280 ? 170 : 240));
     const [rightWidth, setRightWidth] = useState(340);
     // 時間軸是剪輯主角：預設約 40% 視窗高，拖曳後記住
     const [timelineHeight, setTimelineHeight] = useState<number>(() => {
@@ -342,6 +346,7 @@ export default function App() {
     const handleRedo = useCallback(() => {
         try { redo(); } catch { /* 沒有歷史 */ }
     }, []);
+    const controlWorkspace = useControlWorkspace();   // 片頭片尾需要本機控制工作區
 
     const pixelsPerSecond = 10 * zoom;
     const timelineWidth = duration > 0 ? duration * pixelsPerSecond : 0;
@@ -1008,7 +1013,11 @@ export default function App() {
                     overlays: media?.overlays ?? [],
                 };
             });
-            const defaultFileName = 'timeline_output.mp4';
+            // 預設檔名：主素材名稱＋日期（原本固定為 timeline_output.mp4，容易互相覆蓋）
+            const mainName = (mediaItems.find(m => m.id === (track0Clips.find(c => !c.bookend) ?? track0Clips[0]).mediaId)?.filename ?? 'LJCUT')
+                .replace(/\.[^.]+$/, '').replace(/[\\/:*?"<>|]/g, '_').slice(0, 60);
+            const today = new Date();
+            const defaultFileName = `${mainName}_${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}.mp4`;
 
             result = await api.exportTimeline(
                 clipsPayload,
@@ -1046,7 +1055,8 @@ export default function App() {
                 setExportProgress(-1); // 用戶取消
             }
         } catch (err) {
-            notify(`匯出失敗: ${err}`);
+            if (err instanceof Error && err.message === 'EXPORT_CANCELLED') toast('info', '已取消匯出，沒有產生成品');
+            else notify(`匯出失敗: ${err}`);
             setExportProgress(-1);
         } finally {
             setIsBurning(false);
@@ -1674,6 +1684,8 @@ export default function App() {
             // 空白鍵 播放/暫停
             if (e.code !== 'Space') return;
             if (tag === 'TEXTAREA' || tag === 'INPUT' || tag === 'SELECT') return;
+            // 焦點在按鈕、頁籤、字幕項目上時，空白鍵是「按下它」，不是播放
+            if ((e.target as HTMLElement).closest?.('button, a, summary, [role="button"], [role="tab"], [role="listitem"]')) return;
             e.preventDefault();
             togglePlay();
         };
@@ -1812,6 +1824,19 @@ export default function App() {
         };
     }, [isPlaying, pixelsPerSecond, duration, timelineClips, goToClip, primeStandby, syncRulerScroll, setCurrentTime, setIsPlaying, setActiveSegment, updateTransition]);
 
+    // ── 暫停時跳到別的時間點（AI 預覽、點字幕、鍵盤），播放頭若在畫面外就把時間軸捲過去 ──
+    useEffect(() => {
+        if (isPlaying) return;
+        const el = tracksRef.current;
+        if (!el || duration <= 0) return;
+        const pos = currentTime * pixelsPerSecond + LABEL_W;
+        const left = el.scrollLeft + LABEL_W + 16, right = el.scrollLeft + el.clientWidth - 16;
+        if (pos < left || pos > right) {
+            el.scrollLeft = Math.max(0, pos - LABEL_W - el.clientWidth / 3);
+            syncRulerScroll();
+        }
+    }, [currentTime, isPlaying, pixelsPerSecond, duration, syncRulerScroll]);
+
     // ── 畫面縮放編輯（介面）：與 AI 同一條 dry-run → apply 路徑，一次操作 = 一筆 undo ──
     const [selectedZoomId, setSelectedZoomId] = useState<string | null>(null);
     const [zoomBusy, setZoomBusy] = useState(false);
@@ -1935,64 +1960,10 @@ export default function App() {
         const op: Record<string, unknown> = { type: 'add_overlay', kind, mediaId: media.id, start, end };
         if (kind === 'box' || kind === 'spotlight') Object.assign(op, { x: 0.4, y: 0.4, w: 0.2, h: 0.2 });
         if (kind === 'step') op.text = String((media.overlays ?? []).filter(o => o.kind === 'step').length + 1);
-        if (kind === 'title') {
-            const text = prompt('標題文字', '');
-            if (!text?.trim()) return;
-            op.text = text.trim().slice(0, 40);
-        }
+        if (kind === 'title') op.text = '標題文字';   // 加入後在右欄屬性面板直接改
         const changes = runZoomOps([op]) as { overlayId?: string }[] | null;
         if (changes?.[0]?.overlayId) selectOverlay(changes[0].overlayId);
     }, [timelineClips, mediaItems, runZoomOps, selectOverlay]);
-    const editSelectedOverlayText = useCallback(() => {
-        if (!selectedOverlay) return;
-        const o = selectedOverlay.overlay;
-        if (o.kind === 'html') { notify('HTML 動畫由 AI 撰寫：請在對話中描述要怎麼改，AI 會用 edit_overlay 更新。'); return; }
-        if (o.kind === 'media') {
-            if (o.asset?.type !== 'video' || !o.asset.hasAudio) { notify('這個素材沒有聲音。位置與大小：選取後 Shift+拖曳預覽畫面。'); return; }
-            const v = prompt('子母畫面音量（0 = 靜音，100 = 原音量）', String(Math.round((o.volume ?? 0) * 100)));
-            if (v === null) return;
-            const n = Number(v);
-            if (!Number.isFinite(n) || n < 0 || n > 100) { notify('請輸入 0–100'); return; }
-            runZoomOps([{ type: 'edit_overlay', overlayId: o.id, volume: n / 100 }]);
-            return;
-        }
-        const text = prompt(o.kind === 'step' ? '步驟編號（最多 3 字）' : '文字（留空 = 不顯示）', o.text ?? '');
-        if (text === null) return;
-        const op: Record<string, unknown> = { type: 'edit_overlay', overlayId: o.id, text: text.trim() || undefined };
-        if (o.kind === 'title') {
-            const sub = prompt('第二行（可留空）', o.sub ?? '');
-            if (sub !== null) op.sub = sub.trim() || undefined;
-        }
-        if (!text.trim() && (o.kind === 'step' || o.kind === 'title')) { notify('步驟與標題需要文字'); return; }
-        if (!text.trim()) {
-            // 清除文字：以刪除欄位的版本重建
-            const { text: _t, ...rest } = o;
-            void _t;
-            runZoomOps([{ type: 'delete_overlay', overlayId: o.id }, { type: 'add_overlay', mediaId: selectedOverlay.media.id, ...rest, kind: o.kind }]);
-            return;
-        }
-        runZoomOps([op]);
-    }, [selectedOverlay, runZoomOps]);
-    const cycleOverlayStyle = useCallback(() => {
-        if (!selectedOverlay) return;
-        const o = selectedOverlay.overlay;
-        if (o.kind === 'media') {
-            const order = ['rounded', 'circle', 'rect'] as const;
-            runZoomOps([{ type: 'edit_overlay', overlayId: o.id, shape: order[(order.indexOf(o.shape ?? 'rounded') + 1) % order.length] }]);
-        } else if (o.kind === 'html') {
-            runZoomOps([{ type: 'edit_overlay', overlayId: o.id, layer: o.layer === 'content' ? 'screen' : 'content' }]);
-        } else if (o.kind === 'arrow') {
-            const order = ['bottom-right', 'bottom', 'bottom-left', 'left', 'top-left', 'top', 'top-right', 'right'] as const;
-            runZoomOps([{ type: 'edit_overlay', overlayId: o.id, from: order[(order.indexOf(o.from ?? 'bottom-right') + 1) % order.length] }]);
-        } else if (o.kind === 'title') {
-            const order = ['bottom-left', 'bottom-center', 'top-left', 'top-center'] as const;
-            runZoomOps([{ type: 'edit_overlay', overlayId: o.id, position: order[(order.indexOf(o.position ?? 'bottom-left') + 1) % order.length] }]);
-        } else {
-            const order = ['red', 'yellow', 'blue', 'green', 'white'] as const;
-            const def = 'red';
-            runZoomOps([{ type: 'edit_overlay', overlayId: o.id, color: order[(order.indexOf(o.color ?? def) + 1) % order.length] }]);
-        }
-    }, [selectedOverlay, runZoomOps]);
     // Shift+點／拖曳預覽畫面：箭頭與步驟設位置；框與聚光燈拖出範圍
     const overlayDragRef = useRef<{ x: number; y: number; moved: boolean } | null>(null);
     const onPreviewMouseDown = useCallback((e: React.MouseEvent<HTMLVideoElement>) => {
@@ -2376,11 +2347,11 @@ export default function App() {
                             <Upload aria-hidden />YouTube
                         </button>
                     </>)}
+                    <ProjectFileButtons />
                     <button className="btn" onClick={() => setShowRecSettings(true)}><CircleDot aria-hidden />螢幕錄影</button>
                     <button className="btn" onClick={() => setShowSettings(true)} title="設定" aria-label="設定" style={{ padding: '6px 10px' }}><Settings aria-hidden /></button>
                 </div>
             </header>
-            <ProjectControl />
 
             {/* 錄影設定 Modal */}
             {showRecSettings && (
@@ -2431,12 +2402,22 @@ export default function App() {
                 {/* 左側 — 媒體庫 */}
                 <aside className="panel-left" style={{ width: leftWidth }}>
                     {/* 頁籤切換 */}
-                    <div className="left-tabs">
-                        <button className={`left-tab ${leftTab === 'media' ? 'active' : ''}`} onClick={() => setLeftTab('media')}>媒體</button>
-                        <button className={`left-tab ${leftTab === 'subtitle' ? 'active' : ''}`} onClick={() => setLeftTab('subtitle')}>字幕</button>
+                    <div className="left-tabs" role="tablist" aria-label="左側面板"
+                        onKeyDown={(e) => {
+                            if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+                            e.preventDefault();
+                            const next = leftTab === 'media' ? 'subtitle' : 'media';
+                            setLeftTab(next);
+                            document.getElementById(`left-tab-${next}`)?.focus();
+                        }}>
+                        {([['media', '媒體'], ['subtitle', '字幕']] as const).map(([key, label]) => (
+                            <button key={key} id={`left-tab-${key}`} role="tab" aria-selected={leftTab === key} aria-controls="left-tab-panel"
+                                tabIndex={leftTab === key ? 0 : -1}
+                                className={`left-tab ${leftTab === key ? 'active' : ''}`} onClick={() => setLeftTab(key)}>{label}</button>
+                        ))}
                     </div>
 
-                    <div className="left-tab-body">
+                    <div className="left-tab-body" id="left-tab-panel" role="tabpanel" aria-labelledby={`left-tab-${leftTab}`}>
                         {/* ─── 媒體頁籤 ─── */}
                         {leftTab === 'media' && (
                             <>
@@ -2483,7 +2464,7 @@ export default function App() {
                                                         } catch (err) { notify(`開啟資料夾失敗: ${err}`); }
                                                     }} title="開啟檔案所在資料夾" aria-label="開啟檔案所在資料夾"><FolderOpen aria-hidden /></button>
                                                 )}
-                                                <button className="media-remove" onClick={(e) => { e.stopPropagation(); pushUndo(); removeMedia(item.id); }} title="從媒體庫移除（不會刪除磁碟上的檔案）">×</button>
+                                                <button className="media-remove" onClick={(e) => { e.stopPropagation(); pushUndo(); removeMedia(item.id); }} title="從媒體庫移除（不會刪除磁碟上的檔案）" aria-label={`從媒體庫移除 ${item.filename}`}><X aria-hidden /></button>
                                             </div>
                                         ))}
                                     </div>
@@ -2680,6 +2661,8 @@ export default function App() {
                             <button className="btn" onClick={togglePlay} style={{ padding: '6px 12px' }} aria-label={isPlaying ? '暫停（空白鍵）' : '播放（空白鍵）'} title={isPlaying ? '暫停（空白鍵／K）' : '播放（空白鍵／L）'}>
                                 {isPlaying ? <Pause aria-hidden /> : <Play aria-hidden />}
                             </button>
+                            <button className="btn btn-icon" onClick={handleUndo} aria-label="復原" title="復原（Ctrl+Z）"><Undo2 aria-hidden /></button>
+                            <button className="btn btn-icon" onClick={handleRedo} aria-label="重做" title="重做（Ctrl+Shift+Z）"><Redo2 aria-hidden /></button>
                             <span className="time" ref={timeDisplayRef}>{formatTime(currentTime)} / {formatTime(duration)}</span>
                             <input type="range" ref={rangeSliderRef} aria-label="播放位置" min={0} max={duration || 0} step={0.1} defaultValue={currentTime}
                                 onChange={(e) => seekTo(Number(e.target.value))}
@@ -2739,7 +2722,15 @@ export default function App() {
                                                 <div key={clip.id}
                                                     className={`track-clip video-clip ${draggingClipId === clip.id ? 'dragging' : ''} ${activeClipId === clip.id ? 'active-clip' : ''}`}
                                                     role="button" tabIndex={0} aria-pressed={activeClipId === clip.id} aria-label={`片段 ${media?.filename ?? ''}`}
-                                                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); setActiveClipId(clip.id); } }}
+                                                    onKeyDown={(e) => {
+                                                        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); setActiveClipId(clip.id); }
+                                                        else if (e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) {
+                                                            e.preventDefault(); e.stopPropagation();
+                                                            const r = e.currentTarget.getBoundingClientRect();
+                                                            speedUndoPushedRef.current = false;
+                                                            setSpeedMenu({ clipId: clip.id, x: r.left + 8, y: r.bottom, splitTime: timelinePosRef.current });
+                                                        }
+                                                    }}
                                                     style={{ left, width }}
                                                     onClick={() => setActiveClipId(clip.id)}
                                                     onMouseDown={(e) => handleClipDragStart(e, clip.id)}
@@ -2750,11 +2741,11 @@ export default function App() {
                                                         speedUndoPushedRef.current = false;
                                                         setSpeedMenu({ clipId: clip.id, x: e.clientX, y: e.clientY, splitTime: timelinePosRef.current });
                                                     }}
-                                                    title={`${media?.filename ?? 'clip'}${clip.speed !== 1 ? ` (${clip.speed}x)` : ''}\n${formatTimestamp(clip.startTime)} → ${formatTimestamp(clip.startTime + clip.duration)}\n拖曳左右邊緣可裁切；右鍵可分割/刪除`}>
+                                                    title={`${media?.filename ?? 'clip'}${clip.speed !== 1 ? ` (${clip.speed}x)` : ''}\n${formatTimestamp(clip.startTime)} → ${formatTimestamp(clip.startTime + clip.duration)}\n拖曳左右邊緣可裁切；右鍵（或 Shift+F10）可分割/刪除/調速`}>
                                                     <canvas data-clip-id={clip.id} className="waveform-canvas"
                                                         style={{ width: `${waveFullW}px`, transform: `translateX(${waveTx}px)` }} />
                                                     <span className="clip-text clip-text-over-waveform">{media?.filename ?? ''}</span>
-                                                    {clip.speed !== 1 && <span style={{ position: 'absolute', right: 4, top: 2, fontSize: 10, color: '#fbbf24', fontWeight: 700 }}>⚡{clip.speed}x</span>}
+                                                    {clip.speed !== 1 && <span style={{ position: 'absolute', right: 4, top: 2, fontSize: 10, color: 'var(--accent-amber)', fontWeight: 700 }}>{clip.speed}x</span>}
                                                     {/* 左右裁切拉桿 */}
                                                     <div className="clip-trim-handle clip-trim-left"
                                                         onMouseDown={(e) => handleClipTrim(e, clip.id, 'left')}
@@ -2797,15 +2788,8 @@ export default function App() {
                                                             onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); (e.currentTarget as HTMLElement).click(); } }}
                                                             style={{ left, width }}
                                                             onClick={(e) => { e.stopPropagation(); selectZoom(z.id); seekTo(toTimelineTime(clip, Math.min(b - 0.01, (z.start + z.end) / 2))); }}
-                                                            title={`放大 ${z.scale}x　中心 (${z.x}, ${z.y})\n${formatTimestamp(z.start)} → ${formatTimestamp(z.end)}（素材時間）\n選取後 Shift+點預覽畫面可改放大位置`}>
+                                                            title={`放大 ${z.scale}x　中心 (${z.x}, ${z.y})\n${formatTimestamp(z.start)} → ${formatTimestamp(z.end)}（素材時間）\n點一下在右欄編輯屬性`}>
                                                             <span className="clip-text">{z.scale}x</span>
-                                                            {selected && (
-                                                                <span className="zoom-clip-tools" onClick={(e) => e.stopPropagation()}>
-                                                                    <button className="zoom-mini-btn" title="縮小倍率" onClick={() => runZoomOps([{ type: 'edit_zoom', zoomId: z.id, scale: Math.max(1.1, Math.round((z.scale - 0.25) * 100) / 100) }])}>−</button>
-                                                                    <button className="zoom-mini-btn" title="放大倍率" onClick={() => runZoomOps([{ type: 'edit_zoom', zoomId: z.id, scale: Math.min(4, Math.round((z.scale + 0.25) * 100) / 100) }])}>+</button>
-                                                                    <button className="zoom-mini-btn" title="刪除這段縮放" onClick={() => { if (runZoomOps([{ type: 'delete_zoom', zoomId: z.id }])) setSelectedZoomId(null); }}>×</button>
-                                                                </span>
-                                                            )}
                                                         </div>
                                                     );
                                                 });
@@ -2857,15 +2841,8 @@ export default function App() {
                                                             onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); (e.currentTarget as HTMLElement).click(); } }}
                                                             style={{ left, width, top: 4 + row * 28, height: 24 }}
                                                             onClick={(e) => { e.stopPropagation(); selectOverlay(o.id); seekTo(toTimelineTime(clip, Math.min(b - 0.01, a + Math.min(0.6, (b - a) / 2)))); }}
-                                                            title={`${OVERLAY_LABEL[o.kind]}${o.text ? `：${o.text}` : ''}\n${formatTimestamp(o.start)} → ${formatTimestamp(o.end)}（素材時間）\n選取後 Shift+點／拖曳預覽畫面設定位置`}>
+                                                            title={`${OVERLAY_LABEL[o.kind]}${o.text ? `：${o.text}` : ''}\n${formatTimestamp(o.start)} → ${formatTimestamp(o.end)}（素材時間）\n點一下在右欄編輯屬性`}>
                                                             <span className="clip-text">{icon[o.kind]}{width >= 56 || selected ? ` ${o.text ?? OVERLAY_LABEL[o.kind]}` : null}</span>
-                                                            {selected && (
-                                                                <span className="zoom-clip-tools" onClick={(e) => e.stopPropagation()}>
-                                                                    <button className="zoom-mini-btn" title={o.kind === 'html' ? 'HTML 動畫由 AI 撰寫' : o.kind === 'media' ? '調整音量' : '編輯文字'} onClick={editSelectedOverlayText}>✎</button>
-                                                                    <button className="zoom-mini-btn" title={o.kind === 'arrow' ? '換箭頭方向' : o.kind === 'title' ? '換標題位置' : o.kind === 'html' ? '切換：跟著畫面縮放／固定在畫面上' : o.kind === 'media' ? '換形狀：圓角／圓形／直角' : '換顏色'} onClick={cycleOverlayStyle}>↻</button>
-                                                                    <button className="zoom-mini-btn" title="刪除這個標註" onClick={() => { if (runZoomOps([{ type: 'delete_overlay', overlayId: o.id }])) setSelectedOverlayId(null); }}>×</button>
-                                                                </span>
-                                                            )}
                                                         </div>
                                                     );
                                                 })}
@@ -2944,6 +2921,17 @@ export default function App() {
 
                 {/* 右側：字幕 */}
                 <aside className="panel-right" style={{ width: rightWidth }}>
+                    {(selectedOverlay || selectedZoom) && (
+                        <OverlayInspector
+                            key={selectedOverlay?.overlay.id ?? selectedZoom?.zoom.id}
+                            media={(selectedOverlay ?? selectedZoom)!.media}
+                            overlay={selectedOverlay?.overlay}
+                            zoom={selectedOverlay ? undefined : selectedZoom?.zoom}
+                            clips={timelineClips}
+                            onOps={runZoomOps}
+                            onClose={() => { setSelectedOverlayId(null); setSelectedZoomId(null); }}
+                        />
+                    )}
                     <div className="subtitle-header">
                         <h3>字幕</h3>
                         {segments.length > 0 && (
@@ -2978,7 +2966,7 @@ export default function App() {
                                 <div className="progress-bar"><div className="fill loading" style={{ width: '100%' }} /></div>}
                             <div className="st-row">
                                 <input value={typoFrom} onChange={e => setTypoFrom(e.target.value)} placeholder="錯字" aria-label="要取代的錯字" className="st-input" />
-                                <span style={{ color: '#888', flexShrink: 0 }}>→</span>
+                                <span style={{ color: 'var(--fg-subtext0)', flexShrink: 0 }}>→</span>
                                 <input value={typoTo} onChange={e => setTypoTo(e.target.value)} placeholder="正字" aria-label="取代成的正確文字" className="st-input" />
                                 <button className="btn st-btn" disabled={!typoFrom} onClick={handleReplaceAll}
                                     title="整條時間軸所有出現處一次取代（Ctrl+Z 可復原）">取代</button>
@@ -2988,16 +2976,16 @@ export default function App() {
                                     {typoSuggestions.map((t, i) => (
                                         <div key={`${t.wrong}-${i}`} className="st-item">
                                             <span className="st-item-text" title={`「${t.wrong}」→「${t.correct}」（出現 ${t.count} 處）`}>
-                                                「{t.wrong}」→「{t.correct}」<span style={{ color: '#888' }}>({t.count})</span>
+                                                「{t.wrong}」→「{t.correct}」<span style={{ color: 'var(--fg-subtext0)' }}>({t.count})</span>
                                             </span>
                                             <button className="btn st-btn" onClick={() => handleApplySuggestion(i)}>取代</button>
                                         </div>
                                     ))}
                                     <button className="btn btn-primary st-btn" style={{ justifyContent: 'center' }}
-                                        onClick={handleApplyAllSuggestions}>✅ 全部套用（{typoSuggestions.length} 組）</button>
+                                        onClick={handleApplyAllSuggestions}><CheckCheck aria-hidden />全部套用（{typoSuggestions.length} 組）</button>
                                 </div>
                             )}
-                            {typoMsg && <div className="st-msg" style={{ color: typoMsg.startsWith('❌') ? '#ff8a80' : '#7cb27c' }}>{typoMsg}</div>}
+                            {typoMsg && <StatusText className="st-msg" text={typoMsg} />}
                             {flowIssues.length > 0 && (
                                 <div className="st-list" style={{ maxHeight: 170, overflowY: 'auto' }}>
                                     {flowIssues.map((it, i) => (
@@ -3005,18 +2993,18 @@ export default function App() {
                                             onClick={() => handleLocateIssue(it)} title="點擊定位到此字幕（清單捲過去、播放頭跳到該句）">
                                             <div style={{ flex: 1, minWidth: 0 }}>
                                                 <div className="st-item-text">{it.text}</div>
-                                                <div style={{ fontSize: 11, color: '#ffb74d' }}>⚠ {it.reason} · {formatTimestamp(it.tl)}</div>
+                                                <div style={{ fontSize: 11, color: 'var(--warn)', display: 'flex', alignItems: 'center', gap: 4 }}><TriangleAlert aria-hidden style={{ width: 12, height: 12 }} />{it.reason} · {formatTimestamp(it.tl)}</div>
                                             </div>
                                             <button className="btn st-btn" onClick={(e) => { e.stopPropagation(); setFlowIssues(l => l.filter((_, j) => j !== i)); }}
-                                                title="已處理，從清單移除">✓</button>
+                                                title="已處理，從清單移除" aria-label="已處理，從清單移除"><Check aria-hidden /></button>
                                         </div>
                                     ))}
                                 </div>
                             )}
-                            {flowMsg && <div className="st-msg" style={{ color: flowMsg.startsWith('❌') ? '#ff8a80' : '#7cb27c' }}>{flowMsg}</div>}
+                            {flowMsg && <StatusText className="st-msg" text={flowMsg} />}
                         </div>
                     )}
-                    <div className="subtitle-list" ref={subtitleListRef}>
+                    <div className="subtitle-list" ref={subtitleListRef} role="list" aria-label="字幕清單">
                         {segments.length === 0 ? (
                             <div className="empty-state">
                                 <p>尚無字幕</p>
@@ -3028,6 +3016,20 @@ export default function App() {
                                     <div key={seg.id}
                                         data-seg-id={seg.id}
                                         className={`subtitle-item ${seg.id === activeSegmentId ? 'active' : ''} ${selectedSegIds.has(seg.id) ? 'selected' : ''}`}
+                                        role="listitem" tabIndex={seg.id === activeSegmentId || (activeSegmentId == null && seg === segments[0]) ? 0 : -1}
+                                        aria-current={seg.id === activeSegmentId ? 'true' : undefined}
+                                        aria-label={`第 ${seg.id + 1} 句，${formatTimestamp(seg.start)}：${seg.text}`}
+                                        onKeyDown={(e) => {
+                                            if (e.target !== e.currentTarget) return;          // 編輯中的文字框不攔截
+                                            if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                                                e.preventDefault();
+                                                const sib = (e.key === 'ArrowDown' ? e.currentTarget.nextElementSibling : e.currentTarget.previousElementSibling) as HTMLElement | null;
+                                                if (sib?.classList.contains('subtitle-item')) sib.focus();
+                                            } else if (e.key === 'Enter' || e.key === ' ') {
+                                                e.preventDefault();
+                                                handleSubtitleItemClick(seg.id, e as unknown as React.MouseEvent);
+                                            }
+                                        }}
                                         onClick={(e) => handleSubtitleItemClick(seg.id, e)}>
                                         <div className="index">{seg.id + 1}</div>
                                         <div className="content">
@@ -3116,7 +3118,7 @@ export default function App() {
             if (e.key === 'Escape') {
                 if (speedMenu) { setSpeedMenu(null); return; }
                 if (showExportModal) { setShowExportModal(false); return; }
-                if (showYtUpload) { setShowYtUpload(false); return; }
+                if (showYtUpload) return;   // 由上傳對話框自己處理（上傳中不能關）
                 if (showSettings) { setShowSettings(false); return; }
                 if (showRecSettings) { setShowRecSettings(false); return; }
                 if (selectedOverlayId || selectedZoomId) { setSelectedOverlayId(null); setSelectedZoomId(null); }
@@ -3124,6 +3126,7 @@ export default function App() {
             }
             if (['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName) || el.isContentEditable) return;
             if (showExportModal || showYtUpload || showSettings || showRecSettings) return;
+            if (el.closest?.('[role="tablist"], .subtitle-list, .speed-menu, .project-file')) return;   // 這些區塊自己處理方向鍵
             const t = timelinePosRef.current;
             if (e.ctrlKey || e.metaKey) {
                 if (e.key === '=' || e.key === '+') { e.preventDefault(); setZoom(z => Math.min(z * 1.25, 50)); }
@@ -3194,7 +3197,7 @@ export default function App() {
                 </div>
             )}
 
-            {exportProgress >= 0 && <ExportProgress progress={exportProgress} etaSeconds={exportEta} stage={exportStage} />}
+            {exportProgress >= 0 && <ExportProgress progress={exportProgress} etaSeconds={exportEta} stage={exportStage} onCancel={() => { void api.cancelExport(); }} />}
 
             {/* 匯出影片設定彈窗 */}
             {showExportModal && (
@@ -3205,14 +3208,38 @@ export default function App() {
                             <button className="btn" onClick={() => setShowExportModal(false)} style={{ padding: '4px 6px' }} aria-label="關閉" title="關閉（Esc）"><X aria-hidden /></button>
                         </div>
                         <div className="style-row" title="關閉＝匯出乾淨畫面（推薦：YouTube 觀眾用 CC 字幕，之後改錯字免重傳影片）；開啟＝字幕燒進畫面">
-                            <label>燒入字幕到畫面</label>
+                            <label htmlFor="export-burn">燒入字幕到畫面</label>
                             <label className="toggle-switch">
-                                <input type="checkbox" checked={burnSubs} onChange={e => setBurnSubs(e.target.checked)} />
+                                <input id="export-burn" type="checkbox" checked={burnSubs} onChange={e => setBurnSubs(e.target.checked)} />
                                 <span className="toggle-slider" />
                             </label>
                         </div>
+                        {(() => {
+                            const main = timelineClips.filter(c => c.trackIndex === 0);
+                            const subs = main.reduce((n, c) => n + c.segments.length, 0);
+                            const intro = main.some(c => c.bookend === 'intro'), outro = main.some(c => c.bookend === 'outro');
+                            const mediaIds = new Set(main.map(c => c.mediaId));
+                            const used = mediaItems.filter(m => mediaIds.has(m.id));
+                            const zooms = used.reduce((n, m) => n + (m.zooms?.length ?? 0), 0);
+                            const overlays = used.reduce((n, m) => n + (m.overlays?.length ?? 0), 0);
+                            return (
+                                <dl className="export-summary">
+                                    <dt>成品長度</dt><dd>{formatTime(duration)}</dd>
+                                    <dt>片頭／片尾</dt><dd>{intro ? '有' : '無'}／{outro ? '有' : '無'}</dd>
+                                    <dt>字幕</dt><dd>{subs} 句{subs === 0 ? '（上傳時不會有 CC）' : ''}</dd>
+                                    <dt>縮放／標註</dt><dd>{zooms} 段／{overlays} 個</dd>
+                                    <dt>存檔位置</dt><dd>按「開始匯出」後選擇</dd>
+                                </dl>
+                            );
+                        })()}
+                        {controlWorkspace && (
+                            <details className="export-bookends">
+                                <summary>片頭、片尾與轉場</summary>
+                                <BookendControls />
+                            </details>
+                        )}
                         {!burnSubs && (
-                            <div style={{ fontSize: 12, color: '#7cb27c', padding: '2px 0 6px' }}>
+                            <div style={{ fontSize: 12, color: 'var(--accent-green)', padding: '2px 0 6px' }}>
                                 乾淨畫面匯出：上傳 YouTube 時會自動掛 SRT 字幕（CC）
                             </div>
                         )}

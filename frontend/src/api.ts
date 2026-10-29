@@ -71,7 +71,14 @@ export function getBase(): string {
     return resolvedBase;
 }
 
+let currentExportId = '';
+
 export const api = {
+    /** 取消進行中的時間軸匯出（ffmpeg 會被終止，不會產生成品） */
+    async cancelExport(): Promise<void> {
+        if (!currentExportId) return;
+        await fetch(`${resolvedBase}/api/export-cancel/${currentExportId}`, { method: 'POST' }).catch(() => { });
+    },
     /** 上傳影片 */
     async upload(file: File): Promise<UploadResult> {
         // 無論是否 Tauri，都用 fetch 上傳到 Python 後端
@@ -305,7 +312,8 @@ export const api = {
             outputPath = result;
         }
 
-        // 2. POST 到 SSE 端點
+        // 2. POST 到 SSE 端點（帶 export_id，進度框的「取消匯出」用它停止）
+        currentExportId = crypto.randomUUID();
         const res = await fetch(`${resolvedBase}/api/export-timeline`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -324,6 +332,7 @@ export const api = {
                 })),
                 style,
                 output_path: outputPath,
+                export_id: currentExportId,
                 video_width: videoWidth || 1920,
                 video_height: videoHeight || 1080,
             }),
@@ -350,6 +359,7 @@ export const api = {
                 if (!dataLine.startsWith('data: ')) continue;
                 try {
                     const evt = JSON.parse(dataLine.slice(6));
+                    if (evt.cancelled) throw new Error('EXPORT_CANCELLED');
                     if (evt.error) throw new Error(evt.error);
                     if (evt.progress != null) onProgress(evt.progress, evt.stage, evt.eta_seconds);
                     if (evt.output_path) finalPath = evt.output_path;

@@ -319,3 +319,15 @@ test('media (picture-in-picture) overlays: geometry matches backend, time mappin
     bad({ type: 'add_overlay', kind: 'media', start: 1, end: 3, asset, volume: 2 });
     bad({ type: 'add_overlay', kind: 'media', start: 1, end: 3, asset, shape: 'star' });
 });
+
+test('edit_overlay: null clears an optional field (inspector clears caption text)', () => {
+    const p:any = project(); p.mediaItems[0].info.width = 1920; p.mediaItems[0].info.height = 1080;
+    const op = (o:any) => ({ trackId: 'video-main' as const, timeDomain: 'source' as const, ...o });
+    const ids = (() => { let i = 0; return () => `c${i++}`; })();
+    const d = evaluatePlan(p, 0, { ...plan(), operations: [op({ type: 'add_overlay', kind: 'box', start: 1, end: 3, x: .1, y: .1, w: .2, h: .2, text: '說明' })] } as any, ids);
+    const id = d.next.mediaItems[0].overlays![0].id;
+    const e = evaluatePlan(d.next, 0, { ...plan(), operations: [op({ type: 'edit_overlay', overlayId: id, text: null, color: 'blue' })] } as any, ids);
+    const o = e.next.mediaItems[0].overlays![0];
+    assert.equal('text' in o, false);
+    assert.equal(o.color, 'blue');
+});

@@ -312,7 +312,12 @@ function applyOverlayOp(next: ProjectData, op: EditOperation, id: () => string):
             return { type: op.type, overlayId: before.id, mediaId: media.id, removed: before };
         }
         overlay = { ...before };
-        for (const k of OVERLAY_FIELDS) if (op[k] !== undefined) (overlay as unknown as Record<string, unknown>)[k] = op[k];
+        const fields = overlay as unknown as Record<string, unknown>;
+        for (const k of OVERLAY_FIELDS) {
+            const v = (op as unknown as Record<string, unknown>)[k];
+            if (v === null) delete fields[k];          // null＝清除這個欄位（例如清空說明文字）
+            else if (v !== undefined) fields[k] = v;
+        }
         media.overlays = media.overlays!.map(o => o.id === overlay.id ? overlay : o);
     }
     const error = checkOverlays(media.overlays, media.info.duration);

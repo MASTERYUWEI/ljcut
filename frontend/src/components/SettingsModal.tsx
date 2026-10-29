@@ -1,10 +1,12 @@
 /* ── 設定 Modal（輸出目錄 / SRT 目錄 / Gemini API Key）── */
-import { X, Folder, Eye, EyeOff, KeyRound, Stethoscope, Link, RefreshCw } from 'lucide-react';
+import { X, Folder, Eye, EyeOff, KeyRound, Stethoscope, Link, RefreshCw, CircleCheck, TriangleAlert, Sparkles } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { useDialog } from '../useDialog';
 import { notify } from '../toast';
 import type { AppSettings } from '../types';
 import { api } from '../api';
+import { DeveloperTools } from './ProjectControl';
+import { StatusText } from './StatusText';
 
 interface Props {
     settings: AppSettings;
@@ -194,7 +196,7 @@ export function SettingsModal({ settings, setSettings, onClose }: Props) {
 
     const inputStyle: React.CSSProperties = {
         flex: 1, padding: '6px 8px', borderRadius: 4,
-        border: '1px solid #444', background: '#1e1e1e', color: '#eee', fontSize: 13,
+        border: '1px solid var(--bg-surface2)', background: 'var(--bg-surface0)', color: 'var(--fg-text)', fontSize: 13,
     };
 
     return (
@@ -226,8 +228,8 @@ export function SettingsModal({ settings, setSettings, onClose }: Props) {
                     {!editing ? (
                         // 已設定：顯示遮罩 + 變更按鈕（不再是空白框）
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                            <span style={{ color: '#4caf50', fontSize: 13 }}>
-                                ✅ 已設定金鑰：<code style={{ background: '#1e1e1e', padding: '2px 6px', borderRadius: 4 }}>{keyInfo.masked}</code>
+                            <span style={{ color: 'var(--ok)', fontSize: 13, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                                <CircleCheck aria-hidden />已設定金鑰：<code style={{ background: 'var(--bg-surface0)', padding: '2px 6px', borderRadius: 4 }}>{keyInfo.masked}</code>
                             </span>
                             <button className="btn" onClick={() => { setIsEditing(true); setKeyInput(''); setSaveMsg(''); }}
                                 style={{ marginLeft: 'auto', padding: '0 12px' }}>
@@ -273,12 +275,8 @@ export function SettingsModal({ settings, setSettings, onClose }: Props) {
                         title="實際呼叫一次 Gemini API，確認金鑰真的能拿到回應">
                         <Stethoscope aria-hidden />{testing ? '測試中…' : '測試金鑰健康度'}
                     </button>
-                    {health && (
-                        <div style={{ fontSize: 12, whiteSpace: 'pre-wrap', color: health.startsWith('✅') ? '#7cb27c' : '#ff8a80' }}>
-                            {health}
-                        </div>
-                    )}
-                    {saveMsg && <div style={{ fontSize: 12, color: '#ccc' }}>{saveMsg}</div>}
+                    <StatusText text={health} />
+                    <StatusText text={saveMsg} />
                 </div>
 
                 {/* ── AI 模型（Gemini）── */}
@@ -286,24 +284,24 @@ export function SettingsModal({ settings, setSettings, onClose }: Props) {
                     <label>AI 模型（Gemini）</label>
                     {modelInfo ? (
                         <>
-                            <div style={{ fontSize: 13, color: modelInfo.current_alive === false ? '#ff9800' : '#ccc' }}>
-                                目前：<code style={{ background: '#1e1e1e', padding: '2px 6px', borderRadius: 4 }}>{modelInfo.current}</code>
-                                {modelInfo.current_alive === false && '　⚠️ 此模型已被 Google 下架（呼叫時會自動換新）'}
+                            <div style={{ fontSize: 13, color: modelInfo.current_alive === false ? 'var(--warn)' : 'var(--fg-subtext1)' }}>
+                                目前：<code style={{ background: 'var(--bg-surface0)', padding: '2px 6px', borderRadius: 4 }}>{modelInfo.current}</code>
+                                {modelInfo.current_alive === false && <><TriangleAlert aria-hidden style={{ margin: '0 4px 0 10px' }} />此模型已被 Google 下架（呼叫時會自動換新）</>}
                             </div>
                             {modelInfo.update_available ? (
                                 <button className="btn" disabled={switching} onClick={() => switchModel(modelInfo.best)}
-                                    style={{ justifyContent: 'center', color: '#ffd54f' }}
+                                    style={{ justifyContent: 'center', color: 'var(--accent-amber)' }}
                                     title="Google 已推出較新的 Flash 模型，點擊切換並儲存">
-                                    {switching ? '切換中...' : `✨ Google 有新模型 ${modelInfo.best} — 點此切換`}
+                                    {switching ? '切換中…' : <><Sparkles aria-hidden />Google 有新模型 {modelInfo.best}，點此切換</>}
                                 </button>
                             ) : modelInfo.best ? (
-                                <div style={{ fontSize: 12, color: '#7cb27c' }}>✅ 已是最新的 Flash 模型</div>
+                                <StatusText kind="ok" text="已是最新的 Flash 模型" />
                             ) : (
-                                <div style={{ fontSize: 12, color: '#888' }}>（需先設定有效的 API Key 才能檢查新版）</div>
+                                <div style={{ fontSize: 12, color: 'var(--fg-subtext0)' }}>（需先設定有效的 API Key 才能檢查新版）</div>
                             )}
                         </>
                     ) : (
-                        <div style={{ fontSize: 12, color: '#888' }}>模型資訊載入中…</div>
+                        <div style={{ fontSize: 12, color: 'var(--fg-subtext0)' }}>模型資訊載入中…</div>
                     )}
                 </div>
 
@@ -312,7 +310,7 @@ export function SettingsModal({ settings, setSettings, onClose }: Props) {
                     <label>YouTube 上傳</label>
                     {yt?.connected ? (
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
-                            <span style={{ color: '#4caf50' }}>✅ 已連結頻道：{yt.channel || '(讀取中)'}</span>
+                            <span style={{ color: 'var(--ok)', display: 'inline-flex', alignItems: 'center', gap: 6 }}><CircleCheck aria-hidden />已連結頻道：{yt.channel || '(讀取中)'}</span>
                             <button className="btn" style={{ marginLeft: 'auto', padding: '0 10px' }}
                                 onClick={async () => { await api.ytDisconnect(); loadYt(); setYtMsg(''); }}>
                                 解除連結
@@ -346,22 +344,24 @@ export function SettingsModal({ settings, setSettings, onClose }: Props) {
                             )}
                         </>
                     )}
-                    {ytMsg && <div style={{ fontSize: 12, color: ytMsg.startsWith('❌') ? '#ff8a80' : '#ccc', whiteSpace: 'pre-wrap' }}>{ytMsg}</div>}
+                    <StatusText text={ytMsg} />
                 </div>
 
                 {/* ── 版本與更新 ── */}
                 <div className="style-row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 6 }}>
                     <label>版本</label>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
-                        <span style={{ color: '#ccc' }}>LJCUT v{appVer || '—'}</span>
+                        <span style={{ color: 'var(--fg-subtext1)' }}>LJCUT v{appVer || '—'}</span>
                         <button className="btn" disabled={updBusy} onClick={checkUpdate}
                             style={{ marginLeft: 'auto', padding: '0 12px' }}
                             title="向 GitHub Releases 檢查是否有新版本">
                             <RefreshCw aria-hidden />{updBusy ? '檢查中…' : '檢查更新'}
                         </button>
                     </div>
-                    {updMsg && <div style={{ fontSize: 12, color: updMsg.startsWith('❌') ? '#ff8a80' : '#7cb27c' }}>{updMsg}</div>}
+                    <StatusText text={updMsg} />
                 </div>
+
+                <DeveloperTools />
             </div>
         </div>
     );

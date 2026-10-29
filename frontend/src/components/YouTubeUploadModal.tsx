@@ -1,5 +1,6 @@
 /* Export-bound captions, Codex cover selection and YouTube upload. */
 import { X, Upload, ExternalLink, Play } from 'lucide-react';
+import { StatusText } from './StatusText';
 import { useEffect, useRef, useState } from 'react';
 import { useDialog } from '../useDialog';
 import { notify } from '../toast';
@@ -27,6 +28,7 @@ const STAGE_LABEL: Record<string, string> = {
 export function YouTubeUploadModal({ videoPath, defaultTitle, defaultDescription, publicationId, thumbnailTime, onClose }: Props) {
     const dialogRef = useRef<HTMLDivElement>(null);
     useDialog(dialogRef);
+    const uploadingRef = useRef(false);
     const [connected, setConnected] = useState<boolean | null>(null);
     const [channel, setChannel] = useState('');
     const [title, setTitle] = useState(defaultTitle);
@@ -35,13 +37,20 @@ export function YouTubeUploadModal({ videoPath, defaultTitle, defaultDescription
     const [privacy, setPrivacy] = useState<'private' | 'unlisted' | 'public'>('private');
     const [publication, setPublication] = useState<Publication | null>(null);
     const segments = publication?.segments ?? [];
+    // Esc 關閉：上傳中不關（避免看不到進度、重複上傳）
+    useEffect(() => {
+        const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !uploadingRef.current) onClose(); };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    }, [onClose]);
     const [includeSrt, setIncludeSrt] = useState(true);
 
     // 縮圖：frame=播放頭畫面 / ai=AI 封面 / none
     const [thumbMode, setThumbMode] = useState<'frame' | 'ai' | 'none'>('ai');
     const [thumbSel, setThumbSel] = useState('');
 
-    const [uploading, setUploading] = useState(false);
+    const [uploading, setUploadingState] = useState(false);
+    const setUploading = (v: boolean) => { uploadingRef.current = v; setUploadingState(v); };
     const [progress, setProgress] = useState(0);
     const [stage, setStage] = useState('');
     const [result, setResult] = useState<{ watch_url: string; studio_url: string; warnings?: string[] } | null>(null);
@@ -101,7 +110,7 @@ export function YouTubeUploadModal({ videoPath, defaultTitle, defaultDescription
 
     const inputStyle: React.CSSProperties = {
         width: '100%', padding: '6px 8px', borderRadius: 4, boxSizing: 'border-box',
-        border: '1px solid #444', background: '#1e1e1e', color: '#eee', fontSize: 13,
+        border: '1px solid var(--bg-surface2)', background: 'var(--bg-surface0)', color: 'var(--fg-text)', fontSize: 13,
     };
 
     return (
@@ -114,13 +123,11 @@ export function YouTubeUploadModal({ videoPath, defaultTitle, defaultDescription
 
                 {!publication && <p role="status">{error || "正在讀取這次匯出的影片與字幕…"}</p>}
                 {connected === false && (
-                    <div style={{ fontSize: 13, color: '#ffb74d', padding: '8px 0' }}>
-                        ⚠️ 尚未連結 YouTube 帳號 — 請先到「設定 ⚙」完成連結。
-                    </div>
+                    <StatusText kind="warn" text="尚未連結 YouTube 帳號：請先到右上角「設定」完成連結。" />
                 )}
                 {publication && !result && (
                     <>
-                        <div style={{ fontSize: 12, color: '#7cb27c', marginBottom: 8 }}>頻道：{channel || '(已連結)'}</div>
+                        <div style={{ fontSize: 12, color: 'var(--ok)', marginBottom: 8 }}>頻道：{channel || '(已連結)'}</div>
                         <p style={{ fontSize: 12 }}>本次成品 {publication.duration.toFixed(2)} 秒；主片從 {publication.mainStart.toFixed(2)} 秒開始。字幕已含片頭、裁切及變速換算，不會再次加偏移。匯出後的剪輯修改需重新匯出才會使用。</p>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
 
@@ -139,12 +146,12 @@ export function YouTubeUploadModal({ videoPath, defaultTitle, defaultDescription
 
                             {/* ── 標籤 / 隱私 ── */}
                             <div>
-                                <div style={{ fontSize: 12, color: '#999', marginBottom: 4 }}>標籤（逗號或空格分隔）</div>
+                                <div style={{ fontSize: 12, color: 'var(--fg-subtext0)', marginBottom: 4 }}>標籤（逗號或空格分隔）</div>
                                 <input value={tags} onChange={e => setTags(e.target.value)} style={inputStyle}
                                     placeholder="Revit, BIM, 教學" disabled={uploading} />
                             </div>
                             <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', fontSize: 13 }}>
-                                <span style={{ color: '#999', fontSize: 12 }}>隱私</span>
+                                <span style={{ color: 'var(--fg-subtext0)', fontSize: 12 }}>隱私</span>
                                 <select value={privacy} onChange={e => setPrivacy(e.target.value as typeof privacy)} disabled={uploading}
                                     style={{ ...inputStyle, width: 'auto' }}>
                                     <option value="private">私人（建議：上架前到 Studio 檢查再公開）</option>
@@ -155,11 +162,11 @@ export function YouTubeUploadModal({ videoPath, defaultTitle, defaultDescription
 
                             {/* ── 封面縮圖 ── */}
                             <div style={{ paddingTop: 6, borderTop: '1px solid var(--border)' }}>
-                                <div style={{ fontSize: 12, color: '#999', marginBottom: 6 }}>封面縮圖</div>
+                                <div style={{ fontSize: 12, color: 'var(--fg-subtext0)', marginBottom: 6 }}>封面縮圖</div>
                                 <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', fontSize: 13 }}>
                                     {([
                                         ['frame', '播放頭畫面'],
-                                        ['ai', '🎨 AI 生成封面（2.5D 像素風）'],
+                                        ['ai', 'AI 生成封面（2.5D 像素風）'],
                                         ['none', '不設定'],
                                     ] as const).map(([mode, label]) => (
                                         <label key={mode} style={{ display: 'flex', gap: 4, alignItems: 'center', cursor: 'pointer' }}>
@@ -177,26 +184,38 @@ export function YouTubeUploadModal({ videoPath, defaultTitle, defaultDescription
                                 <input type="checkbox" checked={includeSrt} onChange={e => setIncludeSrt(e.target.checked)} disabled={uploading || !segments.length} />
                                 自動掛上本次匯出的 SRT（{segments.length} 句，繁體中文 CC）
                             </label>
+                            {!segments.length && (
+                                <div className="field-hint">
+                                    這支成品匯出時專案沒有字幕，所以是 0 句。若之後才加字幕，請重新匯出再上傳。
+                                </div>
+                            )}
 
                             <button className="btn btn-primary" onClick={doUpload} disabled={uploading || !!partialStudio || !title.trim() || !connected || (thumbMode === 'ai' && !thumbSel)}
                                 style={{ justifyContent: 'center', marginTop: 4 }}>
                                 <Upload aria-hidden />{uploading ? `${STAGE_LABEL[stage] || '上傳中'} ${progress}%` : '開始上傳'}
                             </button>
+                            {!uploading && (() => {
+                                const why = !connected ? '尚未連結 YouTube 帳號：請到「設定」完成連結'
+                                    : !title.trim() ? '請輸入影片標題'
+                                    : thumbMode === 'ai' && !thumbSel ? '請先選一款封面，或改用其他縮圖模式'
+                                    : partialStudio ? '上次已部分上傳：請先檢查已上傳的影片，避免重複' : '';
+                                return why ? <div className="field-hint" role="note">{why}</div> : null;
+                            })()}
                             {uploading && (
                                 <div className="progress-bar">
                                     <div className="fill" style={{ width: `${progress}%` }} />
                                 </div>
                             )}
-                            {error && <div style={{ fontSize: 12, color: '#ff8a80', whiteSpace: 'pre-wrap' }}>❌ {error}</div>}
+                            {error && <StatusText kind="error" text={error} />}
                             {partialStudio && <button className="btn" onClick={() => openUrl(partialStudio)}>檢查已上傳的影片（避免重複上傳）</button>}
                         </div>
                     </>
                 )}
                 {result && (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: '8px 0' }}>
-                        <div style={{ fontSize: 15, color: '#7cb27c' }}>🎉 上傳完成！</div>
+                        <StatusText kind="ok" className="yt-done" text="上傳完成" />
                         {(result.warnings || []).map((w, i) => (
-                            <div key={i} style={{ fontSize: 12, color: '#ffb74d' }}>⚠ {w}</div>
+                            <StatusText key={i} kind="warn" text={w} />
                         ))}
                         <button className="btn" onClick={() => openUrl(result.studio_url)} style={{ justifyContent: 'center' }}>
                             <ExternalLink aria-hidden />到 YouTube Studio 檢查／發佈

@@ -369,20 +369,44 @@ async def export_timeline(body: dict = Body(default={})):
     if not output_path:
         output_path = str(OUTPUT_DIR / "timeline_output.mp4")
 
+    # 可取消：介面帶 export_id，按「取消匯出」時 /api/export-cancel 會設這個旗標，ffmpeg 會被終止
+    export_id = str(body.get("export_id") or "")
+    cancel = threading.Event()
+    if re.fullmatch(r"[0-9a-f-]{8,64}", export_id):
+        _export_cancels[export_id] = cancel
+
     def generate():
         try:
             for event in FFmpegService.export_timeline_with_progress(
                 ffmpeg_clips, ass_path, output_path,
-                video_width=video_width, video_height=video_height,
+                video_width=video_width, video_height=video_height, cancel_event=cancel,
             ):
                 yield f"data: {json.dumps(event)}\n\n"
             publication = publication_service.record_export(output_path, caption_clips, cumulative_offset)
             yield f"data: {json.dumps({'progress': 100, 'done': True, 'output_path': output_path, 'publication_id': publication['id']})}\n\n"
         except Exception as e:
-            print(f"❌ 匯出失敗: {e}")
-            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+            if cancel.is_set():
+                print("⏹ 匯出已取消")
+                yield f"data: {json.dumps({'cancelled': True})}\n\n"
+            else:
+                print(f"❌ 匯出失敗: {e}")
+                yield f"data: {json.dumps({'error': str(e)})}\n\n"
+        finally:
+            _export_cancels.pop(export_id, None)
 
     return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+_export_cancels: dict[str, threading.Event] = {}
+
+
+@app.post("/api/export-cancel/{export_id}")
+async def cancel_export(export_id: str):
+    ev = _export_cancels.get(export_id)
+    if ev is None:
+        raise HTTPException(404, "找不到進行中的匯出")
+    ev.set()
+    return {"ok": True}
 
 
 @app.get("/api/download/{file_id}")

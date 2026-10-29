@@ -20,7 +20,7 @@ export function BookendControls() {
     };
     useEffect(() => { void run(load); }, []);
     return <fieldset className="bookend-settings" disabled={busy}>
-        <legend>錄影後製作：片頭與片尾</legend>
+        <legend className="sr-only">片頭與片尾</legend>
         <small>按「選擇影片」從任意資料夾挑選檔案。儲存預設後，下次可直接使用。</small>
         {(['intro', 'outro'] as const).map(role => {
             const label = role === 'intro' ? '片頭' : '片尾';

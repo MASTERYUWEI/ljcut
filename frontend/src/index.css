@@ -33,6 +33,10 @@
   --accent-mauve: #b89cf0;
   --accent-green: #78c87a;
   --accent-blue: #6a9ef0;
+  /* 狀態色（成功／警告／錯誤），元件一律用這三個，不寫死色碼 */
+  --ok: var(--accent-green);
+  --warn: var(--accent-warm);
+  --danger: var(--accent-rose);
 
   /* ── Utility ── */
   --border: rgba(255, 255, 255, 0.06);
@@ -565,6 +569,10 @@ body {
   flex-shrink: 0;
   background: var(--glass);
   border-right: 1px solid var(--border);
+  /* 時間尺橫向捲動時，左上角的標籤欄固定不動 */
+  position: sticky;
+  left: 0;
+  z-index: 2;
 }
 
 .ruler-content {
@@ -608,9 +616,12 @@ body {
   min-height: 100%;
 }
 
-/* 單軌：固定高度，不再平分容器（軌道變多時才不會被擠扁） */
+/* 單軌：固定高度，不再平分容器（軌道變多時才不會被擠扁）。
+   寬度撐到全部內容：軌道名稱的 sticky 才能在橫向捲動時一直留在左側 */
 .track {
   display: flex;
+  width: max-content;
+  min-width: 100%;
   height: 44px;
   border-bottom: 1px solid var(--border);
   position: relative;
@@ -847,7 +858,7 @@ body {
 .btn {
   padding: 7px 18px;
   border-radius: var(--radius);
-  border: 1px solid var(--border);
+  border: 1px solid var(--bg-surface2);
   background: var(--bg-surface0);
   color: var(--fg-text);
   font-size: 13px;
@@ -1695,6 +1706,8 @@ body {
   padding: 24px;
   min-width: 380px;
   max-width: 500px;
+  max-height: 90vh;
+  overflow-y: auto;
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
 }
 
@@ -1948,12 +1961,12 @@ body {
 
 .boot-splash-text {
   font-size: 14px;
-  color: var(--fg-text, #eee);
+  color: var(--fg-text, var(--fg-text));
 }
 
 .boot-splash-hint {
   font-size: 12px;
-  color: var(--fg-subtext0, #888);
+  color: var(--fg-subtext0, var(--fg-subtext0));
 }
 
 /* 右側字幕工具列（操作跟著字幕清單走） */
@@ -1986,7 +1999,7 @@ body {
 
 .subtitle-toolbar .st-label {
   font-size: 12px;
-  color: var(--fg-subtext0, #999);
+  color: var(--fg-subtext0, var(--fg-subtext0));
   flex-shrink: 0;
 }
 
@@ -1994,21 +2007,30 @@ body {
   width: 56px;
   padding: 3px 6px;
   border-radius: 4px;
-  border: 1px solid #444;
-  background: #1e1e1e;
-  color: #eee;
+  border: 1px solid var(--bg-surface2);
+  background: var(--bg-surface0);
+  color: var(--fg-text);
   font-size: 12px;
 }
 
 .subtitle-toolbar .st-input {
   flex: 1;
   min-width: 0;
-  padding: 4px 8px;
-  border-radius: 4px;
-  border: 1px solid #444;
-  background: #1e1e1e;
-  color: #eee;
+}
+
+/* 共用文字輸入框（字幕工具、屬性面板、專案路徑、開發者工具） */
+.st-input {
+  padding: 5px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--bg-surface2);
+  background: var(--bg-surface0);
+  color: var(--fg-text);
+  font: inherit;
   font-size: 12px;
+}
+.st-input:focus {
+  outline: none;
+  border-color: var(--accent-amber);
 }
 
 .subtitle-toolbar .st-list {
@@ -2293,7 +2315,7 @@ body {
   gap: 6px;
   margin: 6px 16px 0;
   font-size: 12px;
-  color: var(--fg-subtext0, #999);
+  color: var(--fg-subtext0, var(--fg-subtext0));
   cursor: pointer;
   user-select: none;
 }
@@ -2566,3 +2588,226 @@ body {
   background: var(--accent-green);
 }
 .encoder-dot.warn { background: var(--accent-amber); }
+
+/* 匯出對話框：按下前先看到會得到什麼 */
+.export-summary {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 12px;
+  margin: 4px 0 10px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-mantle);
+  font-size: 12px;
+}
+.export-summary dt { color: var(--fg-subtext0); }
+.export-summary dd { margin: 0; color: var(--fg-text); font-variant-numeric: tabular-nums; }
+.field-hint {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--fg-subtext0);
+}
+
+/* ── 標註／縮放屬性面板（右欄頂部）── */
+.inspector {
+  padding: 12px 14px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-mantle);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 55%;
+  overflow-y: auto;
+  flex-shrink: 0;
+}
+.inspector-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.inspector-head h2 {
+  flex: 1;
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg-text);
+}
+.insp-icon {
+  padding: 4px 6px;
+}
+.insp-icon.on {
+  background: rgba(110, 204, 192, 0.16);
+  border-color: rgba(110, 204, 192, 0.55);
+  color: var(--accent-teal);
+}
+.insp-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.insp-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--fg-subtext0);
+  min-width: 0;
+}
+.insp-input-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.insp-input-wrap .st-input {
+  flex: 1;
+  min-width: 0;
+}
+.insp-suffix {
+  font-size: 12px;
+  color: var(--fg-overlay0);
+  white-space: nowrap;
+}
+.insp-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.insp-label {
+  font-size: 12px;
+  color: var(--fg-subtext0);
+  min-width: 28px;
+}
+.insp-swatches, .insp-dirs, .insp-seg {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.insp-swatch {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.5) inset;
+  cursor: pointer;
+}
+.insp-swatch.on {
+  border-color: var(--fg-text);
+}
+.insp-seg-btn {
+  padding: 4px 10px;
+  font-size: 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--bg-surface2);
+  background: var(--bg-surface0);
+  color: var(--fg-subtext1);
+  cursor: pointer;
+}
+.insp-seg-btn.on {
+  background: rgba(110, 204, 192, 0.16);
+  border-color: rgba(110, 204, 192, 0.55);
+  color: var(--accent-teal);
+}
+.insp-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--fg-subtext1);
+  cursor: pointer;
+}
+.insp-note {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--fg-overlay0);
+}
+
+/* ── 頂部：開啟／另存專案 ── */
+.project-file { position: relative; display: flex; gap: 8px; }
+.project-file-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 50;
+  width: 300px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid var(--bg-surface2);
+  border-radius: var(--radius-md, 8px);
+  background: var(--bg-mantle);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  font-size: 12px;
+  color: var(--fg-subtext0);
+}
+.project-file-pop small {
+  color: var(--fg-overlay0);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.project-file-pop .btn { justify-content: center; }
+
+/* ── 設定：進階／開發者 ── */
+.dev-tools {
+  margin-top: 8px;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+  font-size: 12px;
+}
+.dev-tools summary { cursor: pointer; color: var(--fg-subtext0); padding: 4px 0; }
+.dev-tools-body { display: grid; gap: 8px; padding-top: 6px; }
+.dev-tools-body small { color: var(--fg-overlay0); word-break: break-all; }
+.dev-tools-body textarea { resize: vertical; font-family: var(--font-mono, monospace); }
+.dev-tools-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.dev-tools-report {
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre-wrap;
+  margin: 0;
+  padding: 8px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-crust);
+  font-size: 11px;
+}
+
+/* ── 匯出對話框：片頭片尾 ── */
+.export-bookends { margin: 4px 0 8px; font-size: 12px; }
+.export-bookends summary { cursor: pointer; color: var(--fg-subtext0); padding: 6px 0; }
+.export-bookends .bookend-settings { font-size: 12px; }
+
+.btn-icon { padding: 4px 6px; }
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
+
+/* ── 狀態訊息（取代 emoji 前綴）── */
+.status-text {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  color: var(--fg-subtext1);
+}
+.status-text .lucide { flex-shrink: 0; margin-top: 2px; width: 14px; height: 14px; }
+.status-ok { color: var(--ok); }
+.status-error { color: var(--danger); }
+.status-warn { color: var(--warn); }
+.status-text.st-msg { margin-top: 4px; }
+
+/* 開關：鍵盤焦點落在隱藏的 checkbox 上，框畫在滑軌 */
+.toggle-switch input:focus-visible + .toggle-slider {
+  outline: 2px solid var(--accent-amber);
+  outline-offset: 2px;
+}
+.subtitle-item:focus-visible {
+  outline: 2px solid var(--accent-amber);
+  outline-offset: -2px;
+}
+
+.yt-done { font-size: 15px; }

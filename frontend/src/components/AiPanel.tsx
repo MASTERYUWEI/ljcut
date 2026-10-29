@@ -1,5 +1,5 @@
 /* ── AI 文案助手面板（可折疊）── */
-import { RefreshCw } from 'lucide-react';
+import { RefreshCw, Check } from 'lucide-react';
 import type { RefObject } from 'react';
 
 interface AiTab {
@@ -50,7 +50,7 @@ export function AiPanel({
                         <pre>{results.current[activeTab] || ''}{loadingType === activeTab ? '▌' : ''}</pre>
                         {results.current[activeTab] && loadingType !== activeTab && (
                             <button className="copy-btn" onClick={() => onCopy(results.current[activeTab])}>
-                                {copied ? '✅ 已複製' : '複製'}
+                                {copied ? <><Check aria-hidden />已複製</> : '複製'}
                             </button>
                         )}
                     </div>

@@ -1,4 +1,5 @@
 /* ── 螢幕錄影設定 Modal ── */
+import { StatusText } from './StatusText';
 import { X, Volume2, Mic, SlidersHorizontal, MonitorPlay, Film, MousePointer2, EyeOff, Sun, MousePointerClick, CircleDot } from 'lucide-react';
 import { useRef, useState } from 'react';
 import { useDialog } from '../useDialog';
@@ -126,18 +127,18 @@ export function RecordingSettingsModal({
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                             <input type="number" step={10} value={recOpts.audioSyncMs}
                                 onChange={e => setRecOpts(o => ({ ...o, audioSyncMs: parseInt(e.target.value) || 0 }))}
-                                style={{ width: 90, padding: '4px 8px', borderRadius: 4, border: '1px solid #444', background: '#1e1e1e', color: '#eee' }} />
-                            <span style={{ fontSize: 12, color: '#888' }}>ms</span>
+                                style={{ width: 90, padding: '4px 8px', borderRadius: 4, border: '1px solid var(--bg-surface2)', background: 'var(--bg-surface0)', color: 'var(--fg-text)' }} />
+                            <span style={{ fontSize: 12, color: 'var(--fg-subtext0)' }}>ms</span>
                             <button className="btn" onClick={calibrate} disabled={calibrating}
                                 style={{ marginLeft: 'auto', padding: '0 12px' }}
                                 title="用喇叭播放音樂時，自動量出麥克風超前多少毫秒">
                                 <SlidersHorizontal aria-hidden />{calibrating ? '校正中…' : '一鍵校正'}
                             </button>
                         </div>
-                        <div style={{ fontSize: 11, color: '#888', lineHeight: 1.5 }}>
+                        <div style={{ fontSize: 11, color: 'var(--fg-subtext0)', lineHeight: 1.5 }}>
                             用喇叭播放音樂 → 按「一鍵校正」→ 自動量出麥克風超前的毫秒數並填入。
                         </div>
-                        {calMsg && <div style={{ fontSize: 12, color: '#ccc' }}>{calMsg}</div>}
+                        <StatusText text={calMsg} />
                     </div>
                 )}
                 <div className="rec-setting-row">
