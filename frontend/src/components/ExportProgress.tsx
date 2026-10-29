@@ -1,11 +1,17 @@
 /* ── 匯出進度框 ── */
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { CircleCheck, FolderOpen, Upload } from 'lucide-react';
 
 interface Props {
     progress: number;
     etaSeconds?: number | null;
     stage?: string;
     onCancel?: () => void;
+    /** 匯出完成後的摘要；有值時顯示完成畫面 */
+    done?: { path: string; duration: string; subs: number; burned: boolean };
+    onClose?: () => void;
+    onOpenFolder?: () => void;
+    onUpload?: () => void;
 }
 
 function fmtEta(s: number): string {
@@ -15,8 +21,34 @@ function fmtEta(s: number): string {
     return `約 ${m} 分 ${sec.toString().padStart(2, '0')} 秒`;
 }
 
-export function ExportProgress({ progress, etaSeconds, stage, onCancel }: Props) {
+export function ExportProgress({ progress, etaSeconds, stage, onCancel, done, onClose, onOpenFolder, onUpload }: Props) {
     const [cancelling, setCancelling] = useState(false);
+    const firstBtn = useRef<HTMLButtonElement>(null);
+    useEffect(() => {
+        if (!done) return;
+        firstBtn.current?.focus();
+        const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); onClose?.(); } };
+        window.addEventListener('keydown', onKey, true);
+        return () => window.removeEventListener('keydown', onKey, true);
+    }, [done, onClose]);
+    if (done) {
+        const name = done.path.replace(/\\/g, '/').split('/').pop();
+        return (
+            <div className="export-progress-backdrop" onClick={onClose}>
+                <div className="export-progress-modal export-done" role="dialog" aria-modal="true" aria-labelledby="export-done-title" onClick={e => e.stopPropagation()}>
+                    <CircleCheck className="export-done-icon" aria-hidden />
+                    <h2 id="export-done-title" className="export-progress-title">影片匯出完成</h2>
+                    <p className="export-done-name" title={done.path}>{name}</p>
+                    <p className="export-done-meta">長度 {done.duration} · {done.subs ? (done.burned ? `字幕已燒進畫面（${done.subs} 句）` : `另附 SRT 字幕 ${done.subs} 句`) : '沒有字幕'}</p>
+                    <div className="export-done-actions">
+                        <button ref={firstBtn} className="btn btn-primary" onClick={onUpload}><Upload aria-hidden />上傳到 YouTube</button>
+                        {(window as any).__TAURI_INTERNALS__ && <button className="btn" onClick={onOpenFolder}><FolderOpen aria-hidden />開啟資料夾</button>}
+                        <button className="btn" onClick={onClose}>完成</button>
+                    </div>
+                </div>
+            </div>
+        );
+    }
     return (
         <div className="export-progress-backdrop">
             <div className="export-progress-modal">

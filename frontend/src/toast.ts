@@ -44,8 +44,12 @@ export function humanizeError(raw: string): { message: string; detail?: string }
     return { message: lead + hit[1], detail: raw };
 }
 
-export function toast(kind: ToastKind, message: string, actions?: ToastAction[], opts?: { sticky?: boolean }) {
+const keyed = new Map<string, number>();
+export function toast(kind: ToastKind, message: string, actions?: ToastAction[], opts?: { sticky?: boolean; key?: string }) {
+    // 同一個 key 只留最新一則（例如連按 Ctrl+Z 不會疊一堆提示）
+    if (opts?.key) { const old = keyed.get(opts.key); if (old !== undefined) dismissToast(old); }
     const id = ++seq;
+    if (opts?.key) keyed.set(opts.key, id);
     const h = kind === 'error' ? humanizeError(message.trim()) : { message: message.trim() };
     items = [...items, { id, kind, message: h.message, detail: h.detail, actions }].slice(-4);   // 最多同時 4 則
     if (kind !== 'error' && !opts?.sticky) timers.set(id, setTimeout(() => dismissToast(id), actions?.length ? 9000 : 5000));

@@ -34,34 +34,63 @@ useStore.subscribe((s, prev) => {
     }
 });
 const snapshot = (): Snapshot => ({ project: projectData(), activeClipId: useStore.getState().activeClipId });
-export function pushUndo() { past.push(snapshot()); if (past.length > 50) past.shift(); future.length = 0; }
+export function pushUndo() { past.push(snapshot()); if (past.length > 50) past.shift(); future.length = 0; notifyHistory(); }
 export interface ExpectedVersion { sessionId: string; projectId: string; expectedRevision: number }
 export function checkVersion(args: ExpectedVersion) {
     requireEdit(args.sessionId === sessionId && args.projectId === projectId && args.expectedRevision === revision,
         'STALE_PROJECT', '專案或工作階段已變更，請重新取得狀態');
 }
-function restore(snap: Snapshot) {
+function restore(snap: Snapshot, keepTime = false) {
     const p = structuredClone(snap.project);
-    const active = snap.activeClipId ? p.timelineClips.find(c => c.id === snap.activeClipId) : undefined;
+    const prevActive = useStore.getState().activeClipId;
+    // 復原／重做時盡量留在原本選取的片段，不跳走
+    const active = (keepTime && prevActive ? p.timelineClips.find(c => c.id === prevActive) : undefined)
+        ?? (snap.activeClipId ? p.timelineClips.find(c => c.id === snap.activeClipId) : undefined);
     projectId = p.projectId;
+    const time = keepTime ? Math.min(useStore.getState().currentTime, durationOf(p.timelineClips)) : 0;
     useStore.setState({ mediaItems: p.mediaItems, timelineClips: p.timelineClips, subtitleStyle: p.subtitleStyle,
         language: p.language, activeClipId: active?.id ?? null, segments: active?.segments ?? [],
-        activeSegmentId: null, isPlaying: false, currentTime: 0 });
-    requestPreview(0);
+        activeSegmentId: null, isPlaying: false, currentTime: time });
+    requestPreview(time);
+    notifyHistory();
+}
+/** 復原／重做狀態變化時通知介面（按鈕停用狀態） */
+function notifyHistory() { if (typeof window !== 'undefined') window.dispatchEvent(new Event('ljcut-history')); }
+export const history = () => ({ canUndo: past.length > 0, canRedo: future.length > 0 });
+const count = (p: ProjectData, k: 'zooms' | 'overlays') => p.mediaItems.reduce((n, m) => n + (m[k]?.length ?? 0), 0);
+const subs = (p: ProjectData) => p.timelineClips.reduce((n, c) => n + c.segments.length, 0);
+/** 用白話描述兩個專案狀態的差異（給「已復原：…」提示用） */
+export function describeChange(from: ProjectData, to: ProjectData): string {
+    const parts: string[] = [];
+    const dc = to.timelineClips.length - from.timelineClips.length;
+    if (dc) parts.push(dc > 0 ? `片段 +${dc}` : `片段 −${-dc}`);
+    const dz = count(to, 'zooms') - count(from, 'zooms');
+    if (dz) parts.push(dz > 0 ? `縮放 +${dz}` : `縮放 −${-dz}`);
+    const dov = count(to, 'overlays') - count(from, 'overlays');
+    if (dov) parts.push(dov > 0 ? `標註 +${dov}` : `標註 −${-dov}`);
+    const ds = subs(to) - subs(from);
+    if (ds) parts.push(ds > 0 ? `字幕 +${ds} 句` : `字幕 −${-ds} 句`);
+    if (!parts.length) {
+        const dd = durationOf(to.timelineClips) - durationOf(from.timelineClips);
+        parts.push(Math.abs(dd) >= 0.05 ? `長度 ${dd > 0 ? '+' : '−'}${Math.abs(dd).toFixed(1)} 秒` : '內容調整');
+    }
+    return parts.join('，');
 }
 export function undo() {
     const snap = past.pop();
     requireEdit(snap, 'NOTHING_TO_UNDO', '沒有可撤銷的操作');
-    future.push(snapshot()); restoring = true;
-    try { restore(snap); } finally { restoring = false; }
-    return readState();
+    const before = snapshot();
+    future.push(before); restoring = true;
+    try { restore(snap, true); } finally { restoring = false; }
+    return { ...readState(), change: describeChange(before.project, snap.project) };
 }
 export function redo() {
     const snap = future.pop();
     requireEdit(snap, 'NOTHING_TO_REDO', '沒有可重做的操作');
-    past.push(snapshot()); restoring = true;
-    try { restore(snap); } finally { restoring = false; }
-    return readState();
+    const before = snapshot();
+    past.push(before); restoring = true;
+    try { restore(snap, true); } finally { restoring = false; }
+    return { ...readState(), change: describeChange(before.project, snap.project) };
 }
 export function replaceProject(p: ProjectData, expected: ExpectedVersion) {
     validateProject(p);
@@ -74,7 +103,7 @@ export function loadProject(p: ProjectData, expected: ExpectedVersion) {
     validateProject(p);
     checkVersion(expected);
     restore({ project: p, activeClipId: p.timelineClips[0]?.id ?? null });
-    past.length = 0; future.length = 0;
+    past.length = 0; future.length = 0; notifyHistory();
     return readState();
 }
 export function dryRun(plan: EditPlan) {
@@ -118,7 +147,7 @@ export function applyPlan(args: ExpectedVersion & { dryRunId: string; confirmed:
     requireEdit(draft && draft.revision === revision && draft.projectId === projectId, 'STALE_DRY_RUN', 'dry-run 已過期，請重新驗證');
     requireEdit(!useStore.getState().isTranscribing && !useStore.getState().isUploading,
         'EDITOR_BUSY', '匯入／辨識尚未完成，請稍後重試');
-    pushUndo(); restore({ project: draft.next, activeClipId: useStore.getState().activeClipId });
+    pushUndo(); restore({ project: draft.next, activeClipId: useStore.getState().activeClipId }, true);   // 套用後播放頭留在原處
     return { changes: draft.changes, state: readState() };
 }
 export function requestPreview(time: number) {

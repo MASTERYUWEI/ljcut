@@ -72,6 +72,23 @@ export function ProjectFileButtons() {
         } catch (e) { toast('error', String(e)); }
         finally { setBusy(false); }
     };
+    const submitRef = useRef<HTMLButtonElement>(null);
+    const openFromList = (target: string) => {
+        if (statusRef.current.dirty) { setPath(target); submitRef.current?.focus(); return; }   // 先讓使用者決定要不要儲存
+        void doRun('open', target);
+    };
+    const saveThenOpen = async (target: string) => {
+        const st = statusRef.current;
+        if (!st.path) { toast('info', '這個專案還沒取名，請先按「儲存」取名後再開啟其他專案。'); return; }
+        setBusy(true);
+        try {
+            await executeCommand('save', { ...version(), path: st.path });
+            await executeCommand('open', { ...version(), path: target });
+            toast('success', `已儲存「${st.path}」並開啟「${target}」`);
+            setOpen(null);
+        } catch (e) { toast('error', String(e)); }
+        finally { setBusy(false); }
+    };
     const save = (saveAs = false) => {
         const st = statusRef.current;
         if (!saveAs && st.path) void doRun('save', st.path);
@@ -162,14 +179,14 @@ export function ProjectFileButtons() {
                 {projects.length ? <ul className="project-list" role="listbox" aria-label="專案資料夾裡的專案">
                     {projects.map(pr => <li key={pr.path}>
                         <button type="button" role="option" aria-selected={pr.path === path} className={`project-item ${pr.path === path ? 'on' : ''} ${pr.autosave ? 'autosave' : ''}`}
-                            onClick={() => setPath(pr.path)} onDoubleClick={() => void doRun('open', pr.path)} title="按兩下或 Enter 直接開啟"
+                            onClick={() => setPath(pr.path)} onDoubleClick={() => openFromList(pr.path)} title={status.dirty ? '目前有未儲存的修改：請用下方按鈕選擇儲存或放棄' : '按兩下或 Enter 直接開啟'}
                             onFocus={() => setPath(pr.path)}
                             onKeyDown={e => {
                                 const items = Array.from(boxRef.current?.querySelectorAll<HTMLElement>('.project-item') ?? []);
                                 const i = items.indexOf(e.currentTarget);
                                 if (e.key === 'ArrowDown') { e.preventDefault(); items[Math.min(items.length - 1, i + 1)]?.focus(); }
                                 else if (e.key === 'ArrowUp') { e.preventDefault(); items[Math.max(0, i - 1)]?.focus(); }
-                                else if (e.key === 'Enter') { e.preventDefault(); void doRun('open', pr.path); }
+                                else if (e.key === 'Enter') { e.preventDefault(); openFromList(pr.path); }
                             }}>
                             <span>{pr.name}</span><small>{new Date(pr.modified * 1000).toLocaleString('zh-TW', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</small>
                         </button>
@@ -188,9 +205,13 @@ export function ProjectFileButtons() {
             </div>
             {open === 'open' && status.dirty && <StatusText kind="warn" text="目前的修改還沒儲存，開啟後會被取代（可先按「儲存」）。" />}
             {overwrite && status.path && <StatusText kind="info" text={`會另存成新檔；原本的「${status.path}」不變。已有同名專案時會請你換名稱，不會覆蓋。`} />}
-            <button className="btn btn-primary" type="submit" disabled={busy || !target}>
-                {busy ? '處理中…' : open === 'save' ? '儲存' : status.dirty ? '放棄修改並開啟' : '開啟'}
-            </button>
+            <div className="pop-actions">
+                {open === 'open' && status.dirty && status.path && <button type="button" className="btn btn-primary" disabled={busy || !target}
+                    onClick={() => void saveThenOpen(target)}>儲存後開啟</button>}
+                <button ref={submitRef} className={`btn ${open === 'open' && status.dirty && status.path ? '' : 'btn-primary'}`} type="submit" disabled={busy || !target}>
+                    {busy ? '處理中…' : open === 'save' ? '儲存' : status.dirty ? '放棄修改並開啟' : '開啟'}
+                </button>
+            </div>
         </form>}
         {closing && <div className="modal-overlay">
             <div className="modal-box" role="alertdialog" aria-modal="true" aria-labelledby="close-title" aria-describedby="close-desc" style={{ maxWidth: 400 }}>

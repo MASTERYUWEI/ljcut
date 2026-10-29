@@ -178,7 +178,7 @@ export function YouTubeUploadModal({ videoPath, defaultTitle, defaultDescription
                                     style={{ ...inputStyle, width: 'auto' }}>
                                     <option value="private">私人（建議：上架前到 Studio 檢查再公開）</option>
                                     <option value="unlisted">不公開（有連結就能看）</option>
-                                    <option value="public">公開（未審核 API 專案會被強制轉私人）</option>
+                                    <option value="public">公開（YouTube 可能先鎖成私人，需到後台改）</option>
                                 </select>
                             </div>
 
