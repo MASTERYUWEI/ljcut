@@ -114,17 +114,13 @@ export function YouTubeUploadModal({ videoPath, defaultTitle, defaultDescription
         }
     };
 
-    const inputStyle: React.CSSProperties = {
-        width: '100%', padding: '6px 8px', borderRadius: 4, boxSizing: 'border-box',
-        border: '1px solid var(--bg-surface2)', background: 'var(--bg-surface0)', color: 'var(--fg-text)', fontSize: 13,
-    };
 
     return (
         <div className="modal-overlay" onClick={uploading ? undefined : onClose}>
-            <div className="modal-box" ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="yt-upload-title" onClick={e => e.stopPropagation()} style={{ maxWidth: 1000, maxHeight: '88vh', overflowY: 'auto' }}>
+            <div className="modal-box" ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="yt-upload-title" onClick={e => e.stopPropagation()} style={{ maxWidth: 1000 }} data-scroll>
                 <div className="modal-header">
                     <h2 id="yt-upload-title">上傳到 YouTube</h2>
-                    <button className="btn" onClick={onClose} disabled={uploading} style={{ padding: '4px 6px' }} aria-label="關閉" title="關閉（Esc）"><X aria-hidden /></button>
+                    <button className="btn btn-icon" onClick={onClose} disabled={uploading} aria-label="關閉" title="關閉（Esc）"><X aria-hidden /></button>
                 </div>
 
                 {stale && !result && (
@@ -139,7 +135,7 @@ export function YouTubeUploadModal({ videoPath, defaultTitle, defaultDescription
                 )}
                 {publication && !result && (
                     <>
-                        <div style={{ fontSize: 12, color: 'var(--ok)', marginBottom: 8 }}>頻道：{channel || '(已連結)'}</div>
+                        {connected === true && <div className="yt-channel">已連結頻道：{channel || 'YouTube 帳號'}</div>}
                         <dl className="export-summary">
                             <dt>成品長度</dt><dd>{formatTime(publication.duration)}</dd>
                             <dt>CC 字幕</dt><dd>{segments.length ? `${segments.length} 句，時間已配合片頭、剪接和變速對好` : '沒有（這支成品匯出時沒有字幕）'}</dd>
@@ -150,17 +146,17 @@ export function YouTubeUploadModal({ videoPath, defaultTitle, defaultDescription
                                 {onReexport && <button className="btn" onClick={onReexport} disabled={uploading}>重新匯出</button>}
                             </div>
                         )}
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                        <div className="yt-form">
 
                             <div>
                                 <label>影片標題（可在選用封面後調整）
-                                    <input aria-label="影片標題" value={title} onChange={e => setTitle(e.target.value)} style={inputStyle} maxLength={100} disabled={uploading} />
+                                    <input aria-label="影片標題" value={title} onChange={e => setTitle(e.target.value)} className="st-input" maxLength={100} disabled={uploading} />
                                 </label>
                             </div>
                             <div>
                                 <label>影片說明
                                     <textarea aria-label="影片說明" value={desc} onChange={e => setDesc(e.target.value)} rows={4}
-                                        style={{ ...inputStyle, resize: 'vertical', fontFamily: 'inherit' }} disabled={uploading}
+                                        className="st-input yt-textarea" disabled={uploading}
                                         placeholder="選用下方 AI 封面後會帶入 AI 整理的標題與說明，也可直接手寫" />
                                 </label>
                             </div>
@@ -168,14 +164,14 @@ export function YouTubeUploadModal({ videoPath, defaultTitle, defaultDescription
                             {/* ── 標籤 / 隱私 ── */}
                             <div>
                                 <label>標籤（逗號或空格分隔）
-                                <input value={tags} onChange={e => setTags(e.target.value)} style={inputStyle}
+                                <input value={tags} onChange={e => setTags(e.target.value)} className="st-input"
                                     placeholder="Revit, BIM, 教學" disabled={uploading} />
                                 </label>
                             </div>
-                            <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', fontSize: 13 }}>
+                            <div className="yt-row">
                                 <label htmlFor="yt-privacy">隱私</label>
                                 <select id="yt-privacy" value={privacy} onChange={e => setPrivacy(e.target.value as typeof privacy)} disabled={uploading}
-                                    style={{ ...inputStyle, width: 'auto' }}>
+                                    className="st-input yt-select">
                                     <option value="private">私人（建議：上架前到 Studio 檢查再公開）</option>
                                     <option value="unlisted">不公開（有連結就能看）</option>
                                     <option value="public">公開（YouTube 可能先鎖成私人，需到後台改）</option>
@@ -183,15 +179,15 @@ export function YouTubeUploadModal({ videoPath, defaultTitle, defaultDescription
                             </div>
 
                             {/* ── 封面縮圖 ── */}
-                            <div style={{ paddingTop: 6, borderTop: '1px solid var(--border)' }}>
+                            <div className="yt-section">
                                 <div className="yt-field-label" id="yt-thumb-label">封面縮圖</div>
-                                <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', fontSize: 13 }}>
+                                <div className="yt-row" role="radiogroup" aria-labelledby="yt-thumb-label">
                                     {([
                                         ['frame', '播放頭畫面'],
                                         ['ai', 'AI 封面（由 AI 助理準備）'],
                                         ['none', '不設定'],
                                     ] as const).map(([mode, label]) => (
-                                        <label key={mode} style={{ display: 'flex', gap: 4, alignItems: 'center', cursor: 'pointer' }}>
+                                        <label key={mode} className="yt-check">
                                             <input type="radio" checked={thumbMode === mode} onChange={() => setThumbMode(mode)} disabled={uploading} />
                                             {label}
                                         </label>
@@ -202,7 +198,7 @@ export function YouTubeUploadModal({ videoPath, defaultTitle, defaultDescription
 
                             </div>
 
-                            {segments.length > 0 && <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13, cursor: 'pointer' }}>
+                            {segments.length > 0 && <label className="yt-check">
                                 <input type="checkbox" checked={includeSrt} onChange={e => setIncludeSrt(e.target.checked)} disabled={uploading} />
                                 自動掛上本次匯出的 SRT（{segments.length} 句，繁體中文 CC）
                             </label>}
@@ -229,18 +225,18 @@ export function YouTubeUploadModal({ videoPath, defaultTitle, defaultDescription
                     </>
                 )}
                 {result && (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: '8px 0' }}>
+                    <div className="yt-form yt-done">
                         <StatusText kind="ok" className="yt-done" text="上傳完成" />
                         {(result.warnings || []).map((w, i) => (
                             <StatusText key={i} kind="warn" text={w} />
                         ))}
-                        <button className="btn" onClick={() => openUrl(result.studio_url)} style={{ justifyContent: 'center' }}>
+                        <button className="btn" onClick={() => openUrl(result.studio_url)} data-center>
                             <ExternalLink aria-hidden />到 YouTube Studio 檢查／發佈
                         </button>
-                        <button className="btn" onClick={() => openUrl(result.watch_url)} style={{ justifyContent: 'center' }}>
+                        <button className="btn" onClick={() => openUrl(result.watch_url)} data-center>
                             <Play aria-hidden />觀看影片頁
                         </button>
-                        <button className="btn btn-primary" onClick={onClose} style={{ justifyContent: 'center' }}>完成</button>
+                        <button className="btn btn-primary" onClick={onClose} data-center>完成</button>
                     </div>
                 )}
             </div>

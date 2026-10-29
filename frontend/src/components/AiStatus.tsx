@@ -2,6 +2,8 @@
 import { Bot } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { aiActivity } from '../controlClient';
+import { history, requestPreview, undo } from '../editSession';
+import { toast } from '../toast';
 import { useControlWorkspace } from './ProjectControl';
 
 function ago(ms: number) {
@@ -50,6 +52,16 @@ export function AiStatus() {
                     <li key={item.at}>
                         <div className="ai-log-row"><strong>{item.text}</strong><span>{ago(Date.now() - item.at)}</span></div>
                         {item.details.length > 0 && <ul>{item.details.map((d, i) => <li key={i}>{d}</li>)}</ul>}
+                        {(item.jump !== undefined || item.depth) && <div className="ai-log-actions">
+                            {item.jump !== undefined && <button className="btn btn-sm" onClick={() => { try { requestPreview(Math.max(0, item.jump!)); } catch { /* 超出範圍 */ } }}>跳到這裡</button>}
+                            {item.depth !== undefined && (() => {
+                                const steps = history().depth - item.depth + 1;
+                                if (item.depth > history().depth || steps < 1) return <span className="ai-log-undone">已復原</span>;
+                                return <button className="btn btn-sm" title={`連按 ${steps} 次 Ctrl+Z，回到 AI 做這步之前（之後的修改也會一起退回，可再重做）`}
+                                    onClick={() => { for (let i = 0; i < steps; i++) undo(); toast('info', `已退回 ${steps} 步，回到「${item.text}」之前；可按 Ctrl+Shift+Z 重做`, undefined, { key: 'history' }); tick(n => n + 1); }}>
+                                    退回到這步之前{steps > 1 ? `（${steps} 步）` : ''}</button>;
+                            })()}
+                        </div>}
                     </li>
                 ))}</ol>}
         </div>}

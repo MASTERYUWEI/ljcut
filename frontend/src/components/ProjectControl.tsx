@@ -4,8 +4,9 @@ import { useEffect, useRef, useState } from 'react';
 import { AUTOSAVE_PATH, autosaveProject, controlRequest, controlWorkspace, executeCommand, projectFile } from '../controlClient';
 import { useStore } from '../store';
 import { StatusText } from './StatusText';
-import { readState } from '../editSession';
-import { toast } from '../toast';
+import { useDialog } from '../useDialog';
+import { readState , sameContent } from '../editSession';
+import { toast , dismissToast } from '../toast';
 
 /** 本機控制工作區（以 scripts/start-control.ps1 啟動時才有） */
 export function useControlWorkspace() {
@@ -33,7 +34,7 @@ function useProjectStatus() {
         return () => { window.removeEventListener('ljcut-project-file', update); unsub(); };
     }, []);
     const hasContent = useStore.getState().timelineClips.length > 0;
-    const dirty = hasContent && readState().revision !== projectFile.savedRevision;
+    const dirty = hasContent && !sameContent({ revision: projectFile.savedRevision, key: projectFile.savedKey });
     const name = projectFile.path.replace(/\\/g, '/').split('/').pop()?.replace(/\.ljcut$/i, '') ?? '';
     return { name, path: projectFile.path, dirty, hasContent };
 }
@@ -100,15 +101,21 @@ export function ProjectFileButtons() {
         if (open !== 'open') return;
         controlRequest('/projects').then(r => {
             const list = r.projects ?? [];
-            setProjects(r.autosave ? [{ path: r.autosave.path, name: '上次沒儲存的進度（自動存檔）', modified: r.autosave.modified, autosave: true }, ...list] : list);
-            // 焦點放到清單第一個專案（方向鍵可上下選）
-            setTimeout(() => boxRef.current?.querySelector<HTMLElement>('.project-item')?.focus(), 0);
+            const all = r.autosave ? [{ path: r.autosave.path, name: '上次沒儲存的進度（自動存檔）', modified: r.autosave.modified, autosave: true }, ...list] : list;
+            setProjects(all);
+            setPath(all.find((x: { path: string }) => x.path !== statusRef.current.path)?.path ?? '');
+            // 焦點放到第一個「不是目前專案」的項目（方向鍵可上下選）
+            setTimeout(() => (boxRef.current?.querySelector<HTMLElement>('.project-item[aria-selected="true"]') ?? boxRef.current?.querySelector<HTMLElement>('.project-item'))?.focus(), 0);
         }).catch(() => setProjects([]));
     }, [open]);
     // 自動存檔：有未儲存修改時每分鐘存一份隱藏備份（不影響「未儲存」狀態）
     useEffect(() => {
         if (!workspace) return;
-        const timer = setInterval(() => { if (statusRef.current.dirty) void autosaveProject().catch(() => { /* 下次再試 */ }); }, 60000);
+        const timer = setInterval(() => {
+            if (statusRef.current.dirty) void autosaveProject().then(() => {
+                setBackedUp(new Date().toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' }));
+            }).catch(() => { /* 下次再試 */ });
+        }, 60000);
         return () => clearInterval(timer);
     }, [workspace]);
     // 啟動時：自動存檔比所有專案都新 → 提供還原
@@ -118,15 +125,20 @@ export function ProjectFileButtons() {
             const latest = Math.max(0, ...(r.projects ?? []).map((x: { modified: number }) => x.modified));
             if (!r.autosave || r.autosave.modified <= latest + 5 || useStore.getState().timelineClips.length) return;
             const when = new Date(r.autosave.modified * 1000).toLocaleString('zh-TW', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-            toast('info', `找到上次沒儲存的進度（${when} 自動存檔）。也可以之後從「開啟」清單最上面還原。`, [
+            const id = toast('info', `找到上次沒儲存的進度（${when} 自動存檔）。也可以之後從「開啟」清單最上面還原。`, [
                 { label: '還原', run: () => { void doRun('open', AUTOSAVE_PATH); } },
             ], { sticky: true });
+            // 開啟了任何專案後，這則還原提示就不再需要
+            window.addEventListener('ljcut-project-file', () => dismissToast(id), { once: true });
         }).catch(() => { });
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [workspace]);
     // 關窗保護：有未儲存修改時先問
     const [closing, setClosing] = useState(false);
     const closeAfterSave = useRef(false);
+    const closeBoxRef = useRef<HTMLDivElement>(null);
+    const [backedUp, setBackedUp] = useState('');
+    useDialog(closeBoxRef, closing);
     useEffect(() => {
         if (!closing) return;
         const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); setClosing(false); } };
@@ -167,7 +179,8 @@ export function ProjectFileButtons() {
     return <div className="project-file" ref={boxRef}>
         <span className="project-name" title={status.path ? `工作區中的 ${status.path}` : '尚未存成專案檔'}>
             {status.name || (status.hasContent ? '未命名專案' : '沒有專案')}
-            {status.dirty && <span className="dirty-mark"><span className="dirty-dot" aria-hidden />未儲存</span>}
+            {status.dirty && <span className="dirty-mark" title={backedUp ? `已自動備份（${backedUp}），但還沒存進專案檔` : '有修改還沒存進專案檔（Ctrl+S）'}>
+                <span className="dirty-dot" aria-hidden />未儲存{backedUp && <small className="backed-up">· 已備份 {backedUp}</small>}</span>}
         </span>
         <button className="btn" aria-expanded={open === 'open'} onClick={() => { setPath(status.path || '教學剪輯.ljcut'); setOpen(open === 'open' ? null : 'open'); }}><FolderOpen aria-hidden />開啟</button>
         <button className="btn" disabled={busy} onClick={() => save(false)} title={status.path ? `儲存到 ${status.path}（Ctrl+S）；另存新檔 Ctrl+Shift+S` : '儲存成專案檔（Ctrl+S）'}>
@@ -180,7 +193,7 @@ export function ProjectFileButtons() {
                     {projects.map(pr => <li key={pr.path}>
                         <button type="button" role="option" aria-selected={pr.path === path} className={`project-item ${pr.path === path ? 'on' : ''} ${pr.autosave ? 'autosave' : ''}`}
                             onClick={() => setPath(pr.path)} onDoubleClick={() => openFromList(pr.path)} title={status.dirty ? '目前有未儲存的修改：請用下方按鈕選擇儲存或放棄' : '按兩下或 Enter 直接開啟'}
-                            onFocus={() => setPath(pr.path)}
+                            onFocus={() => setPath(pr.path)} aria-current={pr.path === status.path ? 'true' : undefined}
                             onKeyDown={e => {
                                 const items = Array.from(boxRef.current?.querySelectorAll<HTMLElement>('.project-item') ?? []);
                                 const i = items.indexOf(e.currentTarget);
@@ -188,7 +201,7 @@ export function ProjectFileButtons() {
                                 else if (e.key === 'ArrowUp') { e.preventDefault(); items[Math.max(0, i - 1)]?.focus(); }
                                 else if (e.key === 'Enter') { e.preventDefault(); openFromList(pr.path); }
                             }}>
-                            <span>{pr.name}</span><small>{new Date(pr.modified * 1000).toLocaleString('zh-TW', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</small>
+                            <span>{pr.name}{pr.path === status.path && <em className="project-current">目前開啟</em>}</span><small>{new Date(pr.modified * 1000).toLocaleString('zh-TW', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</small>
                         </button>
                     </li>)}
                 </ul> : <p className="bookends-note">專案資料夾裡還沒有專案。</p>}
@@ -208,13 +221,13 @@ export function ProjectFileButtons() {
             <div className="pop-actions">
                 {open === 'open' && status.dirty && status.path && <button type="button" className="btn btn-primary" disabled={busy || !target}
                     onClick={() => void saveThenOpen(target)}>儲存後開啟</button>}
-                <button ref={submitRef} className={`btn ${open === 'open' && status.dirty && status.path ? '' : 'btn-primary'}`} type="submit" disabled={busy || !target}>
+                <button ref={submitRef} className={`btn ${open === 'open' && status.dirty && status.path ? '' : 'btn-primary'}`} type="submit" disabled={busy || !target || (open === 'open' && target === status.path && !status.dirty)}>
                     {busy ? '處理中…' : open === 'save' ? '儲存' : status.dirty ? '放棄修改並開啟' : '開啟'}
                 </button>
             </div>
         </form>}
         {closing && <div className="modal-overlay">
-            <div className="modal-box" role="alertdialog" aria-modal="true" aria-labelledby="close-title" aria-describedby="close-desc" style={{ maxWidth: 400 }}>
+            <div className="modal-box" ref={closeBoxRef} role="alertdialog" aria-modal="true" aria-labelledby="close-title" aria-describedby="close-desc" style={{ maxWidth: 400 }}>
                 <div className="modal-header"><h2 id="close-title">要先儲存再關閉嗎？</h2></div>
                 <p id="close-desc" className="close-desc">「{status.name || '未命名專案'}」有還沒儲存的修改。</p>
                 <div className="close-actions">

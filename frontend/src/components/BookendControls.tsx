@@ -11,7 +11,8 @@ type Settings = { revision: number; introPath: string; outroPath: string; useInt
 const fileName = (p: string) => p.replace(/\\/g, '/').split('/').pop() || '';
 const fmt = (t: number) => `${Math.floor(t / 60)}:${String(Math.round(t % 60)).padStart(2, '0')}`;
 
-export function BookendControls() {
+export function BookendControls({ collapsible = false }: { collapsible?: boolean }) {
+    const [expanded, setExpanded] = useState(!collapsible);
     const [settings, setSettings] = useState<Settings | null>(null);
     const [busy, setBusy] = useState(false);
     const [message, setMessage] = useState<{ kind: 'ok' | 'error' | 'info'; text: string } | null>(null);
@@ -57,7 +58,14 @@ export function BookendControls() {
         finally { setBusy(false); }
     };
 
+    if (!expanded) {
+        const part = (r: 'intro' | 'outro') => present[r] ? '在時間軸' : (r === 'intro' ? settings.introPath : settings.outroPath) ? fileName(r === 'intro' ? settings.introPath : settings.outroPath) : '無';
+        return <button type="button" className="bookend-summary" aria-expanded={false} onClick={() => setExpanded(true)} title="展開設定片頭、片尾與轉場">
+            <span>片頭：{part('intro')}</span><span>片尾：{part('outro')}</span><span className="bookend-summary-more">設定…</span>
+        </button>;
+    }
     return <div className="bookends" aria-busy={busy}>
+        {collapsible && <button type="button" className="link-btn bookend-collapse" aria-expanded onClick={() => setExpanded(false)}>收合</button>}
         {(['intro', 'outro'] as const).map(role => {
             const label = role === 'intro' ? '片頭' : '片尾';
             const path = role === 'intro' ? settings.introPath : settings.outroPath;

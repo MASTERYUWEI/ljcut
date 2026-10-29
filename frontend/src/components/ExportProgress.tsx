@@ -1,6 +1,7 @@
 /* ── 匯出進度框 ── */
 import { useEffect, useRef, useState } from 'react';
 import { CircleCheck, FolderOpen, Upload } from 'lucide-react';
+import { useDialog } from '../useDialog';
 
 interface Props {
     progress: number;
@@ -23,7 +24,10 @@ function fmtEta(s: number): string {
 
 export function ExportProgress({ progress, etaSeconds, stage, onCancel, done, onClose, onOpenFolder, onUpload }: Props) {
     const [cancelling, setCancelling] = useState(false);
+    const [copied, setCopied] = useState(false);
     const firstBtn = useRef<HTMLButtonElement>(null);
+    const doneRef = useRef<HTMLDivElement>(null);
+    useDialog(doneRef, !!done);
     useEffect(() => {
         if (!done) return;
         firstBtn.current?.focus();
@@ -35,11 +39,12 @@ export function ExportProgress({ progress, etaSeconds, stage, onCancel, done, on
         const name = done.path.replace(/\\/g, '/').split('/').pop();
         return (
             <div className="export-progress-backdrop" onClick={onClose}>
-                <div className="export-progress-modal export-done" role="dialog" aria-modal="true" aria-labelledby="export-done-title" onClick={e => e.stopPropagation()}>
+                <div className="export-progress-modal export-done" ref={doneRef} role="dialog" aria-modal="true" aria-labelledby="export-done-title" onClick={e => e.stopPropagation()}>
                     <CircleCheck className="export-done-icon" aria-hidden />
                     <h2 id="export-done-title" className="export-progress-title">影片匯出完成</h2>
                     <p className="export-done-name" title={done.path}>{name}</p>
-                    <p className="export-done-meta">長度 {done.duration} · {done.subs ? (done.burned ? `字幕已燒進畫面（${done.subs} 句）` : `另附 SRT 字幕 ${done.subs} 句`) : '沒有字幕'}</p>
+                    <p className="export-done-meta">長度 {done.duration} · {done.subs ? (done.burned ? `字幕已燒進畫面（${done.subs} 句）` : `另附 SRT 字幕 ${done.subs} 句（同一個資料夾、同檔名）`) : '沒有字幕'}</p>
+                    <button className="link-btn export-done-copy" onClick={() => { void navigator.clipboard.writeText(done.path).then(() => setCopied(true)); }}>{copied ? '已複製路徑' : '複製檔案路徑'}</button>
                     <div className="export-done-actions">
                         <button ref={firstBtn} className="btn btn-primary" onClick={onUpload}><Upload aria-hidden />上傳到 YouTube</button>
                         {(window as any).__TAURI_INTERNALS__ && <button className="btn" onClick={onOpenFolder}><FolderOpen aria-hidden />開啟資料夾</button>}

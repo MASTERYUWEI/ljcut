@@ -3,7 +3,7 @@ import { useStore } from './store';
 import { EditError, requireEdit, validateProject, toSourceTime, clippedSegments } from './editCore';
 import { splitLongCues } from './utils';
 import { toast } from './toast';
-import { applyPlan, checkVersion, draftProject, dryRun, dryRunBookends, dryRunTransitions, loadProject, projectData, readState, redo, replaceProject, requestPreview, undo } from './editSession';
+import { applyPlan, checkVersion, draftProject, dryRun, dryRunBookends, dryRunTransitions, loadProject, projectData, readState, redo, replaceProject, requestPreview, undo , contentKey , history as editHistory } from './editSession';
 import type { EditPlan, ProjectData } from './editCore';
 import type { MediaItem } from './types';
 
@@ -11,7 +11,7 @@ let token = '';
 let latestControlExport = 0;
 export let controlWorkspace = '';
 /** 目前專案檔：路徑與最後存檔時的版本（判斷「未儲存」用）；存檔／開啟成功後更新並發出事件 */
-export const projectFile = { path: '', savedRevision: -1 };
+export const projectFile = { path: '', savedRevision: -1, savedKey: '' };
 export const AUTOSAVE_PATH = '.autosave.ljcut';
 /** 自動存檔到工作區的隱藏專案（不改變「目前專案檔」與未儲存狀態） */
 export async function autosaveProject() {
@@ -22,6 +22,7 @@ export async function autosaveProject() {
 }
 function markProjectFile(path: string, savedRevision: number) {
     projectFile.path = path; projectFile.savedRevision = savedRevision;
+    projectFile.savedKey = savedRevision === readState().revision ? contentKey() : '';
     window.dispatchEvent(new Event('ljcut-project-file'));
 }
 let previewReader: (() => { sourceTime: number; ready: boolean; subtitle: string; paused: boolean }) | undefined;
@@ -198,7 +199,7 @@ const EXTERNAL_LABEL: Record<string, string> = {
     import: 'AI 匯入了素材', transcribe: 'AI 完成字幕辨識',
 };
 /** 最近一次 AI 動作（標題列常駐顯示，不只 5 秒通知）＋本次開啟以來的紀錄 */
-export const aiActivity = { text: '', at: 0, lastCommandAt: 0, edits: 0, log: [] as { text: string; at: number; details: string[] }[] };
+export const aiActivity = { text: '', at: 0, lastCommandAt: 0, edits: 0, log: [] as { text: string; at: number; details: string[]; depth?: number; jump?: number }[] };
 const CHANGE_LABEL: Record<string, string> = {
     ripple_delete: '刪除區段並補位', delete_clip: '刪除片段', split: '分割片段', move_clip: '移動片段', set_speed: '調整速度',
     add_subtitle: '新增字幕', delete_subtitle: '刪除字幕',
@@ -230,7 +231,12 @@ function announceExternal(method: string, result: any, params?: any) {
         aiActivity.text = text; aiActivity.at = Date.now();
         const details = method === 'apply' && Array.isArray(result?.changes) ? result.changes.slice(0, 12).map(describeChange) : [];
         if (aiActivity.log[0]?.text === text && !details.length) aiActivity.log[0].at = aiActivity.at;   // 連續相同動作只留一筆
-        else aiActivity.log = [{ text, at: aiActivity.at, details }, ...aiActivity.log].slice(0, 20);
+        else {
+            // 修改類：記下復原深度（可「退回到這步之前」）與第一個變更的時間軸位置（可「跳到這裡」）
+            const first = method === 'apply' && Array.isArray(result?.changes) ? result.changes.find((c: any) => Array.isArray(c?.timeline) || Number.isFinite(c?.at)) : null;
+            const jump = first ? (Array.isArray(first.timeline) ? first.timeline[0] : first.at) : undefined;
+            aiActivity.log = [{ text, at: aiActivity.at, details, depth: method === 'apply' ? editHistory().depth : undefined, jump }, ...aiActivity.log].slice(0, 20);
+        }
         window.dispatchEvent(new Event('ljcut-ai-activity'));
     }
 }

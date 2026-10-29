@@ -24,7 +24,7 @@ import { AiStatus } from './components/AiStatus';
 import { OverlayInspector } from './components/OverlayInspector';
 import { notify, toast, humanizeError } from './toast';
 import { useDialog } from './useDialog';
-import { pushUndo, undo, redo, projectData, dryRun, applyPlan, readState, history as editHistory } from './editSession';
+import { pushUndo, undo, redo, projectData, dryRun, applyPlan, readState, history as editHistory, contentKey, sameContent } from './editSession';
 import { clippedSegments, splitClip, timelineSegments, toSourceTime, toTimelineTime, validateProject } from './editCore';
 import { registerPreviewReader } from './controlClient';
 import { transitionVisual } from './transitions';
@@ -33,6 +33,14 @@ import { transitionVisual } from './transitions';
 function segAt<T extends { start: number; end: number }>(list: T[], t: number): T | undefined {
     return list.find(s => t >= s.start - 0.02 && t < s.end - 0.02);
 }
+/** 字幕清單跟著播放位置：必要時切換到該片段，再標出那一句 */
+function followSegment(clipId: string, segId: number) {
+    const st = useStore.getState();
+    if (st.activeClipId !== clipId && st.timelineClips.some(c => c.id === clipId)) st.setActiveClipId(clipId);
+    if (useStore.getState().activeSegmentId !== segId) useStore.getState().setActiveSegment(segId);
+}
+const addIcon: Record<string, React.ReactNode> = { box: <Square aria-hidden />, arrow: <ArrowUpRight aria-hidden />, spotlight: <Focus aria-hidden />,
+    step: <ListOrdered aria-hidden />, title: <Type aria-hidden />, html: <Code aria-hidden />, media: <ImageIcon aria-hidden /> };
 function readWidth(key: string, fallback: number) {
     try { const v = Number(localStorage.getItem(key)); return v >= 120 && v <= 700 ? v : fallback; } catch { return fallback; }
 }
@@ -88,7 +96,7 @@ export default function App() {
     const [lastExport, setLastExport] = useState<string | null>(() => localStorage.getItem('ljcut-export-path'));
     const [publicationId, setPublicationId] = useState(() => localStorage.getItem('ljcut-publication-id') || '');
     // 匯出當下的專案版本；之後又改過剪輯 → 成品「較舊」（上次啟動留下的成品版本未知，不標示）
-    const [exportRevision, setExportRevision] = useState<number | null>(null);
+    const [exportRevision, setExportRevision] = useState<{ revision: number; key: string } | null>(null);
     useEffect(() => {
         if (lastExport && publicationId) {
             localStorage.setItem('ljcut-export-path', lastExport);
@@ -99,7 +107,7 @@ export default function App() {
         const ready = (event: Event) => {
             const result = (event as CustomEvent).detail;
             setLastExport(result.outputPath); setPublicationId(result.publicationId);
-            setExportRevision(readState().revision);
+            setExportRevision({ revision: readState().revision, key: contentKey() });
         };
         window.addEventListener('ljcut-export-ready', ready);
         return () => window.removeEventListener('ljcut-export-ready', ready);
@@ -123,6 +131,8 @@ export default function App() {
     const overlayMenuRef = useRef<HTMLDivElement>(null);
     const runOpsRef = useRef<(ops: Record<string, unknown>[], what: string) => unknown>(() => null);
     const [showReplace, setShowReplace] = useState(false);
+    const [retranscribeArmed, setRetranscribeArmed] = useState(false);
+    const [overlayExpanded, setOverlayExpanded] = useState(false);
     const [exportDone, setExportDone] = useState<string | null>(null);
     const [overlayMenuPos, setOverlayMenuPos] = useState<{ left: number; bottom: number }>({ left: 0, bottom: 0 });
     const [settings, setSettings] = useState<AppSettings>({ outputDir: '', srtDir: '' });
@@ -355,7 +365,7 @@ export default function App() {
     } = useStore();
 
     const duration = getDuration();
-    const exportStale = !!lastExport && exportRevision !== null && readState().revision !== exportRevision;
+    const exportStale = !!lastExport && exportRevision !== null && !sameContent(exportRevision);
     // 第一個有 video 的媒體（向後相容：用於辨識/匯出/燒入）
     const primaryMedia = mediaItems.find(m => m.info.width && m.info.width > 0) || mediaItems[0] || null;
     const fileId = primaryMedia?.id ?? null;
@@ -811,22 +821,24 @@ export default function App() {
     // ── AI 逐句潤飾字幕（修錯字／去贅字／補標點，時間碼不變）──
     const [isPolishing, setIsPolishing] = useState(false);
     const handlePolishSubtitles = useCallback(async () => {
-        const activeClip = activeClipId ? timelineClips.find(c => c.id === activeClipId) : null;
-        if (!activeClip || !(activeClip.segments && activeClip.segments.length)) {
-            notify('這個片段還沒有字幕可潤飾，請先辨識字幕');
-            return;
-        }
+        const targets = timelineClips.filter(c => c.trackIndex === 0 && c.segments.length);
+        if (!targets.length) { notify('還沒有字幕可潤飾，請先辨識字幕'); return; }
         setIsPolishing(true);
         try {
-            const polished = await api.polishSubtitles(activeClip.segments);
+            const results = [];
+            for (const c of targets) results.push({ id: c.id, before: c.segments, after: await api.polishSubtitles(c.segments) });
+            let changed = 0, total = 0;
+            for (const r of results) for (let i = 0; i < r.after.length; i++) { total++; if (r.after[i]?.text !== r.before[i]?.text) changed++; }
+            if (!changed) { toast('info', `潤飾完成：${total} 句都不需要修改`); return; }
             pushUndo();
-            setClipSegments(activeClip.id, polished);
+            for (const r of results) setClipSegments(r.id, r.after);
+            toast('success', `已潤飾全部字幕：${total} 句中改了 ${changed} 句`, [{ label: '復原', run: handleUndo }], { key: 'history' });
         } catch (err) {
             notify(`潤飾失敗: ${err}`);
         } finally {
             setIsPolishing(false);
         }
-    }, [activeClipId, timelineClips, setClipSegments, pushUndo]);
+    }, [timelineClips, setClipSegments, handleUndo]);
 
     // ── 辨識（完成後自動觸發 AI 助手）──
     const handleTranscribe = useCallback(async () => {
@@ -1022,7 +1034,7 @@ export default function App() {
         setExportProgress(0);
         setExportEta(null);
         setExportStage('準備中');
-        const revisionAtExport = readState().revision;
+        const revisionAtExport = { revision: readState().revision, key: contentKey() };
         try {
             validateProject(projectData(), true);
             const v = videoRef.current;
@@ -1316,7 +1328,7 @@ export default function App() {
             // 暫停時拖動播放頭：字幕清單也標出目前這句（播放中由 tick loop 處理）
             if (!isPlaying) {
                 const seg = segAt(clip.segments, mediaTime);
-                if (seg && seg.id !== useStore.getState().activeSegmentId) useStore.getState().setActiveSegment(seg.id);
+                if (seg) followSegment(clip.id, seg.id);
             }
         } else if (v) {
             v.pause();
@@ -1586,14 +1598,37 @@ export default function App() {
     }, [setActiveClipId, setActiveSegment, seekTo]);
 
     const handleResplit = useCallback(() => {
-        if (segments.length === 0) return;
-        const split = splitLongCues(segments, subtitleStyle.maxCharsPerCue);
+        const targets = timelineClips.filter(c => c.trackIndex === 0 && c.segments.length);
+        if (!targets.length) return;
         pushUndo();
-        setSegments(split);
-    }, [segments, subtitleStyle.maxCharsPerCue, splitLongCues, setSegments, pushUndo]);
+        let before = 0, after = 0;
+        for (const c of targets) {
+            const split = splitLongCues(c.segments, subtitleStyle.maxCharsPerCue);
+            before += c.segments.length; after += split.length;
+            setClipSegments(c.id, split);
+        }
+        toast('info', `已依每段 ${subtitleStyle.maxCharsPerCue} 字重新分段：${before} → ${after} 句`, [{ label: '復原', run: handleUndo }], { key: 'history' });
+    }, [timelineClips, subtitleStyle.maxCharsPerCue, splitLongCues, setClipSegments, handleUndo]);
 
     // ── Ctrl+Click 多選字幕項目 ──
-    const handleSubtitleItemClick = useCallback((segId: number, e: React.MouseEvent) => {
+    const handleSubtitleItemClick = useCallback((segId: number, e: React.MouseEvent, clipId?: string) => {
+        if (clipId && clipId !== activeClipId) {
+            // 別的片段：切換過去再選這一句
+            const clip = timelineClips.find(c => c.id === clipId);
+            const seg = clip?.segments.find(s => s.id === segId);
+            setSelectedSegIds(new Set());
+            setActiveClipId(clipId);
+            setActiveSegment(segId);
+            if (clip && seg) seekTo((seg.start - clip.trimStart) / clip.speed + clip.startTime);
+            return;
+        }
+        if (e.shiftKey && activeSegmentId != null) {
+            // Shift＋點：從目前這句到點的這句全部選取
+            e.preventDefault();
+            const a = segments.findIndex(s => s.id === activeSegmentId), b = segments.findIndex(s => s.id === segId);
+            if (a >= 0 && b >= 0) setSelectedSegIds(new Set(segments.slice(Math.min(a, b), Math.max(a, b) + 1).map(s => s.id)));
+            return;
+        }
         if (e.ctrlKey || e.metaKey) {
             e.preventDefault();
             setSelectedSegIds(prev => {
@@ -1616,7 +1651,16 @@ export default function App() {
                 seekTo(owner ? (seg.start - owner.trimStart) / owner.speed + owner.startTime : seg.start);
             }
         }
-    }, [setActiveSegment, seekTo, segments, activeClipId, timelineClips]);
+    }, [setActiveSegment, seekTo, segments, activeClipId, timelineClips, activeSegmentId, setActiveClipId]);
+
+    // ── 右欄字幕清單：整條主軌依序列出（全域編號、總句數）──
+    const listClips = useMemo(() => timelineClips.filter(c => c.trackIndex === 0).sort((x, y) => x.startTime - y.startTime), [timelineClips]);
+    const { totalSubs, subNumber } = useMemo(() => {
+        const m = new Map<string, number>(); let n = 0;
+        for (const c of listClips) for (const s of (c.id === activeClipId ? segments : c.segments)) m.set(`${c.id}:${s.id}`, n++);
+        return { totalSubs: n, subNumber: m };
+    }, [listClips, activeClipId, segments]);
+    const editUndoArmed = useRef(false);
 
     // ── 從字幕直接剪：把選取句子的影片區間剪掉（相鄰的句子連同中間空白一起剪）──
     const handleCutSegments = useCallback((ids: Set<number>) => {
@@ -1830,9 +1874,7 @@ export default function App() {
                             overlay.textContent = activeSeg.text;
                             overlay.style.display = '';
                             // 同步字幕列表高亮（節流：只在切換 segment 時觸發）
-                            if (activeSeg.id !== useStore.getState().activeSegmentId) {
-                                setActiveSegment(activeSeg.id);
-                            }
+                            followSegment(clip.id, activeSeg.id);
                         } else {
                             overlay.style.display = 'none';
                         }
@@ -2536,7 +2578,7 @@ export default function App() {
                                                         } catch (err) { notify(`開啟資料夾失敗: ${err}`); }
                                                     }} title="開啟檔案所在資料夾" aria-label="開啟檔案所在資料夾"><FolderOpen aria-hidden /></button>
                                                 )}
-                                                <button className="media-remove" onClick={(e) => { e.stopPropagation(); pushUndo(); removeMedia(item.id); }} title="從媒體庫移除（不會刪除磁碟上的檔案）" aria-label={`從媒體庫移除 ${item.filename}`}><X aria-hidden /></button>
+                                                <button className="media-remove" onClick={(e) => { e.stopPropagation(); pushUndo(); removeMedia(item.id); toast('info', `已從媒體庫移除「${item.filename}」（檔案仍在磁碟上）`, [{ label: '復原', run: handleUndo }], { key: 'history' }); }} title="從媒體庫移除（不會刪除磁碟上的檔案）" aria-label={`從媒體庫移除 ${item.filename}`}><X aria-hidden /></button>
                                             </div>
                                         ))}
                                     </div>
@@ -2544,7 +2586,7 @@ export default function App() {
                                 {controlWorkspace && hasTimeline && (
                                     <section className="left-section" id="bookend-section" aria-labelledby="bookend-heading">
                                         <h3 id="bookend-heading">片頭與片尾</h3>
-                                        <BookendControls />
+                                        <BookendControls collapsible />
                                     </section>
                                 )}
                             </>
@@ -2572,10 +2614,14 @@ export default function App() {
                                         </label>
                                         <div className="action-buttons">
                                             {/* 已經有字幕時降為次要按鈕並明示會取代，避免誤點重跑辨識、蓋掉校對好的字幕 */}
-                                            <button className={timelineClips.some(c => c.segments.length > 0) ? 'btn' : 'btn btn-primary'} onClick={handleTranscribe}
+                                            <button className={timelineClips.some(c => c.segments.length > 0) ? 'btn' : 'btn btn-primary'} onClick={() => {
+                                                const n = timelineClips.find(c => c.id === activeClipId)?.segments.length ?? 0;
+                                                if (n && !retranscribeArmed) { setRetranscribeArmed(true); setTimeout(() => setRetranscribeArmed(false), 5000); return; }
+                                                setRetranscribeArmed(false); void handleTranscribe();
+                                            }}
                                                 disabled={isTranscribing} style={{ width: '100%', justifyContent: 'center' }}
                                                 title={timelineClips.some(c => c.segments.length > 0) ? '重新辨識會取代目前的字幕（可 Ctrl+Z 復原）' : undefined}>
-                                                {isTranscribing ? '辨識中…' : timelineClips.some(c => c.segments.length > 0) ? '重新辨識（取代目前字幕）' : '開始辨識'}
+                                                {isTranscribing ? '辨識中…' : retranscribeArmed ? `再按一次：取代這個片段的 ${timelineClips.find(c => c.id === activeClipId)?.segments.length ?? 0} 句` : timelineClips.some(c => c.segments.length > 0) ? '重新辨識（取代目前字幕）' : '開始辨識'}
                                             </button>
                                             {isTranscribing && (
                                                 <div className="transcribe-prog">
@@ -2756,7 +2802,24 @@ export default function App() {
                             <input type="range" ref={rangeSliderRef} aria-label="播放位置" min={0} max={duration || 0} step={0.1} defaultValue={currentTime}
                                 onChange={(e) => seekTo(Number(e.target.value))}
                                 style={{ flex: 1, accentColor: 'var(--accent-amber)' }} />
-                            {activeClipSpeed !== 1 && <span style={{ fontSize: 11, color: 'var(--accent-amber)', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 2 }}><Gauge aria-hidden />{activeClipSpeed}x</span>}
+                            {hasTimeline && <>
+                                <button className="btn btn-compact" title="在播放頭把片段切成兩段（S）"
+                                    onClick={() => {
+                                        const t = timelinePosRef.current;
+                                        const clip = timelineClips.find(c => c.trackIndex === 0 && t > c.startTime + 0.01 && t < c.startTime + c.duration - 0.01);
+                                        if (clip) handleSplitClip(clip.id, t); else notify('把播放頭移到片段中間再分割');
+                                    }}><Scissors aria-hidden />分割</button>
+                                <button className={`btn btn-compact ${activeClipSpeed !== 1 ? 'speed-on' : ''}`} aria-haspopup="dialog"
+                                    title="播放頭所在片段的速度、分割與刪除（也可在片段上按右鍵或 Shift+F10）"
+                                    onClick={(e) => {
+                                        const t = timelinePosRef.current;
+                                        const clip = timelineClips.find(c => c.trackIndex === 0 && t >= c.startTime && t < c.startTime + c.duration) ?? timelineClips.find(c => c.trackIndex === 0);
+                                        if (!clip) return;
+                                        const r = e.currentTarget.getBoundingClientRect();
+                                        speedUndoPushedRef.current = false;
+                                        setSpeedMenu({ clipId: clip.id, x: r.left, y: r.bottom, splitTime: t });
+                                    }}><Gauge aria-hidden />{activeClipSpeed}x</button>
+                            </>}
                             {segments.length > 0 && (
                                 <button className={`btn preview-sub-chip ${burnSubs ? 'burn' : ''}`} onClick={() => setShowExportModal(true)}
                                     aria-label={burnSubs ? '匯出時字幕會燒進畫面，開啟匯出設定' : '匯出時字幕不燒入畫面（另附 SRT），開啟匯出設定'}
@@ -2860,6 +2923,40 @@ export default function App() {
                                     </div>
                                 </div>
 
+                                {/* 字幕軌 */}
+                                <div className="track track-subtitle">
+                                    <div className="track-label" style={{ width: LABEL_W }}><Captions aria-hidden />&nbsp;字幕</div>
+                                    <div className="track-content" style={{ width: timelineWidth }}>
+                                        {timelineClips.filter(c => c.trackIndex === 0 && c.segments.length > 0).map(clip =>
+                                            clippedSegments(clip.segments, clip.trimStart, clip.trimEnd).map((seg) => {
+                                                const left = toTimelineTime(clip, seg.start) * pixelsPerSecond;
+                                                const width = Math.max(((seg.end - seg.start) / clip.speed) * pixelsPerSecond, 2);
+                                                return (
+                                                    <div
+                                                        key={`${clip.id}-${seg.id}`}
+                                                        className={`track-clip subtitle-clip ${clip.id === activeClipId && seg.id === activeSegmentId ? 'active' : ''} ${isDraggingCue ? 'resizing' : ''}`}
+                                                        style={{ left, width }}
+                                                        role="button" tabIndex={-1} aria-label={`字幕：${seg.text}`}
+                                                        onClick={(e) => {
+                                                            e.stopPropagation();
+                                                            setActiveClipId(clip.id);
+                                                            setActiveSegment(seg.id);
+                                                            seekTo((seg.start - clip.trimStart) / clip.speed + clip.startTime);
+                                                        }}
+                                                        title={`${formatTimestamp(toTimelineTime(clip, seg.start))} → ${formatTimestamp(toTimelineTime(clip, seg.end))}\n${seg.text}\n拖兩側邊緣可微調起訖`}
+                                                    >
+                                                        <div className="cue-handle cue-handle-left"
+                                                            onMouseDown={(e) => handleCueEdgeDrag(e, clip.id, seg.id, 'left')} />
+                                                        <span className="clip-text">{seg.text}</span>
+                                                        <div className="cue-handle cue-handle-right"
+                                                            onMouseDown={(e) => handleCueEdgeDrag(e, clip.id, seg.id, 'right')} />
+                                                    </div>
+                                                );
+                                            })
+                                        )}
+                                    </div>
+                                </div>
+
                                 {/* 縮放軌：區段存在素材上（來源秒數），依各片段換算到時間軸顯示 */}
                                 {mediaItems.some(m => m.info.width) && (
                                     <div className="track zoom-track">
@@ -2886,7 +2983,7 @@ export default function App() {
                                                             onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); (e.currentTarget as HTMLElement).click(); } }}
                                                             style={{ left, width }}
                                                             onClick={(e) => { e.stopPropagation(); selectZoom(z.id); seekTo(toTimelineTime(clip, Math.min(b - 0.01, (z.start + z.end) / 2))); }}
-                                                            title={`放大 ${z.scale}x　中心 (${z.x}, ${z.y})\n${formatTimestamp(z.start)} → ${formatTimestamp(z.end)}（原始影片時間）\n點一下在右欄編輯屬性`}>
+                                                            title={`放大 ${z.scale}x　中心 (${z.x}, ${z.y})\n${formatTimestamp(toTimelineTime(clip, a))} → ${formatTimestamp(toTimelineTime(clip, b))}\n點一下在右欄編輯屬性`}>
                                                             <span className="clip-text">{z.scale}x</span>
                                                         </div>
                                                     );
@@ -2913,13 +3010,18 @@ export default function App() {
                                         rowEnds[row] = blk.left + blk.width;
                                         return { ...blk, row };
                                     });
-                                    const rows = Math.max(1, rowEnds.length);
+                                    const allRows = Math.max(1, rowEnds.length);
+                                    const rows = overlayExpanded ? allRows : Math.min(2, allRows);
+                                    const hiddenCount = placed.filter(p => p.row >= rows).length;
                                     const icon: Record<string, React.ReactNode> = { box: <Square aria-hidden />, arrow: <ArrowUpRight aria-hidden />, spotlight: <Focus aria-hidden />,
                                         step: <ListOrdered aria-hidden />, title: <Type aria-hidden />, html: <Code aria-hidden />, media: <ImageIcon aria-hidden /> };
                                     return (
                                         <div className="track overlay-track" style={{ height: Math.max(40, rows * 28 + 8) }}>
                                             <div className="track-label zoom-track-label" style={{ width: LABEL_W }}>
                                                 <span><PenLine aria-hidden /> 標註</span>
+                                                {(allRows > 2) && <button className="track-more" onClick={() => setOverlayExpanded(v => !v)}
+                                                    aria-expanded={overlayExpanded} title={overlayExpanded ? '收合標註軌' : `還有 ${hiddenCount} 個標註，展開顯示`}>
+                                                    {overlayExpanded ? '收合' : `+${hiddenCount}`}</button>}
                                                 <input ref={assetInputRef} type="file" hidden accept="image/png,image/jpeg,image/webp,image/bmp,video/*,.gif"
                                                     onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) void addMediaFromFile(f); }} />
                                                 <span className="add-menu-wrap">
@@ -2944,7 +3046,7 @@ export default function App() {
                                                             {[...TEMPLATE_KINDS, 'media' as OverlayKind].map(k => (
                                                                 <button key={k} role="menuitem" className="add-menu-item"
                                                                     onClick={(e) => { e.stopPropagation(); setOverlayMenuOpen(false); addOverlayAtPlayhead(k); }}>
-                                                                    {k === 'media' ? '圖片／影片（子母畫面）…' : OVERLAY_LABEL[k]}
+                                                                    {addIcon[k]}{k === 'media' ? '圖片／影片（子母畫面）…' : OVERLAY_LABEL[k]}
                                                                 </button>
                                                             ))}
                                                         </div>
@@ -2952,7 +3054,7 @@ export default function App() {
                                                 </span>
                                             </div>
                                             <div className="track-content" style={{ width: timelineWidth }}>
-                                                {placed.map(({ o, clip, a, b, left, width, row }) => {
+                                                {placed.filter(p => p.row < rows).map(({ o, clip, a, b, left, width, row }) => {
                                                     const selected = o.id === selectedOverlayId;
                                                     return (
                                                         <div key={`${clip.id}-${o.id}`} className={`track-clip overlay-clip kind-${o.kind} ${selected ? 'selected' : ''}`}
@@ -2960,8 +3062,8 @@ export default function App() {
                                                             onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); (e.currentTarget as HTMLElement).click(); } }}
                                                             style={{ left, width, top: 4 + row * 28, height: 24 }}
                                                             onClick={(e) => { e.stopPropagation(); selectOverlay(o.id); seekTo(toTimelineTime(clip, Math.min(b - 0.01, a + Math.min(0.6, (b - a) / 2)))); }}
-                                                            title={`${OVERLAY_LABEL[o.kind]}${o.text ? `：${o.text}` : ''}\n${formatTimestamp(o.start)} → ${formatTimestamp(o.end)}（原始影片時間）\n點一下在右欄編輯屬性`}>
-                                                            <span className="clip-text">{icon[o.kind]}{width >= 56 || selected ? ` ${o.text ?? OVERLAY_LABEL[o.kind]}` : null}</span>
+                                                            title={`${OVERLAY_LABEL[o.kind]}${o.text ? `：${o.text}` : ''}\n${formatTimestamp(toTimelineTime(clip, a))} → ${formatTimestamp(toTimelineTime(clip, b))}\n點一下在右欄編輯屬性`}>
+                                                            <span className="clip-text">{icon[o.kind]}{width >= 56 || selected ? ` ${o.text ?? OVERLAY_LABEL[o.kind]}` : width >= 30 ? ` ${(o.text ?? OVERLAY_LABEL[o.kind]).slice(0, 1)}` : null}</span>
                                                         </div>
                                                     );
                                                 })}
@@ -2969,39 +3071,6 @@ export default function App() {
                                         </div>
                                     );
                                 })()}
-
-                                {/* 字幕軌 */}
-                                <div className="track track-subtitle">
-                                    <div className="track-label" style={{ width: LABEL_W }}><Captions aria-hidden />&nbsp;字幕</div>
-                                    <div className="track-content" style={{ width: timelineWidth }}>
-                                        {timelineClips.filter(c => c.trackIndex === 0 && c.segments.length > 0).map(clip =>
-                                            clippedSegments(clip.segments, clip.trimStart, clip.trimEnd).map((seg) => {
-                                                const left = toTimelineTime(clip, seg.start) * pixelsPerSecond;
-                                                const width = Math.max(((seg.end - seg.start) / clip.speed) * pixelsPerSecond, 2);
-                                                return (
-                                                    <div
-                                                        key={`${clip.id}-${seg.id}`}
-                                                        className={`track-clip subtitle-clip ${seg.id === activeSegmentId ? 'active' : ''} ${isDraggingCue ? 'resizing' : ''}`}
-                                                        style={{ left, width }}
-                                                        onClick={(e) => {
-                                                            e.stopPropagation();
-                                                            setActiveClipId(clip.id);
-                                                            setActiveSegment(seg.id);
-                                                            seekTo((seg.start - clip.trimStart) / clip.speed + clip.startTime);
-                                                        }}
-                                                        title={`${formatTimestamp(seg.start)} → ${formatTimestamp(seg.end)}\n${seg.text}`}
-                                                    >
-                                                        <div className="cue-handle cue-handle-left"
-                                                            onMouseDown={(e) => handleCueEdgeDrag(e, clip.id, seg.id, 'left')} />
-                                                        <span className="clip-text">{seg.text}</span>
-                                                        <div className="cue-handle cue-handle-right"
-                                                            onMouseDown={(e) => handleCueEdgeDrag(e, clip.id, seg.id, 'right')} />
-                                                    </div>
-                                                );
-                                            })
-                                        )}
-                                    </div>
-                                </div>
 
                                 {/* 播放頭（可拖拉，用 ref 直接操作 DOM） */}
                                 {duration > 0 && (
@@ -3053,11 +3122,11 @@ export default function App() {
                     )}
                     <div className="subtitle-header">
                         <h2>字幕</h2>
-                        {segments.length > 0 && (
-                            <span style={{ fontSize: 12, color: 'var(--fg-subtext0)' }}>{segments.length} 句</span>
+                        {totalSubs > 0 && (
+                            <span className="sub-count">共 {totalSubs} 句{listClips.filter(c => c.segments.length).length > 1 ? ` · ${listClips.filter(c => c.segments.length).length} 個片段` : ''}</span>
                         )}
                     </div>
-                    {segments.length > 0 && (
+                    {totalSubs > 0 && (
                         <div className="subtitle-toolbar">
                             <div className="st-row">
                                 <button className="btn st-btn" onClick={handlePolishSubtitles} disabled={isPolishing || isTranscribing}
@@ -3133,41 +3202,64 @@ export default function App() {
                         </div>
                     )}
                     <div className="subtitle-list" ref={subtitleListRef} role="list" aria-label="字幕清單">
-                        {segments.length === 0 ? (
+                        {totalSubs === 0 ? (
                             <div className="empty-state">
                                 <p>尚無字幕</p>
                                 <p style={{ fontSize: 12 }}>匯入影片後，到左側「辨識」頁籤按「開始辨識」</p>
                             </div>
                         ) : (
                             <>
-                                {segments.map((seg) => (
+                                {listClips.map((clip, ci) => {
+                                    const isActive = clip.id === activeClipId;
+                                    const segs = isActive ? segments : clip.segments;
+                                    if (!segs.length) return null;
+                                    return <div key={clip.id} className={`sub-group ${isActive ? 'active' : ''}`} role="group"
+                                        aria-label={`片段 ${ci + 1}，${formatTime(clip.startTime)} 起`}>
+                                        {listClips.length > 1 && <div className="sub-group-head">
+                                            片段 {ci + 1}<span>{formatTime(clip.startTime)}–{formatTime(clip.startTime + clip.duration)} · {segs.length} 句</span>
+                                        </div>}
+                                        {segs.map((seg) => {
+                                            const on = isActive && seg.id === activeSegmentId;
+                                            const sel = isActive && selectedSegIds.has(seg.id);
+                                            const tl = (t: number) => (t - clip.trimStart) / clip.speed + clip.startTime;
+                                            const no = (subNumber.get(`${clip.id}:${seg.id}`) ?? 0) + 1;
+                                            return (
                                     <div key={seg.id}
-                                        data-seg-id={seg.id}
-                                        className={`subtitle-item ${seg.id === activeSegmentId ? 'active' : ''} ${selectedSegIds.has(seg.id) ? 'selected' : ''}`}
-                                        role="listitem" tabIndex={seg.id === activeSegmentId || (activeSegmentId == null && seg === segments[0]) ? 0 : -1}
-                                        aria-current={seg.id === activeSegmentId ? 'true' : undefined}
-                                        aria-label={`第 ${seg.id + 1} 句，${formatTimestamp(seg.start)}：${seg.text}`}
+                                        data-seg-id={isActive ? seg.id : undefined}
+                                        className={`subtitle-item ${on ? 'active' : ''} ${sel ? 'selected' : ''}`}
+                                        role="listitem" tabIndex={on || (activeSegmentId == null && isActive && seg === segs[0]) ? 0 : -1}
+                                        aria-current={on ? 'true' : undefined}
+                                        aria-label={`第 ${no} 句，${formatTimestamp(tl(seg.start))}：${seg.text}`}
                                         onKeyDown={(e) => {
                                             if (e.target !== e.currentTarget) return;          // 編輯中的文字框不攔截
                                             if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
                                                 e.preventDefault();
-                                                const sib = (e.key === 'ArrowDown' ? e.currentTarget.nextElementSibling : e.currentTarget.previousElementSibling) as HTMLElement | null;
-                                                if (sib?.classList.contains('subtitle-item')) sib.focus();
+                                                const items = Array.from(subtitleListRef.current?.querySelectorAll<HTMLElement>('.subtitle-item') ?? []);
+                                                const i = items.indexOf(e.currentTarget);
+                                                items[e.key === 'ArrowDown' ? i + 1 : i - 1]?.focus();
                                             } else if (e.key === 'Enter' || e.key === ' ') {
                                                 e.preventDefault();
-                                                handleSubtitleItemClick(seg.id, e as unknown as React.MouseEvent);
+                                                handleSubtitleItemClick(seg.id, e as unknown as React.MouseEvent, clip.id);
+                                            } else if ((e.key === 'Delete' || (e.key.toLowerCase() === 'x' && (e.ctrlKey || e.metaKey))) && isActive) {
+                                                e.preventDefault(); e.stopPropagation();
+                                                handleCutSegments(selectedSegIds.size ? mergeIds : new Set([seg.id]));
+                                            } else if (e.key.toLowerCase() === 'm' && (e.ctrlKey || e.metaKey) && canMergeSelected) {
+                                                e.preventDefault(); handleMergeSelected();
                                             }
                                         }}
-                                        onClick={(e) => handleSubtitleItemClick(seg.id, e)}>
-                                        <div className="index">{seg.id + 1}</div>
+                                        onClick={(e) => handleSubtitleItemClick(seg.id, e, clip.id)}>
+                                        <div className="index">{no}</div>
                                         <div className="content">
-                                            <div className="time-range">
-                                                {formatTimestamp(seg.start)} → {formatTimestamp(seg.end)}
+                                            <div className="time-range" title={clip.speed !== 1 || clip.startTime !== clip.trimStart ? `原始影片 ${formatTimestamp(seg.start)} → ${formatTimestamp(seg.end)}` : undefined}>
+                                                {formatTimestamp(tl(seg.start))} → {formatTimestamp(tl(seg.end))}
                                             </div>
-                                            {seg.id === activeSegmentId && !selectedSegIds.has(seg.id) ? (
-                                                <textarea value={seg.text} aria-label={`第 ${seg.id + 1} 句字幕文字`} aria-describedby="sub-edit-hint"
-                                                    onFocus={pushUndo}
-                                                    onChange={(e) => updateSegment(seg.id, { text: e.target.value })}
+                                            {on && !sel ? (
+                                                <textarea value={seg.text} aria-label={`第 ${no} 句字幕文字`} aria-describedby="sub-edit-hint"
+                                                    onFocus={() => { editUndoArmed.current = true; }}
+                                                    onChange={(e) => {
+                                                        if (editUndoArmed.current) { editUndoArmed.current = false; pushUndo(); }   // 真的改字才記一步復原
+                                                        updateSegment(seg.id, { text: e.target.value });
+                                                    }}
                                                     onKeyDown={(e) => {
                                                         if (e.key === 'Enter' && !e.shiftKey) {
                                                             e.preventDefault();
@@ -3177,18 +3269,21 @@ export default function App() {
                                                     }}
                                                     onClick={(e) => e.stopPropagation()} rows={2} />
                                             ) : null}
-                                            {seg.id === activeSegmentId && !selectedSegIds.has(seg.id) ? (
+                                            {on && !sel ? (
                                                 <div className="sub-edit-row">
-                                                    <div className="sub-edit-hint" id="sub-edit-hint">Enter 分成兩句 · Ctrl＋點其他句可多選</div>
+                                                    <div className="sub-edit-hint" id="sub-edit-hint">Enter 分句 · Ctrl／Shift＋點多選</div>
                                                     <button className="btn btn-sm btn-danger-soft" onClick={(e) => { e.stopPropagation(); handleCutSegments(new Set([seg.id])); }}
-                                                        title="把這一句對應的影片剪掉（Ctrl+Z 可復原）"><Scissors aria-hidden />剪掉這句</button>
+                                                        title="把這一句對應的影片剪掉（選取時按 Delete；Ctrl+Z 可復原）" aria-label="剪掉這句"><Scissors aria-hidden />剪掉</button>
                                                 </div>
                                             ) : (
                                                 <div className="text">{seg.text}</div>
                                             )}
                                         </div>
                                     </div>
-                                ))}
+                                            );
+                                        })}
+                                    </div>;
+                                })}
                                 {/* 懸浮合併按鈕 */}
                                 {selectedSegIds.size > 0 && (() => {
                                     const maxId = Math.max(...Array.from(selectedSegIds));

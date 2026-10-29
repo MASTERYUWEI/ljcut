@@ -17,6 +17,19 @@ export function projectData(): ProjectData {
     return structuredClone({ schemaVersion: 1, projectId, mediaItems: s.mediaItems,
         timelineClips: s.timelineClips, subtitleStyle: s.subtitleStyle, language: s.language });
 }
+/** 專案內容的比對鍵（同一版本只算一次）：復原回到存檔時的內容時可判定為「已儲存」 */
+let keyCache = { revision: -1, key: '' };
+export function contentKey() {
+    if (keyCache.revision !== revision) {
+        const { projectId: _id, ...rest } = projectData();
+        keyCache = { revision, key: JSON.stringify(rest) };
+    }
+    return keyCache.key;
+}
+/** 目前內容是否和某個時間點（版本＋比對鍵）相同 */
+export function sameContent(mark: { revision: number; key: string }) {
+    return mark.revision === revision || (!!mark.key && mark.key === contentKey());
+}
 export function readState() {
     const s = useStore.getState();
     return { ...projectData(), sessionId, revision, tracks: TRACKS, timeUnit: 'seconds',
@@ -56,7 +69,7 @@ function restore(snap: Snapshot, keepTime = false) {
 }
 /** 復原／重做狀態變化時通知介面（按鈕停用狀態） */
 function notifyHistory() { if (typeof window !== 'undefined') window.dispatchEvent(new Event('ljcut-history')); }
-export const history = () => ({ canUndo: past.length > 0, canRedo: future.length > 0 });
+export const history = () => ({ canUndo: past.length > 0, canRedo: future.length > 0, depth: past.length });
 const count = (p: ProjectData, k: 'zooms' | 'overlays') => p.mediaItems.reduce((n, m) => n + (m[k]?.length ?? 0), 0);
 const subs = (p: ProjectData) => p.timelineClips.reduce((n, c) => n + c.segments.length, 0);
 /** 用白話描述兩個專案狀態的差異（給「已復原：…」提示用） */

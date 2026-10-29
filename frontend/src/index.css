@@ -3022,3 +3022,53 @@ button.ai-status:not(.active) .ai-dot { background: var(--fg-overlay0); }
 .first-steps li::before { content: counter(fs); grid-row: span 2; width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; background: var(--bg-surface1); color: var(--accent-amber); font-size: 12px; font-weight: 600; }
 .first-steps strong { color: var(--fg-text); font-weight: 600; }
 .first-actions { display: flex; gap: 8px; justify-content: center; margin-top: 16px; }
+
+/* 字幕清單：依片段分組 */
+.sub-group + .sub-group { margin-top: 6px; }
+.sub-group-head {
+  position: sticky; top: 0; z-index: 2; display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
+  padding: 6px 12px; font-size: 12px; font-weight: 600; color: var(--fg-subtext1);
+  background: var(--bg-mantle, var(--bg-base)); border-bottom: 1px solid var(--bg-surface1);
+}
+.sub-group-head span { font-weight: 400; color: var(--fg-subtext0); font-family: var(--font-mono); }
+.sub-group.active .sub-group-head { color: var(--accent-amber); }
+.sub-count { font-size: 12px; color: var(--fg-subtext0); }
+.sub-edit-row .btn { white-space: nowrap; flex-shrink: 0; }
+
+.track-more { margin-left: 4px; padding: 0 6px; height: 18px; border-radius: 9px; border: 1px solid var(--bg-surface2); background: var(--bg-surface0); color: var(--fg-subtext1); font-size: 12px; cursor: pointer; }
+.track-more:hover { color: var(--fg-text); border-color: var(--accent-amber); }
+.add-menu-item { display: flex; align-items: center; gap: 8px; }
+.add-menu-item svg { width: 14px; height: 14px; flex-shrink: 0; color: var(--fg-subtext0); }
+
+.btn-compact { padding: 4px 8px; font-size: 12px; gap: 4px; white-space: nowrap; }
+.btn-compact svg { width: 13px; height: 13px; }
+.btn-compact.speed-on { color: var(--accent-amber); border-color: color-mix(in srgb, var(--accent-amber) 50%, transparent); }
+
+.ai-log-actions { display: flex; gap: 6px; align-items: center; margin-top: 4px; }
+.ai-log-undone { font-size: 12px; color: var(--fg-subtext0); }
+
+.yt-channel { font-size: 12px; color: var(--ok); margin-bottom: 8px; }
+.project-current { margin-left: 6px; font-style: normal; font-size: 12px; color: var(--fg-subtext0); }
+.backed-up { margin-left: 4px; font-size: 12px; color: var(--fg-subtext0); font-weight: 400; }
+.export-done-copy { margin: -4px 0 8px; }
+.bookend-summary {
+  width: 100%; display: grid; gap: 2px; text-align: left; padding: 8px 10px; border-radius: 8px;
+  border: 1px solid var(--bg-surface1); background: var(--bg-surface0); color: var(--fg-subtext1); font-size: 12px; cursor: pointer;
+}
+.bookend-summary span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bookend-summary:hover { border-color: var(--accent-amber); color: var(--fg-text); }
+.bookend-summary-more { color: var(--accent-amber); }
+.bookends { position: relative; }
+.bookend-collapse { position: absolute; right: 8px; top: 6px; margin: 0; }
+
+/* YouTube 對話框（改用共用樣式） */
+.modal-box[data-scroll] { max-height: 88vh; overflow-y: auto; }
+.yt-form { display: flex; flex-direction: column; gap: 8px; }
+.yt-form label .st-input, .yt-form > .st-input { width: 100%; margin-top: 4px; }
+.yt-textarea { resize: vertical; font-family: inherit; }
+.yt-row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; font-size: 13px; }
+.yt-select { width: auto; }
+.yt-section { padding-top: 8px; border-top: 1px solid var(--bg-surface1); }
+.yt-check { display: flex; gap: 6px; align-items: center; font-size: 13px; cursor: pointer; }
+.yt-done { padding: 8px 0; }
+[data-center] { justify-content: center; }

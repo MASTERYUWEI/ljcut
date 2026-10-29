@@ -356,7 +356,7 @@ export function SettingsModal({ settings, setSettings, onClose }: Props) {
                 <div className="style-row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 6 }}>
                     <label>版本</label>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
-                        <span style={{ color: 'var(--fg-subtext1)' }}>LJCUT v{appVer || '—'}</span>
+                        <span style={{ color: 'var(--fg-subtext1)' }}>{appVer ? `LJCUT v${appVer}` : 'LJCUT（瀏覽器預覽）'}</span>
                         <button className="btn" disabled={updBusy} onClick={checkUpdate}
                             style={{ marginLeft: 'auto', padding: '0 12px' }}
                             title="向 GitHub Releases 檢查是否有新版本">
