@@ -2977,3 +2977,20 @@ button.ai-status:hover { border-color: var(--accent-teal); }
 [aria-labelledby="yt-upload-title"] label { font-size: 13px; color: var(--fg-subtext1); }
 [aria-labelledby="yt-upload-title"] h2 { font-size: 16px; }
 .empty-sub { font-size: 12px; color: var(--fg-subtext0); margin-top: 6px; }
+
+/* ── 開啟專案：清單 ── */
+.pop-title { font-size: 12px; color: var(--fg-subtext1); }
+.project-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; max-height: 240px; overflow-y: auto; }
+.project-item {
+  width: 100%; display: flex; justify-content: space-between; gap: 10px; padding: 6px 8px;
+  border: 1px solid transparent; border-radius: 6px; background: transparent;
+  color: var(--fg-text); font-size: 13px; text-align: left; cursor: pointer;
+}
+.project-item small { color: var(--fg-subtext0); font-size: 12px; white-space: nowrap; }
+.project-item:hover { background: var(--bg-surface1); }
+.project-item.on { border-color: var(--accent-amber); background: var(--bg-surface1); }
+.pop-folder { display: flex; align-items: center; gap: 8px; }
+.pop-folder small { flex: 1; min-width: 0; }
+.close-desc { font-size: 13px; color: var(--fg-subtext1); margin: 0 0 14px; }
+.close-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+button.ai-status:not(.active) .ai-dot { background: var(--fg-overlay0); }

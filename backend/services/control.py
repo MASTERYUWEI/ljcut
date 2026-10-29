@@ -76,6 +76,9 @@ def project_payload(p):
     return p
 
 
+AUTOSAVE_NAME = '.autosave.ljcut'
+
+
 def default_workspace() -> Path:
     if os.getenv("LJCUT_DATA_DIR"):                       # 安裝版（打包後端）
         return Path.home() / "Documents" / "LJCUT 專案"
@@ -543,7 +546,8 @@ class LocalControl:
             sources = [(m, self.media_path(m)) for m in p.get('mediaItems', [])]
             # 覆寫只限「儲存目前開啟的專案」：編輯器明確帶 overwrite，且目標確實是專案資料夾
             overwrite = target.exists()
-            if overwrite and not (body.get('overwrite') is True and (target / 'project.json').is_file()):
+            autosave = target.name == AUTOSAVE_NAME and target.parent == self.root   # 自動存檔可一直覆寫
+            if overwrite and not ((body.get('overwrite') is True or autosave) and (target / 'project.json').is_file()):
                 fail('DESTINATION_EXISTS', '已有同名專案；請換一個檔名，或開啟它後再按「儲存」', 409)
             staging = self.root / ('.saving-' + uuid.uuid4().hex)
             staging.mkdir()
@@ -571,6 +575,21 @@ class LocalControl:
                 if staging.exists():
                     shutil.rmtree(staging)
             return {"path": str(target), "projectId": p['projectId'], "savedRevision": body.get('revision')}
+
+        @r.get('/projects')
+        async def list_projects(request: Request):
+            """工作區裡的專案（開啟專案時直接挑，不用記檔名）＋自動存檔是否存在"""
+            self.authorize(request)
+            items = []
+            for d in self.root.rglob('*.ljcut'):
+                manifest = d / 'project.json'
+                if not d.is_dir() or not manifest.is_file() or any(part.startswith('.') for part in d.relative_to(self.root).parts):
+                    continue
+                items.append({"path": d.relative_to(self.root).as_posix(), "name": d.stem, "modified": manifest.stat().st_mtime})
+            items.sort(key=lambda x: -x["modified"])
+            auto = self.root / AUTOSAVE_NAME / 'project.json'
+            return {"workspace": str(self.root), "projects": items[:50],
+                    "autosave": {"path": AUTOSAVE_NAME, "modified": auto.stat().st_mtime} if auto.is_file() else None}
 
         @r.post('/open')
         async def open_project(request: Request, body: dict = Body(...)):

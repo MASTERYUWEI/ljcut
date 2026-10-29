@@ -3,7 +3,7 @@ import { useStore } from './store';
 import { EditError, requireEdit, validateProject, toSourceTime, clippedSegments } from './editCore';
 import { splitLongCues } from './utils';
 import { toast } from './toast';
-import { applyPlan, checkVersion, draftProject, dryRun, dryRunBookends, dryRunTransitions, projectData, readState, redo, replaceProject, requestPreview, undo } from './editSession';
+import { applyPlan, checkVersion, draftProject, dryRun, dryRunBookends, dryRunTransitions, loadProject, projectData, readState, redo, replaceProject, requestPreview, undo } from './editSession';
 import type { EditPlan, ProjectData } from './editCore';
 import type { MediaItem } from './types';
 
@@ -12,6 +12,14 @@ let latestControlExport = 0;
 export let controlWorkspace = '';
 /** 目前專案檔：路徑與最後存檔時的版本（判斷「未儲存」用）；存檔／開啟成功後更新並發出事件 */
 export const projectFile = { path: '', savedRevision: -1 };
+export const AUTOSAVE_PATH = '.autosave.ljcut';
+/** 自動存檔到工作區的隱藏專案（不改變「目前專案檔」與未儲存狀態） */
+export async function autosaveProject() {
+    if (!token || !useStore.getState().timelineClips.length) return;
+    const p = projectData();
+    validateProject(p);
+    await controlRequest('/save', { path: AUTOSAVE_PATH, project: p, revision: readState().revision });
+}
 function markProjectFile(path: string, savedRevision: number) {
     projectFile.path = path; projectFile.savedRevision = savedRevision;
     window.dispatchEvent(new Event('ljcut-project-file'));
@@ -155,8 +163,9 @@ export async function executeCommand(method: string, params: any = {}): Promise<
             m.url = api.mediaUrl(m.url);
             m.thumbnailUrl = api.getThumbnailUrl(m.id);
         }
-        const opened = replaceProject(p, params);
-        markProjectFile(params.path, readState().revision);
+        const opened = loadProject(p, params);
+        // 從自動存檔還原時不沿用那個隱藏檔名：之後按「儲存」會請你取名
+        if (params.path === AUTOSAVE_PATH) markProjectFile('', -1); else markProjectFile(params.path, readState().revision);
         return opened;
     }
     if (method === 'export') {
@@ -189,7 +198,7 @@ const EXTERNAL_LABEL: Record<string, string> = {
     import: 'AI 匯入了素材', transcribe: 'AI 完成字幕辨識',
 };
 /** 最近一次 AI 動作（標題列常駐顯示，不只 5 秒通知）＋本次開啟以來的紀錄 */
-export const aiActivity = { text: '', at: 0, log: [] as { text: string; at: number; details: string[] }[] };
+export const aiActivity = { text: '', at: 0, lastCommandAt: 0, edits: 0, log: [] as { text: string; at: number; details: string[] }[] };
 const CHANGE_LABEL: Record<string, string> = {
     ripple_delete: '刪除區段並補位', delete_clip: '刪除片段', split: '分割片段', move_clip: '移動片段', set_speed: '調整速度',
     add_subtitle: '新增字幕', delete_subtitle: '刪除字幕',
@@ -208,6 +217,7 @@ function announceExternal(method: string, result: any, params?: any) {
     if (method === 'apply') {
         const n = Array.isArray(result?.changes) ? result.changes.length : 0;
         text = `AI 修改了時間軸${n ? `（${n} 項變更）` : ''}`;
+        aiActivity.edits += 1;
         toast('info', `${text}，可按 Ctrl+Z 復原`);
     } else if (method === 'open' && params?.path) {
         text = `AI 開啟了專案「${String(params.path).replace(/\.ljcut$/i, '')}」`;
@@ -244,6 +254,7 @@ export async function startControl() {
             const command = await controlRequest('/poll', { clientId, wait: 8 });
             conflicts = 0;
             if (!command) return false;
+            aiActivity.lastCommandAt = Date.now();
             if (!replies.has(command.id)) {
                 const method = command.request.method;
                 replies.set(command.id, executeCommand(method, command.request.params).then(

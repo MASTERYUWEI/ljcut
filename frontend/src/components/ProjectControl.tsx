@@ -1,7 +1,7 @@
 /* 本機控制相關介面：拆成「頂部專案按鈕」與「設定裡的開發者工具」，不再常駐主畫面 */
-import { FolderOpen, Save } from 'lucide-react';
+import { FolderOpen, Save, FolderSearch } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
-import { controlWorkspace, executeCommand, projectFile } from '../controlClient';
+import { AUTOSAVE_PATH, autosaveProject, controlRequest, controlWorkspace, executeCommand, projectFile } from '../controlClient';
 import { useStore } from '../store';
 import { StatusText } from './StatusText';
 import { readState } from '../editSession';
@@ -17,15 +17,6 @@ export function useControlWorkspace() {
     }, []);
     return workspace;
 }
-
-const RECENT_KEY = 'ljcut-recent-projects';
-function recentProjects(): string[] {
-    try { return JSON.parse(localStorage.getItem(RECENT_KEY) || '[]').filter((x: unknown) => typeof x === 'string').slice(0, 6); } catch { return []; }
-}
-function rememberProject(path: string) {
-    try { localStorage.setItem(RECENT_KEY, JSON.stringify([path, ...recentProjects().filter(p => p !== path)].slice(0, 6))); } catch { /* 無法記住不影響功能 */ }
-}
-if (typeof window !== 'undefined') window.addEventListener('ljcut-project-file', () => { if (projectFile.path) rememberProject(projectFile.path); });
 
 const version = () => { const s = readState(); return { sessionId: s.sessionId, projectId: s.projectId, expectedRevision: s.revision }; };
 
@@ -85,6 +76,52 @@ export function ProjectFileButtons() {
         if (!saveAs && st.path) void doRun('save', st.path);
         else { setPath(st.path || '教學剪輯.ljcut'); setOpen('save'); }
     };
+    // 開啟時向後端列出工作區裡的專案（取代手打檔名）
+    const [projects, setProjects] = useState<{ path: string; name: string; modified: number }[]>([]);
+    useEffect(() => {
+        if (open !== 'open') return;
+        controlRequest('/projects').then(r => setProjects(r.projects ?? [])).catch(() => setProjects([]));
+    }, [open]);
+    // 自動存檔：有未儲存修改時每分鐘存一份隱藏備份（不影響「未儲存」狀態）
+    useEffect(() => {
+        if (!workspace) return;
+        const timer = setInterval(() => { if (statusRef.current.dirty) void autosaveProject().catch(() => { /* 下次再試 */ }); }, 60000);
+        return () => clearInterval(timer);
+    }, [workspace]);
+    // 啟動時：自動存檔比所有專案都新 → 提供還原
+    useEffect(() => {
+        if (!workspace) return;
+        controlRequest('/projects').then(r => {
+            const latest = Math.max(0, ...(r.projects ?? []).map((x: { modified: number }) => x.modified));
+            if (!r.autosave || r.autosave.modified <= latest + 5 || useStore.getState().timelineClips.length) return;
+            const when = new Date(r.autosave.modified * 1000).toLocaleString('zh-TW', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+            toast('info', `找到上次沒儲存的進度（${when} 自動存檔）。`, [
+                { label: '還原', run: () => { void doRun('open', AUTOSAVE_PATH); } },
+            ]);
+        }).catch(() => { });
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [workspace]);
+    // 關窗保護：有未儲存修改時先問
+    const [closing, setClosing] = useState(false);
+    useEffect(() => {
+        const onBeforeUnload = (e: BeforeUnloadEvent) => { if (statusRef.current.dirty) { e.preventDefault(); e.returnValue = ''; } };
+        window.addEventListener('beforeunload', onBeforeUnload);
+        let unlisten: (() => void) | undefined;
+        if ((window as any).__TAURI_INTERNALS__) {
+            void import('@tauri-apps/api/window').then(({ getCurrentWindow }) => getCurrentWindow().onCloseRequested(e => {
+                if (!statusRef.current.dirty) return;
+                e.preventDefault();
+                setClosing(true);
+            })).then(u => { unlisten = u; });
+        }
+        return () => { window.removeEventListener('beforeunload', onBeforeUnload); unlisten?.(); };
+    }, []);
+    const closeWindow = async () => {
+        if ((window as any).__TAURI_INTERNALS__) {
+            const { getCurrentWindow } = await import('@tauri-apps/api/window');
+            await getCurrentWindow().destroy();
+        }
+    };
     useEffect(() => {
         if (!workspace) return;
         const onKey = (e: KeyboardEvent) => {
@@ -106,20 +143,49 @@ export function ProjectFileButtons() {
         <button className="btn" disabled={busy} onClick={() => save(false)} title={status.path ? `儲存到 ${status.path}（Ctrl+S）；另存新檔 Ctrl+Shift+S` : '儲存成專案檔（Ctrl+S）'}>
             <Save aria-hidden />{busy && !open ? '儲存中…' : '儲存'}</button>
         {open && <form className="project-file-pop" role="dialog" aria-label={open === 'save' ? '另存專案' : '開啟專案'}
-            onSubmit={e => { e.preventDefault(); if (target) void doRun(open, target); }}>
-            <label htmlFor="project-path">{open === 'save' ? '存成（相對於工作區的檔名）' : '要開啟的專案檔（相對於工作區）'}</label>
-            {open === 'open' && recentProjects().length > 0 && <div className="recent-projects" role="group" aria-label="最近的專案">
-                {recentProjects().map(r => <button type="button" key={r} className={`recent-project ${r === path ? 'on' : ''}`} onClick={() => setPath(r)}
-                    onDoubleClick={() => void doRun('open', r)} title={`${r}（按兩下直接開啟）`}>{r.replace(/\.ljcut$/i, '')}</button>)}
-            </div>}
-            <input id="project-path" ref={inputRef} className="st-input" value={path} onChange={e => setPath(e.target.value)} />
-            <small title={workspace}>存在本機控制的工作資料夾裡</small>
+            onSubmit={e => { e.preventDefault(); if (target) void doRun(open, open === 'save' && !/\.ljcut$/i.test(target) ? `${target}.ljcut` : target); }}>
+            {open === 'open' ? <>
+                <div className="pop-title">選擇要開啟的專案</div>
+                {projects.length ? <ul className="project-list" role="listbox" aria-label="專案資料夾裡的專案">
+                    {projects.map(pr => <li key={pr.path}>
+                        <button type="button" role="option" aria-selected={pr.path === path} className={`project-item ${pr.path === path ? 'on' : ''}`}
+                            onClick={() => setPath(pr.path)} onDoubleClick={() => void doRun('open', pr.path)} title="按兩下直接開啟">
+                            <span>{pr.name}</span><small>{new Date(pr.modified * 1000).toLocaleString('zh-TW', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</small>
+                        </button>
+                    </li>)}
+                </ul> : <p className="bookends-note">專案資料夾裡還沒有專案。</p>}
+                <input id="project-path" ref={inputRef} type="hidden" value={path} readOnly />
+            </> : <>
+                <label htmlFor="project-path">專案名稱</label>
+                <input id="project-path" ref={inputRef} className="st-input" value={path} onChange={e => setPath(e.target.value)} />
+            </>}
+            <div className="pop-folder">
+                <small title={workspace}>存放位置：{workspace}</small>
+                {(window as any).__TAURI_INTERNALS__ && <button type="button" className="btn btn-sm" onClick={() => {
+                    void import('@tauri-apps/plugin-shell').then(({ open: openPath }) => openPath(workspace)).catch(e => toast('error', String(e)));
+                }}><FolderSearch aria-hidden />開啟資料夾</button>}
+            </div>
             {open === 'open' && status.dirty && <StatusText kind="warn" text="目前的修改還沒儲存，開啟後會被取代（可先按「儲存」）。" />}
-            {overwrite && status.path && <StatusText kind="info" text={`會另存成新檔；原本的「${status.path}」不變。同名檔案會被覆蓋。`} />}
+            {overwrite && status.path && <StatusText kind="info" text={`會另存成新檔；原本的「${status.path}」不變。已有同名專案時會請你換名稱，不會覆蓋。`} />}
             <button className="btn btn-primary" type="submit" disabled={busy || !target}>
                 {busy ? '處理中…' : open === 'save' ? '儲存' : status.dirty ? '放棄修改並開啟' : '開啟'}
             </button>
         </form>}
+        {closing && <div className="modal-overlay">
+            <div className="modal-box" role="alertdialog" aria-modal="true" aria-labelledby="close-title" aria-describedby="close-desc" style={{ maxWidth: 400 }}>
+                <div className="modal-header"><h2 id="close-title">要先儲存再關閉嗎？</h2></div>
+                <p id="close-desc" className="close-desc">「{status.name || '未命名專案'}」有還沒儲存的修改。</p>
+                <div className="close-actions">
+                    <button className="btn btn-primary" autoFocus disabled={busy} onClick={async () => {
+                        if (!status.path) { setClosing(false); save(true); return; }      // 還沒取名：先開另存
+                        await doRun('save', status.path);
+                        if (!statusRef.current.dirty) await closeWindow();
+                    }}>儲存並關閉</button>
+                    <button className="btn" onClick={() => void closeWindow()}>不儲存，直接關閉</button>
+                    <button className="btn" onClick={() => setClosing(false)}>取消</button>
+                </div>
+            </div>
+        </div>}
     </div>;
 }
 
@@ -139,7 +205,7 @@ export function DeveloperTools() {
     return <details className="dev-tools">
         <summary>進階／開發者：本機控制{workspace ? '（已啟用）' : '（未啟用）'}</summary>
         <div className="dev-tools-body">
-            <small>{workspace ? `工作區：${workspace}` : '以 scripts/start-control.ps1 指定工作區啟動後，才能另存／開啟專案及接收外部命令。'}</small>
+            <small>{workspace ? `專案資料夾：${workspace}` : '本機控制已關閉（LJCUT_CONTROL_WORKSPACE 設為空白），無法存檔與接收 AI 命令。'}</small>
             {workspace && <>
                 <textarea className="st-input" aria-label="結構化剪輯計畫" placeholder="貼上結構化剪輯計畫（JSON），先檢查變更" rows={4} value={plan}
                     onChange={e => { setPlan(e.target.value); setDraft(null); }} />

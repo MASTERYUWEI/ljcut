@@ -110,6 +110,13 @@ class ControlTests(unittest.TestCase):
         (self.control.root/'notproject.ljcut').mkdir()
         self.assertEqual(self.post('/save',{'path':'notproject.ljcut','project':project,'overwrite':True}).status_code,409)
         self.assertFalse(any(x.name.startswith(('.replaced-','.saving-')) for x in self.control.root.iterdir()))
+        # 專案清單（不含隱藏的自動存檔）與自動存檔可重複覆寫
+        self.assertEqual(self.post('/save',{'path':'.autosave.ljcut','project':project}).status_code,200)
+        self.assertEqual(self.post('/save',{'path':'.autosave.ljcut','project':project}).status_code,200)
+        listed=self.client.get('/api/control/projects',headers=self.headers).json()
+        self.assertIn('saved.ljcut',[x['path'] for x in listed['projects']])
+        self.assertNotIn('.autosave.ljcut',[x['path'] for x in listed['projects']])
+        self.assertEqual(listed['autosave']['path'],'.autosave.ljcut')
         # Simulate the old uploads cleanup: bundle assets must survive independently.
         self.control.media_path(media).unlink()
         reopened=self.post('/open',{'path':'saved.ljcut'}).json()

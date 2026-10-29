@@ -22,7 +22,7 @@ import { StatusText } from './components/StatusText';
 import { ShortcutHelp } from './components/ShortcutHelp';
 import { AiStatus } from './components/AiStatus';
 import { OverlayInspector } from './components/OverlayInspector';
-import { notify, toast } from './toast';
+import { notify, toast, humanizeError } from './toast';
 import { useDialog } from './useDialog';
 import { pushUndo, undo, redo, projectData, dryRun, applyPlan, readState } from './editSession';
 import { clippedSegments, splitClip, timelineSegments, toSourceTime, toTimelineTime, validateProject } from './editCore';
@@ -936,7 +936,7 @@ export default function App() {
                 .filter(t => t.count > 0 && t.wrong !== t.correct);
             setTypoSuggestions(sugg);
             if (sugg.length === 0) setTypoMsg('🎉 沒掃到可疑錯字');
-        } catch (e) { setTypoMsg(`❌ 掃描失敗: ${e}`); }
+        } catch (e) { setTypoMsg(`❌ ${humanizeError(`掃描失敗：${e}`).message}`); }
         finally { setIsScanningTypos(false); }
     }, [buildTimelineSegments, countOccurrences]);
 
@@ -1571,7 +1571,7 @@ export default function App() {
                 .map(it => ({ ...refs[it.index], reason: it.reason || '語意可疑' }));
             setFlowIssues(items);
             setFlowMsg(items.length ? `找到 ${items.length} 句可疑，點擊可定位` : '🎉 沒掃到明顯不通順的句子');
-        } catch (e) { setFlowMsg(`❌ 掃描失敗: ${e}`); }
+        } catch (e) { setFlowMsg(`❌ ${humanizeError(`掃描失敗：${e}`).message}`); }
         finally { setIsScanningFlow(false); }
     }, [timelineClips]);
 
@@ -3003,7 +3003,7 @@ export default function App() {
                     <div className="subtitle-header">
                         <h2>字幕</h2>
                         {segments.length > 0 && (
-                            <span style={{ fontSize: 12, color: 'var(--fg-subtext0)' }}>{segments.length} 段</span>
+                            <span style={{ fontSize: 12, color: 'var(--fg-subtext0)' }}>{segments.length} 句</span>
                         )}
                     </div>
                     {segments.length > 0 && (

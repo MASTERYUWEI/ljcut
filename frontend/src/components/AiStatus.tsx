@@ -33,17 +33,18 @@ export function AiStatus() {
     }, [open]);
     if (!workspace) return null;
     const recent = aiActivity.at && Date.now() - aiActivity.at < 10000;
-    const summary = aiActivity.text ? `${aiActivity.text} · ${ago(Date.now() - aiActivity.at)}` : 'AI 助理已連線';
+    const active = aiActivity.lastCommandAt && Date.now() - aiActivity.lastCommandAt < 5 * 60000;   // 5 分鐘內有收到 AI 命令
+    const summary = aiActivity.text ? `${aiActivity.text} · ${ago(Date.now() - aiActivity.at)}` : 'AI 助理待命中';
     return <div className="ai-status-wrap" ref={boxRef}>
-        <button className={`ai-status ${recent ? 'recent' : ''}`} aria-expanded={open} onClick={() => setOpen(o => !o)}
+        <button className={`ai-status ${recent ? 'recent' : ''} ${active ? 'active' : ''}`} aria-expanded={open} onClick={() => setOpen(o => !o)}
             title="AI 助理的修改紀錄（每個修改都可按 Ctrl+Z 復原）">
             <span className="ai-dot" aria-hidden /><Bot aria-hidden />
             <span className="ai-status-text">{summary}</span>
-            <span className="ai-status-short" aria-hidden>{aiActivity.log.length ? `AI · ${aiActivity.log.length}` : 'AI'}</span>
+            <span className="ai-status-short" aria-hidden>{aiActivity.edits ? `AI · ${aiActivity.edits}` : 'AI'}</span>
         </button>
         <span className="sr-only" role="status">{aiActivity.text ? summary : ''}</span>
         {open && <div className="ai-log" role="dialog" aria-label="AI 助理修改紀錄">
-            <p className="ai-log-head">AI 助理可以透過本機控制剪輯這個專案。每個修改都是一筆復原，按 Ctrl+Z 可退回。</p>
+            <p className="ai-log-head">{active ? 'AI 助理最近有在操作這個專案。' : '目前沒有 AI 助理在操作（在 AI 助理的對話裡請它剪輯就會連上）。'}每個修改都是一筆復原，按 Ctrl+Z 可退回。</p>
             {aiActivity.log.length === 0 ? <p className="ai-log-empty">這次開啟後，AI 還沒有修改過專案。</p>
                 : <ol className="ai-log-list">{aiActivity.log.map(item => (
                     <li key={item.at}>
