@@ -15,6 +15,8 @@ import { SpeedMenu } from './components/SpeedMenu';
 import { ExportProgress } from './components/ExportProgress';
 import { YouTubeUploadModal } from './components/YouTubeUploadModal';
 import { ProjectControl } from './components/ProjectControl';
+import Toaster from './components/Toaster';
+import { notify, toast } from './toast';
 import { pushUndo, undo, redo, projectData, dryRun, applyPlan, readState } from './editSession';
 import { clippedSegments, splitClip, timelineSegments, toSourceTime, toTimelineTime, validateProject } from './editCore';
 import { registerPreviewReader } from './controlClient';
@@ -294,7 +296,17 @@ export default function App() {
     // ── Resize 面板 ──
     const [leftWidth, setLeftWidth] = useState(240);
     const [rightWidth, setRightWidth] = useState(340);
-    const [timelineHeight, setTimelineHeight] = useState(200);
+    // 時間軸是剪輯主角：預設約 40% 視窗高，拖曳後記住
+    const [timelineHeight, setTimelineHeight] = useState<number>(() => {
+        try {
+            const saved = Number(localStorage.getItem('ljcut-timeline-h'));
+            if (saved >= 160) return Math.min(saved, Math.round(window.innerHeight * 0.7));
+        } catch { /* 無法存取 localStorage 時用預設值 */ }
+        return Math.max(220, Math.round(window.innerHeight * 0.4));
+    });
+    useEffect(() => {
+        try { localStorage.setItem('ljcut-timeline-h', String(timelineHeight)); } catch { /* ignore */ }
+    }, [timelineHeight]);
     const [isResizing, setIsResizing] = useState(false);
 
 
@@ -385,7 +397,7 @@ export default function App() {
             api.getWaveform(result.file_id).then(peaks => {
                 updateMedia(result.file_id, { waveformPeaks: peaks });
             }).catch(() => { });
-        } catch (err) { alert(`上傳失敗: ${err}`); }
+        } catch (err) { notify(`上傳失敗: ${err}`); }
         finally { setIsUploading(false); }
     }, [addMedia, updateMedia, setIsUploading]);
 
@@ -458,7 +470,7 @@ export default function App() {
                             console.log('✅ 錄影已自動匯入媒體庫:', result.filename);
                         } catch (e) {
                             console.error('匯入錄影失敗:', e);
-                            alert(`匯入錄影失敗: ${e}`);
+                            notify(`匯入錄影失敗: ${e}`);
                         }
                     }
                     unlistenStop();
@@ -532,7 +544,7 @@ export default function App() {
                 await invoke('stop_recording');
             } catch (e) {
                 console.error('停止錄影失敗:', e);
-                alert(`停止錄影失敗: ${e}`);
+                notify(`停止錄影失敗: ${e}`);
             }
             return;
         }
@@ -759,7 +771,7 @@ export default function App() {
     const handlePolishSubtitles = useCallback(async () => {
         const activeClip = activeClipId ? timelineClips.find(c => c.id === activeClipId) : null;
         if (!activeClip || !(activeClip.segments && activeClip.segments.length)) {
-            alert('這個片段還沒有字幕可潤飾，請先辨識字幕');
+            notify('這個片段還沒有字幕可潤飾，請先辨識字幕');
             return;
         }
         setIsPolishing(true);
@@ -768,7 +780,7 @@ export default function App() {
             pushUndo();
             setClipSegments(activeClip.id, polished);
         } catch (err) {
-            alert(`潤飾失敗: ${err}`);
+            notify(`潤飾失敗: ${err}`);
         } finally {
             setIsPolishing(false);
         }
@@ -782,11 +794,11 @@ export default function App() {
         const targetFileId = targetMedia?.id ?? fileId;
         if (!targetFileId) return;
         if (timelineClips.length === 0) {
-            alert('時間軸中尚無影片，請先將媒體拖放到時間軸上');
+            notify('時間軸中尚無影片，請先將媒體拖放到時間軸上');
             return;
         }
         if (!activeClip) {
-            alert('請先點擊選取要辨識字幕的影片片段');
+            notify('請先點擊選取要辨識字幕的影片片段');
             return;
         }
         setIsTranscribing(true);
@@ -804,7 +816,7 @@ export default function App() {
             const split = splitLongCues(result.segments, subtitleStyle.maxCharsPerCue);
             // 寫入到選中的 clip
             setClipSegments(activeClip.id, split);
-        } catch (err) { alert(`辨識失敗: ${err}`); }
+        } catch (err) { notify(`辨識失敗: ${err}`); }
         finally { clearInterval(elapsedTimer); setIsTranscribing(false); setTransProg(null); }
     }, [fileId, language, setClipSegments, setIsTranscribing, splitLongCues, subtitleStyle.maxCharsPerCue, timelineClips, activeClipId, mediaItems, fastAsr]);
 
@@ -817,7 +829,7 @@ export default function App() {
     const [copyMsg, setCopyMsg] = useState<'' | 'text' | 'srt'>('');
     const handleCopySubtitles = useCallback(async (kind: 'text' | 'srt') => {
         const segs = buildTimelineSegments();
-        if (segs.length === 0) { alert('沒有字幕可複製'); return; }
+        if (segs.length === 0) { notify('沒有字幕可複製'); return; }
         const fmtSrtTime = (t: number) => {
             const h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), s = Math.floor(t % 60);
             const ms = Math.min(999, Math.round((t - Math.floor(t)) * 1000));
@@ -890,7 +902,7 @@ export default function App() {
 
     const handleScanTypos = useCallback(async () => {
         const segs = buildTimelineSegments();
-        if (segs.length === 0) { alert('沒有字幕可掃描'); return; }
+        if (segs.length === 0) { notify('沒有字幕可掃描'); return; }
         setIsScanningTypos(true);
         setTypoSuggestions([]);
         setTypoMsg('');
@@ -934,17 +946,17 @@ export default function App() {
         const allSegments = timelineSegments(track0Clips);
 
         if (allSegments.length === 0) {
-            alert('沒有字幕資料可匯出');
+            notify('沒有字幕資料可匯出');
             return;
         }
 
         try {
             const savePath = await api.exportSrt(fileId, allSegments, primaryMedia?.filename, settings.srtDir || settings.outputDir || undefined);
             if (savePath) {
-                alert(`✅ SRT 已匯出！\n路徑：${savePath}`);
+                notify(`✅ SRT 已匯出！\n路徑：${savePath}`);
             }
         }
-        catch (err) { alert(`匯出失敗: ${err}`); }
+        catch (err) { notify(`匯出失敗: ${err}`); }
     }, [fileId, timelineClips, primaryMedia, settings.srtDir, settings.outputDir]);
 
     // ── 匯出影片（含字幕） ──
@@ -955,7 +967,7 @@ export default function App() {
             .sort((a, b) => a.startTime - b.startTime);
 
         if (track0Clips.length === 0) {
-            alert('時間軸中尚無影片，請先將媒體拖放到時間軸上');
+            notify('時間軸中尚無影片，請先將媒體拖放到時間軸上');
             return;
         }
 
@@ -1009,24 +1021,30 @@ export default function App() {
                 setLastExport(result.outputPath);
                 setPublicationId(result.publicationId);
                 setTimeout(async () => {
-                    alert(`✅ 匯出完成！\n輸出路徑：${result!.outputPath}`);
                     setExportProgress(-1);
-                    // 自動開啟匯出檔案所在資料夾
-                    try {
-                        const folderPath = result!.outputPath.replace(/[\\/][^\\/]+$/, '');
-                        if (folderPath) {
-                            const { open } = await import('@tauri-apps/plugin-shell');
-                            await open(folderPath);
+                    const folderPath = result!.outputPath.replace(/[\\/][^\\/]+$/, '');
+                    const openFolder = async () => {
+                        try {
+                            if (folderPath) {
+                                const { open } = await import('@tauri-apps/plugin-shell');
+                                await open(folderPath);
+                            }
+                        } catch (e) {
+                            console.warn('開啟資料夾失敗:', e);
                         }
-                    } catch (e) {
-                        console.warn('開啟資料夾失敗:', e);
-                    }
+                    };
+                    toast('success', `匯出完成：${result!.outputPath}`, [
+                        { label: '開啟資料夾', run: () => { void openFolder(); } },
+                        { label: '上傳到 YouTube', run: () => setShowYtUpload(true) },
+                    ]);
+                    // 沿用原本行為：自動開啟匯出檔案所在資料夾
+                    await openFolder();
                 }, 300);
             } else {
                 setExportProgress(-1); // 用戶取消
             }
         } catch (err) {
-            alert(`匯出失敗: ${err}`);
+            notify(`匯出失敗: ${err}`);
             setExportProgress(-1);
         } finally {
             setIsBurning(false);
@@ -1416,7 +1434,7 @@ export default function App() {
                 setRightWidth(Math.max(120, Math.min(500, startRight - dx)));
             } else {
                 const dy = ev.clientY - startY;
-                setTimelineHeight(Math.max(120, Math.min(400, startTlH - dy)));
+                setTimelineHeight(Math.max(160, Math.min(Math.round(window.innerHeight * 0.7), startTlH - dy)));
             }
         };
         const onUp = () => {
@@ -1509,7 +1527,7 @@ export default function App() {
                 });
             }
         }
-        if (!refs.length) { alert('沒有字幕可掃描'); return; }
+        if (!refs.length) { notify('沒有字幕可掃描'); return; }
         setIsScanningFlow(true);
         setFlowIssues([]);
         setFlowMsg('');
@@ -1803,7 +1821,7 @@ export default function App() {
             applyPlan({ ...v, dryRunId: draft.dryRunId, confirmed: true });
             return draft.changes as { zoomId?: string }[];
         } catch (e) {
-            alert(`縮放操作失敗：${e instanceof Error ? e.message : String(e)}`);
+            notify(`縮放操作失敗：${e instanceof Error ? e.message : String(e)}`);
             return null;
         }
     }, []);
@@ -1818,8 +1836,8 @@ export default function App() {
         const t = timelinePosRef.current;
         const clip = timelineClips.find(c => c.trackIndex === 0 && !c.bookend && t >= c.startTime && t < c.startTime + c.duration);
         const media = clip && mediaItems.find(m => m.id === clip.mediaId);
-        if (!clip || !media) { alert('請把播放頭移到要放大的片段上'); return; }
-        if (!media.info.width) { alert('純音訊素材不能縮放'); return; }
+        if (!clip || !media) { notify('請把播放頭移到要放大的片段上'); return; }
+        if (!media.info.width) { notify('純音訊素材不能縮放'); return; }
         const start = Math.round(toSourceTime(clip, t) * 100) / 100;
         const end = Math.min(media.info.duration, start + 3);
         const changes = runZoomOps([{ type: 'add_zoom', mediaId: media.id, start, end, x: 0.5, y: 0.5, scale: 2 }]);
@@ -1843,11 +1861,11 @@ export default function App() {
                     ops.push({ type: 'add_zoom', mediaId: id, start: z.start, end: z.end, x: z.x, y: z.y, scale: z.scale });
                 }
             }
-            if (!tracked) { alert('這些素材沒有游標紀錄。自動縮放只支援用 LJ Cut 錄的影片（錄影時會記下滑鼠點擊）。'); return; }
-            if (!ops.length) { alert('沒有新的縮放建議（沒有點擊，或建議的時段已有縮放）。'); return; }
-            if (runZoomOps(ops)) alert(`已依滑鼠點擊加入 ${ops.length} 段縮放，可按 Ctrl+Z 復原。`);
+            if (!tracked) { notify('這些素材沒有游標紀錄。自動縮放只支援用 LJ Cut 錄的影片（錄影時會記下滑鼠點擊）。'); return; }
+            if (!ops.length) { notify('沒有新的縮放建議（沒有點擊，或建議的時段已有縮放）。'); return; }
+            if (runZoomOps(ops)) notify(`已依滑鼠點擊加入 ${ops.length} 段縮放，可按 Ctrl+Z 復原。`);
         } catch (e) {
-            alert(e instanceof Error ? e.message : String(e));
+            notify(e instanceof Error ? e.message : String(e));
         } finally { setZoomBusy(false); }
     }, [timelineClips, mediaItems, runZoomOps]);
     // 預覽畫面上的滑鼠位置 → 素材畫面比例座標（已放大時會換算回原畫面）；畫面外回 null
@@ -1890,7 +1908,7 @@ export default function App() {
         const t = timelinePosRef.current;
         const clip = timelineClips.find(c => c.trackIndex === 0 && !c.bookend && t >= c.startTime && t < c.startTime + c.duration);
         const media = clip && mediaItems.find(m => m.id === clip.mediaId);
-        if (!clip || !media || !media.info.width) { alert('請把播放頭移到要疊子母畫面的影片片段上'); return; }
+        if (!clip || !media || !media.info.width) { notify('請把播放頭移到要疊子母畫面的影片片段上'); return; }
         try {
             const asset = await api.uploadAsset(file);
             const start = Math.round(toSourceTime(clip, t) * 100) / 100;
@@ -1900,7 +1918,7 @@ export default function App() {
                 x: 0.66, y: 0.62, w: 0.3, text: asset.filename.slice(0, 40) }]) as { overlayId?: string }[] | null;
             if (changes?.[0]?.overlayId) setSelectedOverlayId(changes[0].overlayId);
         } catch (e) {
-            alert(e instanceof Error ? e.message : String(e));
+            notify(e instanceof Error ? e.message : String(e));
         }
     }, [timelineClips, mediaItems, runZoomOps]);
     const addOverlayAtPlayhead = useCallback((kind: OverlayKind) => {
@@ -1908,8 +1926,8 @@ export default function App() {
         const t = timelinePosRef.current;
         const clip = timelineClips.find(c => c.trackIndex === 0 && !c.bookend && t >= c.startTime && t < c.startTime + c.duration);
         const media = clip && mediaItems.find(m => m.id === clip.mediaId);
-        if (!clip || !media) { alert('請把播放頭移到要加標註的片段上'); return; }
-        if (!media.info.width) { alert('純音訊素材沒有畫面'); return; }
+        if (!clip || !media) { notify('請把播放頭移到要加標註的片段上'); return; }
+        if (!media.info.width) { notify('純音訊素材沒有畫面'); return; }
         const start = Math.round(toSourceTime(clip, t) * 100) / 100;
         const end = Math.min(media.info.duration, start + 3);
         const op: Record<string, unknown> = { type: 'add_overlay', kind, mediaId: media.id, start, end };
@@ -1926,13 +1944,13 @@ export default function App() {
     const editSelectedOverlayText = useCallback(() => {
         if (!selectedOverlay) return;
         const o = selectedOverlay.overlay;
-        if (o.kind === 'html') { alert('HTML 動畫由 AI 撰寫：請在對話中描述要怎麼改，AI 會用 edit_overlay 更新。'); return; }
+        if (o.kind === 'html') { notify('HTML 動畫由 AI 撰寫：請在對話中描述要怎麼改，AI 會用 edit_overlay 更新。'); return; }
         if (o.kind === 'media') {
-            if (o.asset?.type !== 'video' || !o.asset.hasAudio) { alert('這個素材沒有聲音。位置與大小：選取後 Shift+拖曳預覽畫面。'); return; }
+            if (o.asset?.type !== 'video' || !o.asset.hasAudio) { notify('這個素材沒有聲音。位置與大小：選取後 Shift+拖曳預覽畫面。'); return; }
             const v = prompt('子母畫面音量（0 = 靜音，100 = 原音量）', String(Math.round((o.volume ?? 0) * 100)));
             if (v === null) return;
             const n = Number(v);
-            if (!Number.isFinite(n) || n < 0 || n > 100) { alert('請輸入 0–100'); return; }
+            if (!Number.isFinite(n) || n < 0 || n > 100) { notify('請輸入 0–100'); return; }
             runZoomOps([{ type: 'edit_overlay', overlayId: o.id, volume: n / 100 }]);
             return;
         }
@@ -1943,7 +1961,7 @@ export default function App() {
             const sub = prompt('第二行（可留空）', o.sub ?? '');
             if (sub !== null) op.sub = sub.trim() || undefined;
         }
-        if (!text.trim() && (o.kind === 'step' || o.kind === 'title')) { alert('步驟與標題需要文字'); return; }
+        if (!text.trim() && (o.kind === 'step' || o.kind === 'title')) { notify('步驟與標題需要文字'); return; }
         if (!text.trim()) {
             // 清除文字：以刪除欄位的版本重建
             const { text: _t, ...rest } = o;
@@ -2460,7 +2478,7 @@ export default function App() {
                                                         try {
                                                             const { invoke } = await import('@tauri-apps/api/core');
                                                             await invoke('reveal_media', { filename: item.filename, fileId: item.id });
-                                                        } catch (err) { alert(`開啟資料夾失敗: ${err}`); }
+                                                        } catch (err) { notify(`開啟資料夾失敗: ${err}`); }
                                                     }} title="開啟檔案所在資料夾">📂</button>
                                                 )}
                                                 <button className="media-remove" onClick={(e) => { e.stopPropagation(); pushUndo(); removeMedia(item.id); }} title="從媒體庫移除（不會刪除磁碟上的檔案）">×</button>
@@ -2693,8 +2711,9 @@ export default function App() {
                                 onScroll={syncRulerScroll} onClick={handleTimelineClick}
                                 onDrop={handleDropToTimeline}
                                 onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; }}>
+                                <div className="timeline-tracks-inner">
                                 {/* 影片軌（多 clip） */}
-                                <div className="track">
+                                <div className="track track-video">
                                     <div className="track-label" style={{ width: LABEL_W }}>🎬 影片</div>
                                     <div className="track-content" style={{ width: timelineWidth }}>
                                         {timelineClips.filter(c => c.trackIndex === 0).map(clip => {
@@ -2715,6 +2734,8 @@ export default function App() {
                                             return (
                                                 <div key={clip.id}
                                                     className={`track-clip video-clip ${draggingClipId === clip.id ? 'dragging' : ''} ${activeClipId === clip.id ? 'active-clip' : ''}`}
+                                                    role="button" tabIndex={0} aria-pressed={activeClipId === clip.id} aria-label={`片段 ${media?.filename ?? ''}`}
+                                                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); setActiveClipId(clip.id); } }}
                                                     style={{ left, width }}
                                                     onClick={() => setActiveClipId(clip.id)}
                                                     onMouseDown={(e) => handleClipDragStart(e, clip.id)}
@@ -2768,6 +2789,8 @@ export default function App() {
                                                     const selected = z.id === selectedZoomId;
                                                     return (
                                                         <div key={`${clip.id}-${z.id}`} className={`track-clip zoom-clip ${selected ? 'selected' : ''}`}
+                                                            role="button" tabIndex={0} aria-pressed={selected} aria-label={`縮放 ${z.scale} 倍`}
+                                                            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); (e.currentTarget as HTMLElement).click(); } }}
                                                             style={{ left, width }}
                                                             onClick={(e) => { e.stopPropagation(); selectZoom(z.id); seekTo(toTimelineTime(clip, Math.min(b - 0.01, (z.start + z.end) / 2))); }}
                                                             title={`放大 ${z.scale}x　中心 (${z.x}, ${z.y})\n${formatTimestamp(z.start)} → ${formatTimestamp(z.end)}（素材時間）\n選取後 Shift+點預覽畫面可改放大位置`}>
@@ -2807,7 +2830,7 @@ export default function App() {
                                     const rows = Math.max(1, rowEnds.length);
                                     const icon: Record<string, string> = { box: '▢', arrow: '➜', spotlight: '◎', step: '①', title: 'T', html: '</>', media: '🖼' };
                                     return (
-                                        <div className="track overlay-track" style={{ height: Math.max(44, rows * 22 + 6) }}>
+                                        <div className="track overlay-track" style={{ height: Math.max(40, rows * 28 + 8) }}>
                                             <div className="track-label zoom-track-label" style={{ width: LABEL_W }}>
                                                 <span>✏️ 標註</span>
                                                 <input ref={assetInputRef} type="file" hidden accept="image/png,image/jpeg,image/webp,image/bmp,video/*,.gif"
@@ -2825,7 +2848,9 @@ export default function App() {
                                                     const selected = o.id === selectedOverlayId;
                                                     return (
                                                         <div key={`${clip.id}-${o.id}`} className={`track-clip overlay-clip kind-${o.kind} ${selected ? 'selected' : ''}`}
-                                                            style={{ left, width, top: 3 + row * 22, height: 19 }}
+                                                            role="button" tabIndex={0} aria-pressed={selected} aria-label={`${OVERLAY_LABEL[o.kind]}${o.text ? `：${o.text}` : ''}`}
+                                                            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); (e.currentTarget as HTMLElement).click(); } }}
+                                                            style={{ left, width, top: 4 + row * 28, height: 24 }}
                                                             onClick={(e) => { e.stopPropagation(); selectOverlay(o.id); seekTo(toTimelineTime(clip, Math.min(b - 0.01, a + Math.min(0.6, (b - a) / 2)))); }}
                                                             title={`${OVERLAY_LABEL[o.kind]}${o.text ? `：${o.text}` : ''}\n${formatTimestamp(o.start)} → ${formatTimestamp(o.end)}（素材時間）\n選取後 Shift+點／拖曳預覽畫面設定位置`}>
                                                             <span className="clip-text">{icon[o.kind]} {o.text ?? OVERLAY_LABEL[o.kind]}</span>
@@ -2845,7 +2870,7 @@ export default function App() {
                                 })()}
 
                                 {/* 字幕軌 */}
-                                <div className="track">
+                                <div className="track track-subtitle">
                                     <div className="track-label" style={{ width: LABEL_W }}>💬 字幕</div>
                                     <div className="track-content" style={{ width: timelineWidth }}>
                                         {timelineClips.filter(c => c.trackIndex === 0 && c.segments.length > 0).map(clip =>
@@ -2903,6 +2928,7 @@ export default function App() {
                                     <div className="snap-line"
                                         style={{ left: snapTime * pixelsPerSecond + LABEL_W }} />
                                 )}
+                                </div>
                             </div>
                         </div>
                     )}
@@ -3052,7 +3078,7 @@ export default function App() {
         if (!clip) return;
         const eps = 0.001;
         if (T <= clip.startTime + eps || T >= clip.startTime + clip.duration - eps) {
-            alert('請在片段中間的位置按右鍵再分割');
+            notify('請在片段中間的位置按右鍵再分割');
             return;
         }
         // 時間軸時間 → 媒體時間（segments 的 start/end 為媒體時間）
@@ -3073,9 +3099,66 @@ export default function App() {
         && splitT > speedMenuClip.startTime + 0.001
         && splitT < speedMenuClip.startTime + speedMenuClip.duration - 0.001;
 
+    // ── 剪輯快捷鍵（Esc 在輸入框內也有效；其餘在輸入框內不攔截）──
+    //   S 在播放頭分割｜Delete 刪除選取的標註／縮放／片段（可 Ctrl+Z 復原）｜←/→ 逐格、Shift+←/→ 1 秒
+    //   J 倒退 5 秒｜K 暫停｜L 播放｜Home/End 跳到頭尾｜Ctrl+＋/－ 縮放時間軸｜Esc 關閉對話框與選單、取消選取
+    useEffect(() => {
+        const onKey = (e: KeyboardEvent) => {
+            const el = e.target as HTMLElement;
+            if (e.key === 'Escape') {
+                if (speedMenu) { setSpeedMenu(null); return; }
+                if (showExportModal) { setShowExportModal(false); return; }
+                if (showYtUpload) { setShowYtUpload(false); return; }
+                if (showSettings) { setShowSettings(false); return; }
+                if (showRecSettings) { setShowRecSettings(false); return; }
+                if (selectedOverlayId || selectedZoomId) { setSelectedOverlayId(null); setSelectedZoomId(null); }
+                return;
+            }
+            if (['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName) || el.isContentEditable) return;
+            if (showExportModal || showYtUpload || showSettings || showRecSettings) return;
+            const t = timelinePosRef.current;
+            if (e.ctrlKey || e.metaKey) {
+                if (e.key === '=' || e.key === '+') { e.preventDefault(); setZoom(z => Math.min(z * 1.25, 50)); }
+                else if (e.key === '-') { e.preventDefault(); setZoom(z => Math.max(z * 0.8, 0.1)); }
+                return;
+            }
+            if (e.altKey) return;
+            const fps = 30;
+            switch (e.key) {
+                case 's': case 'S': {
+                    const clip = timelineClips.find(c => c.trackIndex === 0 && t > c.startTime && t < c.startTime + c.duration);
+                    if (clip) { e.preventDefault(); handleSplitClip(clip.id, t); }
+                    return;
+                }
+                case 'Delete': case 'Backspace': {
+                    e.preventDefault();
+                    if (selectedOverlayId) { if (runZoomOps([{ type: 'delete_overlay', overlayId: selectedOverlayId }])) setSelectedOverlayId(null); }
+                    else if (selectedZoomId) { if (runZoomOps([{ type: 'delete_zoom', zoomId: selectedZoomId }])) setSelectedZoomId(null); }
+                    else if (activeClipId) { handleClipDelete(activeClipId); toast('info', '已刪除片段，按 Ctrl+Z 可復原'); }
+                    return;
+                }
+                case 'ArrowLeft': case 'ArrowRight': {
+                    e.preventDefault();
+                    const step = (e.shiftKey ? 1 : 1 / fps) * (e.key === 'ArrowLeft' ? -1 : 1);
+                    seekTo(Math.max(0, Math.min(duration, t + step)));
+                    return;
+                }
+                case 'j': case 'J': e.preventDefault(); seekTo(Math.max(0, t - 5)); return;
+                case 'k': case 'K': e.preventDefault(); if (isPlaying) togglePlay(); return;
+                case 'l': case 'L': e.preventDefault(); if (!isPlaying) togglePlay(); return;
+                case 'Home': e.preventDefault(); seekTo(0); return;
+                case 'End': e.preventDefault(); seekTo(duration); return;
+            }
+        };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    }, [speedMenu, showExportModal, showYtUpload, showSettings, showRecSettings, selectedOverlayId, selectedZoomId,
+        activeClipId, timelineClips, duration, isPlaying, handleSplitClip, handleClipDelete, runZoomOps, seekTo, togglePlay]);
+
     return (
         <>
             {mainJsx}
+            <Toaster />
             {speedMenu && speedMenuClip && (
                 <SpeedMenu
                     clip={speedMenuClip}
@@ -3111,7 +3194,7 @@ export default function App() {
                     <div className="modal-box" onClick={e => e.stopPropagation()} style={{ maxWidth: 430 }}>
                         <div className="modal-header">
                             <h3>🎬 匯出影片</h3>
-                            <button className="btn" onClick={() => setShowExportModal(false)} style={{ padding: '2px 8px' }}>✕</button>
+                            <button className="btn" onClick={() => setShowExportModal(false)} style={{ padding: '2px 8px' }} aria-label="關閉" title="關閉（Esc）">✕</button>
                         </div>
                         <div className="style-row" title="關閉＝匯出乾淨畫面（推薦：YouTube 觀眾用 CC 字幕，之後改錯字免重傳影片）；開啟＝字幕燒進畫面">
                             <label>燒入字幕到畫面</label>

@@ -1,5 +1,6 @@
 /* Export-bound captions, Codex cover selection and YouTube upload. */
 import { useEffect, useState } from 'react';
+import { notify } from '../toast';
 import { api } from '../api';
 import { controlRequest } from '../controlClient';
 import { CoverPicker, type Publication } from './CoverPicker';
@@ -67,8 +68,8 @@ export function YouTubeUploadModal({ videoPath, defaultTitle, defaultDescription
     };
 
     const doUpload = async () => {
-        if (!title.trim()) { alert('請輸入影片標題'); return; }
-        if (thumbMode === 'ai' && !thumbSel) { alert('請先生成並選一款封面，或改用其他縮圖模式'); return; }
+        if (!title.trim()) { notify('請輸入影片標題'); return; }
+        if (thumbMode === 'ai' && !thumbSel) { notify('請先生成並選一款封面，或改用其他縮圖模式'); return; }
         setUploading(true);
         setError('');
         setProgress(0);
@@ -104,7 +105,7 @@ export function YouTubeUploadModal({ videoPath, defaultTitle, defaultDescription
             <div className="modal-box" onClick={e => e.stopPropagation()} style={{ maxWidth: 1000, maxHeight: '88vh', overflowY: 'auto' }}>
                 <div className="modal-header">
                     <h3>⬆️ 上傳到 YouTube</h3>
-                    <button className="btn" onClick={onClose} disabled={uploading} style={{ padding: '2px 8px' }}>✕</button>
+                    <button className="btn" onClick={onClose} disabled={uploading} style={{ padding: '2px 8px' }} aria-label="關閉" title="關閉（Esc）">✕</button>
                 </div>
 
                 {!publication && <p role="status">{error || "正在讀取這次匯出的影片與字幕…"}</p>}

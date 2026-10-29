@@ -25,11 +25,14 @@ export function AiPanel({
 }: Props) {
     return (
         <div className="ai-collapse">
-            <button className="ai-collapse-toggle" onClick={onToggle}>
-                <span>{expanded ? '▾' : '▸'} AI 助手</span>
+            {/* 標題列：展開鈕與重新生成鈕並排（按鈕不可巢狀，螢幕閱讀器才讀得正確） */}
+            <div className="ai-collapse-toggle">
+                <button className="ai-collapse-label" onClick={onToggle} aria-expanded={expanded}>
+                    {expanded ? '▾' : '▸'} AI 助手
+                </button>
                 <button className="ai-refresh-btn" disabled={!!loadingType}
-                    onClick={(ev) => { ev.stopPropagation(); onRefresh(); }} title="重新生成">🔄</button>
-            </button>
+                    onClick={onRefresh} title="重新生成" aria-label="重新生成 AI 助手內容">🔄</button>
+            </div>
             {expanded && (
                 <div className="ai-assistant">
                     <div className="ai-tabs">

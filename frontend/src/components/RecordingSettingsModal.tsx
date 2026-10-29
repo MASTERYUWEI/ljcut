@@ -50,7 +50,7 @@ export function RecordingSettingsModal({
             <div className="modal-box" onClick={e => e.stopPropagation()}>
                 <div className="modal-header">
                     <h3>螢幕錄影設定</h3>
-                    <button className="btn" onClick={onClose} style={{ padding: '2px 8px' }}>✕</button>
+                    <button className="btn" onClick={onClose} style={{ padding: '2px 8px' }} aria-label="關閉" title="關閉（Esc）">✕</button>
                 </div>
                 <div className="rec-setting-row">
                     <label>🔊 系統聲音</label>

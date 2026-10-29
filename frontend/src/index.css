@@ -603,29 +603,40 @@ body {
   position: absolute;
   top: 5px;
   left: 4px;
-  font-size: 10px;
+  font-size: 11px;
   font-family: var(--font-mono);
-  color: var(--fg-overlay0);
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-subtext0);
   white-space: nowrap;
   user-select: none;
 }
 
-/* 軌道容器 */
+/* 軌道容器：軌道多於可見高度時可上下捲動（標註軌、字幕軌不會被裁掉） */
 .timeline-tracks {
   flex: 1;
+  min-height: 0;
   overflow-x: auto;
-  overflow-y: hidden;
+  overflow-y: auto;
   position: relative;
   cursor: crosshair;
 }
 
-/* 單軌 */
+/* 內層撐開全部軌道高度：播放頭與吸附線跟著涵蓋到最下面的軌道 */
+.timeline-tracks-inner {
+  position: relative;
+  min-height: 100%;
+}
+
+/* 單軌：固定高度，不再平分容器（軌道變多時才不會被擠扁） */
 .track {
   display: flex;
-  height: 50%;
+  height: 44px;
   border-bottom: 1px solid var(--border);
   position: relative;
 }
+.track.track-video { height: 60px; }
+.track.zoom-track { height: 44px; }
+.track.track-subtitle { height: 48px; }
 
 .track:last-of-type {
   border-bottom: none;
@@ -636,10 +647,10 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 500;
-  letter-spacing: 0.5px;
-  color: var(--fg-overlay0);
+  letter-spacing: 0.02em;
+  color: var(--fg-subtext0);
   background: var(--glass);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
@@ -670,8 +681,7 @@ body {
 }
 
 .track-clip:hover {
-  filter: brightness(1.25);
-  transform: scaleY(1.03);
+  filter: brightness(1.2);
 }
 
 /* 片段左右裁切拉桿 */
@@ -2329,11 +2339,11 @@ body {
   gap: 3px;
 }
 .zoom-mini-btn {
-  min-width: 18px;
-  height: 16px;
-  padding: 0 4px;
-  font-size: 11px;
-  line-height: 14px;
+  min-width: 22px;
+  height: 20px;
+  padding: 0 5px;
+  font-size: 12px;
+  line-height: 18px;
   border: 1px solid rgba(250, 179, 135, 0.45);
   border-radius: 3px;
   background: rgba(250, 179, 135, 0.12);
@@ -2352,7 +2362,7 @@ body {
   border: 1px solid rgba(250, 179, 135, 0.55);
   border-radius: 4px;
   color: #fab387;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   display: flex;
   align-items: center;
@@ -2397,8 +2407,8 @@ body {
 /* ── 標註軌 ── */
 .overlay-add {
   width: 64px;
-  height: 18px;
-  font-size: 10px;
+  height: 20px;
+  font-size: 11px;
   padding: 0 2px;
   background: rgba(137, 180, 250, 0.12);
   color: var(--fg-text, #cdd6f4);
@@ -2415,7 +2425,7 @@ body {
   border: 1px solid rgba(137, 180, 250, 0.6);
   border-radius: 4px;
   color: #b4cdfa;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   display: flex;
   align-items: center;
@@ -2443,3 +2453,122 @@ body {
   pointer-events: none;
 }
 .overlay-clip.kind-html { background: linear-gradient(180deg, rgba(166, 227, 161, 0.3), rgba(166, 227, 161, 0.12)); border-color: rgba(166, 227, 161, 0.6); color: #a6e3a1; }
+
+/* ── 鍵盤焦點：只在用鍵盤操作時顯示，清楚但不搶眼 ── */
+:where(button, [role="button"], select, a, input[type="checkbox"], input[type="range"], summary):focus-visible {
+  outline: 2px solid var(--accent-amber);
+  outline-offset: 2px;
+}
+.track-clip:focus-visible {
+  outline: 2px solid var(--accent-amber);
+  outline-offset: -2px;
+  z-index: 4;
+}
+::selection {
+  background: rgba(240, 176, 80, 0.32);
+  color: var(--fg-text);
+}
+
+/* ── 系統設定「減少動態效果」時關掉位移與長動畫 ── */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ── 通知（取代原生 alert）── */
+.toaster {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(380px, calc(100vw - 32px));
+  pointer-events: none;
+}
+.toast {
+  pointer-events: auto;
+  display: grid;
+  grid-template-columns: 8px 1fr auto;
+  gap: 10px;
+  align-items: start;
+  padding: 12px 10px 12px 14px;
+  background: var(--bg-surface0);
+  border: 1px solid var(--bg-surface2);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  color: var(--fg-text);
+  animation: toast-in 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+}
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(8px); }
+}
+.toast-mark {
+  width: 8px;
+  height: 8px;
+  margin-top: 5px;
+  border-radius: 50%;
+  background: var(--accent-blue);
+}
+.toast-success .toast-mark { background: var(--accent-green); }
+.toast-error .toast-mark { background: var(--accent-rose); }
+.toast-body { min-width: 0; }
+.toast-kind {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg-subtext1);
+  margin-bottom: 2px;
+}
+.toast-error .toast-kind { color: var(--accent-rose); }
+.toast-success .toast-kind { color: var(--accent-green); }
+.toast-message {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.toast-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.toast-btn {
+  padding: 4px 10px;
+  font-size: 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--bg-surface2);
+  background: var(--bg-surface1);
+  color: var(--fg-text);
+  cursor: pointer;
+}
+.toast-btn:hover { background: var(--bg-surface2); }
+.toast-close {
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg-subtext0);
+  cursor: pointer;
+}
+.toast-close:hover { background: var(--bg-surface1); color: var(--fg-text); }
+
+/* AI 助手標題列：展開鈕承接原本整列可點的行為 */
+.ai-collapse-label {
+  flex: 1;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}

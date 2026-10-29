@@ -1,5 +1,6 @@
 /* ── 設定 Modal（輸出目錄 / SRT 目錄 / Gemini API Key）── */
 import { useEffect, useState } from 'react';
+import { notify } from '../toast';
 import type { AppSettings } from '../types';
 import { api } from '../api';
 
@@ -149,8 +150,8 @@ export function SettingsModal({ settings, setSettings, onClose }: Props) {
         try {
             const r = await api.setAiModel(target);
             if (r.ok) loadModelInfo();
-            else if (r.error) alert(r.error);
-        } catch (e) { alert(`切換失敗: ${e}`); }
+            else if (r.error) notify(r.error);
+        } catch (e) { notify(`切換失敗: ${e}`); }
         finally { setSwitching(false); }
     };
 
@@ -197,7 +198,7 @@ export function SettingsModal({ settings, setSettings, onClose }: Props) {
             <div className="modal-box" onClick={e => e.stopPropagation()}>
                 <div className="modal-header">
                     <h3>設定</h3>
-                    <button className="btn" onClick={onClose} style={{ padding: '2px 8px' }}>✕</button>
+                    <button className="btn" onClick={onClose} style={{ padding: '2px 8px' }} aria-label="關閉" title="關閉（Esc）">✕</button>
                 </div>
                 <div className="style-row">
                     <label>輸出目錄</label>
