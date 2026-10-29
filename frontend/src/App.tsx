@@ -2358,6 +2358,7 @@ export default function App() {
                             {isBurning ? `匯出中 ${exportProgress >= 0 ? exportProgress + '%' : '…'}` : <><Clapperboard aria-hidden />匯出影片</>}
                         </button>
                         <button className="btn" onClick={() => setShowYtUpload(true)} disabled={!lastExport || isBurning}
+                            aria-label={exportStale ? '上傳到 YouTube（成品較舊）' : '上傳到 YouTube'}
                             title={!lastExport ? '請先匯出影片，再上傳 YouTube' : exportStale ? `匯出後專案又改過，這支成品不含之後的修改\n${lastExport}` : `上傳最近匯出的成品到 YouTube\n${lastExport}`}>
                             <Upload aria-hidden />YouTube{exportStale && <span className="stale-tag">成品較舊</span>}
                         </button>
@@ -2553,6 +2554,9 @@ export default function App() {
                 {/* 中間：影片 */}
                 <main className="panel-center">
                     <div ref={videoContainerRef} className="video-container" onDrop={handleDrop} onDragOver={(e) => e.preventDefault()}>
+                        {(selectedOverlayId || selectedZoomId) && (
+                            <span className="preview-hint" role="note">Shift＋點畫面{selectedOverlayId ? '移動位置；Shift＋拖曳框出範圍' : '設定放大中心'}</span>
+                        )}
                         {primaryMedia ? (
                             <>
                                 {/* 雙緩衝：兩個 video 疊放，imperative 控制 opacity（不走 React style 以免被覆蓋） */}
@@ -2685,9 +2689,6 @@ export default function App() {
                                 onChange={(e) => seekTo(Number(e.target.value))}
                                 style={{ flex: 1, accentColor: 'var(--accent-amber)' }} />
                             {activeClipSpeed !== 1 && <span style={{ fontSize: 11, color: 'var(--accent-amber)', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 2 }}><Gauge aria-hidden />{activeClipSpeed}x</span>}
-                            {(selectedOverlayId || selectedZoomId) && (
-                                <span className="preview-hint">Shift＋點畫面{selectedOverlayId ? '移動／Shift＋拖曳框出範圍' : '設定放大中心'}</span>
-                            )}
                             {segments.length > 0 && (
                                 <button className={`btn preview-sub-chip ${burnSubs ? 'burn' : ''}`} onClick={() => setShowExportModal(true)}
                                     aria-label={burnSubs ? '匯出時字幕會燒進畫面，開啟匯出設定' : '匯出時字幕不燒入畫面（另附 SRT），開啟匯出設定'}
@@ -3067,7 +3068,7 @@ export default function App() {
                                                 {formatTimestamp(seg.start)} → {formatTimestamp(seg.end)}
                                             </div>
                                             {seg.id === activeSegmentId && !selectedSegIds.has(seg.id) ? (
-                                                <textarea value={seg.text}
+                                                <textarea value={seg.text} aria-label={`第 ${seg.id + 1} 句字幕文字`} aria-describedby="sub-edit-hint"
                                                     onFocus={pushUndo}
                                                     onChange={(e) => updateSegment(seg.id, { text: e.target.value })}
                                                     onKeyDown={(e) => {
@@ -3080,7 +3081,7 @@ export default function App() {
                                                     onClick={(e) => e.stopPropagation()} rows={2} />
                                             ) : null}
                                             {seg.id === activeSegmentId && !selectedSegIds.has(seg.id) ? (
-                                                <div className="sub-edit-hint">Enter 在游標處分成兩句 · Ctrl＋點其他句可多選合併</div>
+                                                <div className="sub-edit-hint" id="sub-edit-hint">Enter 在游標處分成兩句 · Ctrl＋點其他句可多選合併</div>
                                             ) : (
                                                 <div className="text">{seg.text}</div>
                                             )}
@@ -3282,8 +3283,8 @@ export default function App() {
                         {burnSubs && (
                             <>
                                 <div className="style-row">
-                                    <label>字形</label>
-                                    <select value={subtitleStyle.fontName}
+                                    <label htmlFor="burn-font">字形</label>
+                                    <select id="burn-font" value={subtitleStyle.fontName}
                                         onChange={e => setSubtitleStyle({ fontName: e.target.value })}>
                                         <option value="Microsoft JhengHei">微軟正黑體</option>
                                         <option value="DFKai-SB">標楷體</option>
@@ -3293,27 +3294,27 @@ export default function App() {
                                     </select>
                                 </div>
                                 <div className="style-row">
-                                    <label>字體大小</label>
-                                    <input type="number" min={8} max={72} value={subtitleStyle.fontSize}
+                                    <label htmlFor="burn-size">字體大小</label>
+                                    <input id="burn-size" type="number" min={8} max={72} value={subtitleStyle.fontSize}
                                         onChange={e => setSubtitleStyle({ fontSize: Number(e.target.value) })} />
                                 </div>
                                 <div className="style-row">
-                                    <label>外框粗細</label>
-                                    <input type="number" min={0} max={5} value={subtitleStyle.outlineWidth}
+                                    <label htmlFor="burn-outline">外框粗細</label>
+                                    <input id="burn-outline" type="number" min={0} max={5} value={subtitleStyle.outlineWidth}
                                         onChange={e => setSubtitleStyle({ outlineWidth: Number(e.target.value) })} />
                                 </div>
                                 <div className="style-row">
-                                    <label>文字背景</label>
+                                    <label htmlFor="burn-bg">文字背景</label>
                                     <label className="toggle-switch">
-                                        <input type="checkbox" checked={subtitleStyle.bgEnabled}
+                                        <input id="burn-bg" type="checkbox" checked={subtitleStyle.bgEnabled}
                                             onChange={e => setSubtitleStyle({ bgEnabled: e.target.checked })} />
                                         <span className="toggle-slider" />
                                     </label>
                                 </div>
                                 {subtitleStyle.bgEnabled && (
                                     <div className="style-row">
-                                        <label>透明度</label>
-                                        <input type="range" min={0} max={100} value={subtitleStyle.bgOpacity}
+                                        <label htmlFor="burn-opacity">透明度</label>
+                                        <input id="burn-opacity" type="range" min={0} max={100} value={subtitleStyle.bgOpacity}
                                             onChange={e => setSubtitleStyle({ bgOpacity: Number(e.target.value) })} />
                                         <span className="opacity-val">{subtitleStyle.bgOpacity}%</span>
                                     </div>
@@ -3332,6 +3333,7 @@ export default function App() {
                 <YouTubeUploadModal
                     videoPath={lastExport}
                     stale={exportStale}
+                    projectSubtitleCount={timelineClips.filter(c => c.trackIndex === 0).reduce((n, c) => n + c.segments.length, 0)}
                     onReexport={() => { setShowYtUpload(false); setShowExportModal(true); }}
                     publicationId={publicationId}
                     defaultTitle={(primaryMedia?.filename || 'LJCUT 影片').replace(/\.[^.]+$/, '')}

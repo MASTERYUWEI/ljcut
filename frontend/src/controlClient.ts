@@ -188,8 +188,21 @@ const EXTERNAL_LABEL: Record<string, string> = {
     undo: 'AI 復原了上一步', redo: 'AI 重做了一步', open: 'AI 開啟了另一個專案',
     import: 'AI 匯入了素材', transcribe: 'AI 完成字幕辨識',
 };
-/** 最近一次 AI 動作（標題列常駐顯示，不只 5 秒通知） */
-export const aiActivity = { text: '', at: 0 };
+/** 最近一次 AI 動作（標題列常駐顯示，不只 5 秒通知）＋本次開啟以來的紀錄 */
+export const aiActivity = { text: '', at: 0, log: [] as { text: string; at: number; details: string[] }[] };
+const CHANGE_LABEL: Record<string, string> = {
+    ripple_delete: '刪除區段並補位', delete_clip: '刪除片段', split: '分割片段', move_clip: '移動片段', set_speed: '調整速度',
+    add_subtitle: '新增字幕', delete_subtitle: '刪除字幕',
+    add_zoom: '加入縮放', edit_zoom: '修改縮放', delete_zoom: '刪除縮放',
+    add_overlay: '加入標註', edit_overlay: '修改標註', delete_overlay: '刪除標註',
+    edit_subtitle: '修改字幕', add_bookend: '加入片頭片尾', bookend_transition: '片頭片尾轉場',
+};
+function describeChange(c: any): string {
+    const label = CHANGE_LABEL[c?.type] ?? c?.type ?? '變更';
+    const range = Array.isArray(c?.timeline) ? c.timeline : Array.isArray(c?.source) ? c.source : null;
+    const fmt = (t: number) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
+    return range && typeof range[0] === 'number' ? `${label}（${fmt(range[0])}–${fmt(range[1])}）` : label;
+}
 function announceExternal(method: string, result: any) {
     let text = '';
     if (method === 'apply') {
@@ -202,6 +215,8 @@ function announceExternal(method: string, result: any) {
     }
     if (text) {
         aiActivity.text = text; aiActivity.at = Date.now();
+        const details = method === 'apply' && Array.isArray(result?.changes) ? result.changes.slice(0, 12).map(describeChange) : [];
+        aiActivity.log = [{ text, at: aiActivity.at, details }, ...aiActivity.log].slice(0, 20);
         window.dispatchEvent(new Event('ljcut-ai-activity'));
     }
 }

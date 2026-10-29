@@ -1,6 +1,6 @@
-/* 標題列：AI 助理連線狀態＋最近一次動作（常駐，讓人隨時知道 AI 做過什麼） */
+/* 標題列：AI 助理連線狀態＋最近動作；點開看本次的 AI 修改紀錄 */
 import { Bot } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { aiActivity } from '../controlClient';
 import { useControlWorkspace } from './ProjectControl';
 
@@ -14,6 +14,8 @@ function ago(ms: number) {
 export function AiStatus() {
     const workspace = useControlWorkspace();
     const [, tick] = useState(0);
+    const [open, setOpen] = useState(false);
+    const boxRef = useRef<HTMLDivElement>(null);
     useEffect(() => {
         const update = () => tick(n => n + 1);
         const onActivity = () => { update(); setTimeout(update, 10500); };   // 10 秒後取消「剛修改」的醒目樣式
@@ -21,11 +23,33 @@ export function AiStatus() {
         const timer = setInterval(update, 30000);
         return () => { window.removeEventListener('ljcut-ai-activity', onActivity); clearInterval(timer); };
     }, []);
+    useEffect(() => {
+        if (!open) return;
+        const onDown = (e: MouseEvent) => { if (!boxRef.current?.contains(e.target as Node)) setOpen(false); };
+        const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); setOpen(false); } };
+        window.addEventListener('mousedown', onDown);
+        window.addEventListener('keydown', onKey, true);
+        return () => { window.removeEventListener('mousedown', onDown); window.removeEventListener('keydown', onKey, true); };
+    }, [open]);
     if (!workspace) return null;
     const recent = aiActivity.at && Date.now() - aiActivity.at < 10000;
-    return <span className={`ai-status ${recent ? 'recent' : ''}`} role="status"
-        title={aiActivity.text ? `最近一次：${aiActivity.text}（${ago(Date.now() - aiActivity.at)}）。AI 的每個修改都可按 Ctrl+Z 復原。` : 'AI 助理可以透過本機控制剪輯這個專案；修改後會在這裡顯示，並可用 Ctrl+Z 復原。'}>
-        <span className="ai-dot" aria-hidden /><Bot aria-hidden />
-        {aiActivity.text ? <span className="ai-status-text">{aiActivity.text} · {ago(Date.now() - aiActivity.at)}</span> : <span className="ai-status-text">AI 助理已連線</span>}
-    </span>;
+    const summary = aiActivity.text ? `${aiActivity.text} · ${ago(Date.now() - aiActivity.at)}` : 'AI 助理已連線';
+    return <div className="ai-status-wrap" ref={boxRef}>
+        <button className={`ai-status ${recent ? 'recent' : ''}`} aria-expanded={open} onClick={() => setOpen(o => !o)}
+            title="AI 助理的修改紀錄（每個修改都可按 Ctrl+Z 復原）">
+            <span className="ai-dot" aria-hidden /><Bot aria-hidden />
+            <span className="ai-status-text">{summary}</span>
+        </button>
+        <span className="sr-only" role="status">{aiActivity.text ? summary : ''}</span>
+        {open && <div className="ai-log" role="dialog" aria-label="AI 助理修改紀錄">
+            <p className="ai-log-head">AI 助理可以透過本機控制剪輯這個專案。每個修改都是一筆復原，按 Ctrl+Z 可退回。</p>
+            {aiActivity.log.length === 0 ? <p className="ai-log-empty">這次開啟後，AI 還沒有修改過專案。</p>
+                : <ol className="ai-log-list">{aiActivity.log.map(item => (
+                    <li key={item.at}>
+                        <div className="ai-log-row"><strong>{item.text}</strong><span>{ago(Date.now() - item.at)}</span></div>
+                        {item.details.length > 0 && <ul>{item.details.map((d, i) => <li key={i}>{d}</li>)}</ul>}
+                    </li>
+                ))}</ol>}
+        </div>}
+    </div>;
 }

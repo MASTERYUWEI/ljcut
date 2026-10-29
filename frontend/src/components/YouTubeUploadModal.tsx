@@ -16,6 +16,7 @@ interface Props {
     publicationId: string;
     thumbnailTime: number;
     stale?: boolean;
+    projectSubtitleCount?: number;
     onReexport?: () => void;
     onClose: () => void;
 }
@@ -28,7 +29,7 @@ const STAGE_LABEL: Record<string, string> = {
     publish: '設定影片公開狀態…',
 };
 
-export function YouTubeUploadModal({ videoPath, defaultTitle, defaultDescription, publicationId, thumbnailTime, stale, onReexport, onClose }: Props) {
+export function YouTubeUploadModal({ videoPath, defaultTitle, defaultDescription, publicationId, thumbnailTime, stale, projectSubtitleCount = 0, onReexport, onClose }: Props) {
     const dialogRef = useRef<HTMLDivElement>(null);
     useDialog(dialogRef);
     const uploadingRef = useRef(false);
@@ -139,7 +140,16 @@ export function YouTubeUploadModal({ videoPath, defaultTitle, defaultDescription
                 {publication && !result && (
                     <>
                         <div style={{ fontSize: 12, color: 'var(--ok)', marginBottom: 8 }}>頻道：{channel || '(已連結)'}</div>
-                        <p style={{ fontSize: 12, color: 'var(--fg-subtext1)' }}>這支成品長 {formatTime(publication.duration)}。字幕時間已配合片頭、剪接和變速對好，直接上傳即可。</p>
+                        <dl className="export-summary">
+                            <dt>成品長度</dt><dd>{formatTime(publication.duration)}</dd>
+                            <dt>CC 字幕</dt><dd>{segments.length ? `${segments.length} 句，時間已配合片頭、剪接和變速對好` : '沒有（這支成品匯出時沒有字幕）'}</dd>
+                        </dl>
+                        {!segments.length && projectSubtitleCount > 0 && (
+                            <div className="stale-banner">
+                                <StatusText kind="warn" text={`專案現在有 ${projectSubtitleCount} 句字幕，但這支成品沒有。直接上傳的話，YouTube 上不會有 CC 字幕。`} />
+                                {onReexport && <button className="btn" onClick={onReexport} disabled={uploading}>重新匯出</button>}
+                            </div>
+                        )}
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
 
                             <div>
@@ -195,11 +205,6 @@ export function YouTubeUploadModal({ videoPath, defaultTitle, defaultDescription
                                 <input type="checkbox" checked={includeSrt} onChange={e => setIncludeSrt(e.target.checked)} disabled={uploading || !segments.length} />
                                 自動掛上本次匯出的 SRT（{segments.length} 句，繁體中文 CC）
                             </label>
-                            {!segments.length && (
-                                <div className="field-hint">
-                                    這支成品匯出時專案沒有字幕，所以是 0 句。若之後才加字幕，請重新匯出再上傳。
-                                </div>
-                            )}
 
                             <button className="btn btn-primary" onClick={doUpload} disabled={uploading || !!partialStudio || !title.trim() || !connected || (thumbMode === 'ai' && !thumbSel)}
                                 style={{ justifyContent: 'center', marginTop: 4 }}>
