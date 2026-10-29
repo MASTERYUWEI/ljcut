@@ -1,5 +1,6 @@
 /* Export-bound captions, Codex cover selection and YouTube upload. */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { useDialog } from '../useDialog';
 import { notify } from '../toast';
 import { api } from '../api';
 import { controlRequest } from '../controlClient';
@@ -23,6 +24,8 @@ const STAGE_LABEL: Record<string, string> = {
 };
 
 export function YouTubeUploadModal({ videoPath, defaultTitle, defaultDescription, publicationId, thumbnailTime, onClose }: Props) {
+    const dialogRef = useRef<HTMLDivElement>(null);
+    useDialog(dialogRef);
     const [connected, setConnected] = useState<boolean | null>(null);
     const [channel, setChannel] = useState('');
     const [title, setTitle] = useState(defaultTitle);
@@ -102,9 +105,9 @@ export function YouTubeUploadModal({ videoPath, defaultTitle, defaultDescription
 
     return (
         <div className="modal-overlay" onClick={uploading ? undefined : onClose}>
-            <div className="modal-box" onClick={e => e.stopPropagation()} style={{ maxWidth: 1000, maxHeight: '88vh', overflowY: 'auto' }}>
+            <div className="modal-box" ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="yt-upload-title" onClick={e => e.stopPropagation()} style={{ maxWidth: 1000, maxHeight: '88vh', overflowY: 'auto' }}>
                 <div className="modal-header">
-                    <h3>⬆️ 上傳到 YouTube</h3>
+                    <h3 id="yt-upload-title">⬆️ 上傳到 YouTube</h3>
                     <button className="btn" onClick={onClose} disabled={uploading} style={{ padding: '2px 8px' }} aria-label="關閉" title="關閉（Esc）">✕</button>
                 </div>
 

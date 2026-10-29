@@ -20,7 +20,7 @@
   --fg-text: #e2e4f0;
   --fg-subtext0: #8b8da8;
   --fg-subtext1: #b0b2cc;
-  --fg-overlay0: #5a5c78;
+  --fg-overlay0: #84869f;   /* 對深色底 ≥4.5:1（原 #5a5c78 只有 2.8:1） */
 
   /* ── Accent — Amber / Gold 主調 ── */
   --accent-amber: #f0b050;
@@ -507,7 +507,7 @@ body {
 }
 
 .subtitle-item .index {
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   font-family: var(--font-mono);
   color: var(--fg-overlay0);
@@ -705,8 +705,8 @@ body {
 }
 
 .clip-text {
-  font-size: 10px;
-  font-family: var(--font-mono);
+  font-size: 11px;
+  font-family: var(--font);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1530,7 +1530,7 @@ body {
 }
 
 .media-duration {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--fg-subtext0);
   font-family: var(--font-mono);
 }
@@ -2571,4 +2571,10 @@ body {
   font: inherit;
   text-align: left;
   cursor: pointer;
+}
+
+/* 輸入框提示文字：對深色底 ≥4.5:1（瀏覽器預設 #757575 只有 3.6:1） */
+::placeholder {
+  color: var(--fg-overlay0);
+  opacity: 1;
 }

@@ -17,6 +17,7 @@ import { YouTubeUploadModal } from './components/YouTubeUploadModal';
 import { ProjectControl } from './components/ProjectControl';
 import Toaster from './components/Toaster';
 import { notify, toast } from './toast';
+import { useDialog } from './useDialog';
 import { pushUndo, undo, redo, projectData, dryRun, applyPlan, readState } from './editSession';
 import { clippedSegments, splitClip, timelineSegments, toSourceTime, toTimelineTime, validateProject } from './editCore';
 import { registerPreviewReader } from './controlClient';
@@ -2673,17 +2674,17 @@ export default function App() {
 
                     {(hasTimeline || primaryMedia) && (
                         <div className="video-controls">
-                            <button className="btn" onClick={togglePlay} style={{ padding: '6px 12px' }}>
+                            <button className="btn" onClick={togglePlay} style={{ padding: '6px 12px' }} aria-label={isPlaying ? '暫停（空白鍵）' : '播放（空白鍵）'} title={isPlaying ? '暫停（空白鍵／K）' : '播放（空白鍵／L）'}>
                                 {isPlaying ? '⏸' : '▶'}
                             </button>
                             <span className="time" ref={timeDisplayRef}>{formatTime(currentTime)} / {formatTime(duration)}</span>
-                            <input type="range" ref={rangeSliderRef} min={0} max={duration || 0} step={0.1} defaultValue={currentTime}
+                            <input type="range" ref={rangeSliderRef} aria-label="播放位置" min={0} max={duration || 0} step={0.1} defaultValue={currentTime}
                                 onChange={(e) => seekTo(Number(e.target.value))}
                                 style={{ flex: 1, accentColor: 'var(--accent-amber)' }} />
                             {activeClipSpeed !== 1 && <span style={{ fontSize: 11, color: '#fbbf24', fontWeight: 600 }}>⚡{activeClipSpeed}x</span>}
                             <span className="time" style={{ fontSize: 11 }}>{Math.round(zoom * 100)}%</span>
-                            <button className="btn" onClick={() => setZoom(z => Math.max(z * 0.8, 0.1))} style={{ padding: '4px 8px', fontSize: 12 }}>−</button>
-                            <button className="btn" onClick={() => setZoom(z => Math.min(z * 1.25, 50))} style={{ padding: '4px 8px', fontSize: 12 }}>+</button>
+                            <button className="btn" onClick={() => setZoom(z => Math.max(z * 0.8, 0.1))} style={{ padding: '4px 8px', fontSize: 12 }} aria-label="縮小時間軸" title="縮小時間軸（Ctrl+－）">−</button>
+                            <button className="btn" onClick={() => setZoom(z => Math.min(z * 1.25, 50))} style={{ padding: '4px 8px', fontSize: 12 }} aria-label="放大時間軸" title="放大時間軸（Ctrl+＋）">+</button>
                         </div>
                     )}
 
@@ -2853,7 +2854,7 @@ export default function App() {
                                                             style={{ left, width, top: 4 + row * 28, height: 24 }}
                                                             onClick={(e) => { e.stopPropagation(); selectOverlay(o.id); seekTo(toTimelineTime(clip, Math.min(b - 0.01, a + Math.min(0.6, (b - a) / 2)))); }}
                                                             title={`${OVERLAY_LABEL[o.kind]}${o.text ? `：${o.text}` : ''}\n${formatTimestamp(o.start)} → ${formatTimestamp(o.end)}（素材時間）\n選取後 Shift+點／拖曳預覽畫面設定位置`}>
-                                                            <span className="clip-text">{icon[o.kind]} {o.text ?? OVERLAY_LABEL[o.kind]}</span>
+                                                            <span className="clip-text">{width >= 56 || selected ? `${icon[o.kind]} ${o.text ?? OVERLAY_LABEL[o.kind]}` : icon[o.kind]}</span>
                                                             {selected && (
                                                                 <span className="zoom-clip-tools" onClick={(e) => e.stopPropagation()}>
                                                                     <button className="zoom-mini-btn" title={o.kind === 'html' ? 'HTML 動畫由 AI 撰寫' : o.kind === 'media' ? '調整音量' : '編輯文字'} onClick={editSelectedOverlayText}>✎</button>
@@ -2972,9 +2973,9 @@ export default function App() {
                             {(isPolishing || isScanningTypos || isScanningFlow) &&
                                 <div className="progress-bar"><div className="fill loading" style={{ width: '100%' }} /></div>}
                             <div className="st-row">
-                                <input value={typoFrom} onChange={e => setTypoFrom(e.target.value)} placeholder="錯字" className="st-input" />
+                                <input value={typoFrom} onChange={e => setTypoFrom(e.target.value)} placeholder="錯字" aria-label="要取代的錯字" className="st-input" />
                                 <span style={{ color: '#888', flexShrink: 0 }}>→</span>
-                                <input value={typoTo} onChange={e => setTypoTo(e.target.value)} placeholder="正字" className="st-input" />
+                                <input value={typoTo} onChange={e => setTypoTo(e.target.value)} placeholder="正字" aria-label="取代成的正確文字" className="st-input" />
                                 <button className="btn st-btn" disabled={!typoFrom} onClick={handleReplaceAll}
                                     title="整條時間軸所有出現處一次取代（Ctrl+Z 可復原）">取代</button>
                             </div>
@@ -3099,6 +3100,9 @@ export default function App() {
         && splitT > speedMenuClip.startTime + 0.001
         && splitT < speedMenuClip.startTime + speedMenuClip.duration - 0.001;
 
+    const exportDialogRef = useRef<HTMLDivElement>(null);
+    useDialog(exportDialogRef, showExportModal);
+
     // ── 剪輯快捷鍵（Esc 在輸入框內也有效；其餘在輸入框內不攔截）──
     //   S 在播放頭分割｜Delete 刪除選取的標註／縮放／片段（可 Ctrl+Z 復原）｜←/→ 逐格、Shift+←/→ 1 秒
     //   J 倒退 5 秒｜K 暫停｜L 播放｜Home/End 跳到頭尾｜Ctrl+＋/－ 縮放時間軸｜Esc 關閉對話框與選單、取消選取
@@ -3191,9 +3195,9 @@ export default function App() {
             {/* 匯出影片設定彈窗 */}
             {showExportModal && (
                 <div className="modal-overlay" onClick={() => setShowExportModal(false)}>
-                    <div className="modal-box" onClick={e => e.stopPropagation()} style={{ maxWidth: 430 }}>
+                    <div className="modal-box" ref={exportDialogRef} role="dialog" aria-modal="true" aria-labelledby="export-title" onClick={e => e.stopPropagation()} style={{ maxWidth: 430 }}>
                         <div className="modal-header">
-                            <h3>🎬 匯出影片</h3>
+                            <h3 id="export-title">🎬 匯出影片</h3>
                             <button className="btn" onClick={() => setShowExportModal(false)} style={{ padding: '2px 8px' }} aria-label="關閉" title="關閉（Esc）">✕</button>
                         </div>
                         <div className="style-row" title="關閉＝匯出乾淨畫面（推薦：YouTube 觀眾用 CC 字幕，之後改錯字免重傳影片）；開啟＝字幕燒進畫面">

@@ -1,5 +1,6 @@
 /* ── 設定 Modal（輸出目錄 / SRT 目錄 / Gemini API Key）── */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { useDialog } from '../useDialog';
 import { notify } from '../toast';
 import type { AppSettings } from '../types';
 import { api } from '../api';
@@ -13,6 +14,8 @@ interface Props {
 const APPLY_KEY_URL = 'https://aistudio.google.com/apikey';
 
 export function SettingsModal({ settings, setSettings, onClose }: Props) {
+    const dialogRef = useRef<HTMLDivElement>(null);
+    useDialog(dialogRef);
     const pickDir = async (key: 'outputDir' | 'srtDir', title: string) => {
         try {
             const IS_TAURI = !!(window as any).__TAURI_INTERNALS__;
@@ -195,9 +198,9 @@ export function SettingsModal({ settings, setSettings, onClose }: Props) {
 
     return (
         <div className="modal-overlay" onClick={onClose}>
-            <div className="modal-box" onClick={e => e.stopPropagation()}>
+            <div className="modal-box" ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="settings-title" onClick={e => e.stopPropagation()}>
                 <div className="modal-header">
-                    <h3>設定</h3>
+                    <h3 id="settings-title">設定</h3>
                     <button className="btn" onClick={onClose} style={{ padding: '2px 8px' }} aria-label="關閉" title="關閉（Esc）">✕</button>
                 </div>
                 <div className="style-row">

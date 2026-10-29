@@ -1,5 +1,6 @@
 /* ── 螢幕錄影設定 Modal ── */
-import { useState } from 'react';
+import { useRef, useState } from 'react';
+import { useDialog } from '../useDialog';
 import type { RecOpts, RecQuality, RecFps, MicDevice } from '../types';
 import { api } from '../api';
 
@@ -17,6 +18,8 @@ interface Props {
 export function RecordingSettingsModal({
     recOpts, setRecOpts, micDevices, isTauri, micMeterFillRef, micMeterValRef, onClose, onStartRec,
 }: Props) {
+    const dialogRef = useRef<HTMLDivElement>(null);
+    useDialog(dialogRef);
     const [calibrating, setCalibrating] = useState(false);
     const [calMsg, setCalMsg] = useState('');
 
@@ -47,9 +50,9 @@ export function RecordingSettingsModal({
 
     return (
         <div className="modal-overlay" onClick={onClose}>
-            <div className="modal-box" onClick={e => e.stopPropagation()}>
+            <div className="modal-box" ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="rec-settings-title" onClick={e => e.stopPropagation()}>
                 <div className="modal-header">
-                    <h3>螢幕錄影設定</h3>
+                    <h3 id="rec-settings-title">螢幕錄影設定</h3>
                     <button className="btn" onClick={onClose} style={{ padding: '2px 8px' }} aria-label="關閉" title="關閉（Esc）">✕</button>
                 </div>
                 <div className="rec-setting-row">
