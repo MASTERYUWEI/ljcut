@@ -276,6 +276,20 @@ body {
   min-height: 0;
 }
 
+.cover-picker { font-size: 13px; }
+.cover-picker p { margin: 8px 0; }
+.cover-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.cover-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 12px 0; }
+.cover-card { padding: 0; overflow: hidden; border: 2px solid var(--border); border-radius: 8px; background: var(--bg-mantle); color: inherit; cursor: pointer; }
+.cover-card.selected { border-color: var(--accent-amber); }
+.cover-card img { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: cover; }
+.cover-card span { display: block; padding: 5px; }
+.cover-placeholder { display: grid; place-items: center; aspect-ratio: 16 / 9; background: var(--bg-mantle); border: 1px dashed var(--border); border-radius: 8px; }
+.cover-selected { display: flex; align-items: center; gap: 12px; margin-top: 12px; }
+.cover-selected img { width: 160px; border-radius: 6px; }
+.cover-brief { padding: 10px; margin-top: 10px; background: var(--bg-mantle); border-radius: 8px; }
+@media (max-width: 700px) { .cover-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
 .video-container video {
   width: 100%;
   height: 100%;
@@ -293,6 +307,7 @@ body {
 /* 字幕即時預覽 overlay */
 .subtitle-preview-overlay {
   position: absolute;
+  width: max-content;
   transform: translate(-50%, -50%);
   color: #fff;
   text-align: center;
@@ -313,6 +328,37 @@ body {
   outline: 2px dashed rgba(240, 176, 80, 0.6);
   outline-offset: 4px;
 }
+
+.transition-preview {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  opacity: 0;
+  pointer-events: none;
+  z-index: 5;
+}
+
+.bookend-settings {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--bg-surface2);
+  border-radius: 8px;
+  background: var(--bg-surface0);
+}
+
+.bookend-settings input:not([type="checkbox"]), .bookend-settings select {
+  min-width: 0;
+  padding: 7px 10px;
+  border: 1px solid var(--bg-surface2);
+  border-radius: 6px;
+  background: var(--bg-crust);
+  color: var(--fg-text);
+}
+
+.bookend-settings label { white-space: nowrap; }
+.bookend-settings small { color: var(--fg-subtext0); }
 
 .video-placeholder {
   display: flex;

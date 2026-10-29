@@ -41,6 +41,8 @@ export interface MediaItem {
 
 // ── 時間軸 Clip ──
 export interface TimelineClip {
+    transitionIn?: { kind: 'fade-black' | 'fade-gray' | 'fade-white'; duration: number };
+    bookend?: 'intro' | 'outro';
     id: string;             // 唯一 ID（uuid）
     mediaId: string;        // 對應 MediaItem.id
     trackIndex: number;     // 0=影片軌, 1=字幕軌（保留）

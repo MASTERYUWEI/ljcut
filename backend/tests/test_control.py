@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import threading
@@ -25,6 +26,9 @@ class ControlTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
+        self.data_env = patch.dict(os.environ, {'LJCUT_DATA_DIR': str(self.root)})
+        self.data_env.start()
+        self.addCleanup(self.data_env.stop)
         self.uploads = self.root / 'uploads'
         self.uploads.mkdir()
         with patch.dict(os.environ, {'LJCUT_CONTROL_WORKSPACE': str(self.root / 'workspace')}):
@@ -81,7 +85,7 @@ class ControlTests(unittest.TestCase):
         reopened=self.post('/open',{'path':'saved.ljcut'}).json()
         self.assertEqual(reopened['timelineClips'],project['timelineClips'])
         self.assertTrue(self.control.media_path(reopened['mediaItems'][0]).is_file())
-        job=self.post('/export',{'project':reopened,'revision':3}).json()
+        job=self.post('/export',{'project':reopened,'revision':3,'burnSubtitles':True}).json()
         self.assertIn('id',job,job)
         deadline=time.monotonic()+60
         while time.monotonic()<deadline:
@@ -123,6 +127,48 @@ class ControlTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,'cancelled'):
             list(FFmpegService.export_timeline_with_progress([],str(self.root/'none.ass'),str(self.root/'cancel.mp4'),cancel_event=cancelled))
 
+    def test_control_export_defaults_to_clean_video_with_identical_srt(self):
+        source = self.control.root/'clean-source.mp4'
+        subprocess.run(['ffmpeg','-v','error','-f','lavfi','-i','color=black:s=320x180:r=30:d=3',
+            '-c:v','libx264','-pix_fmt','yuv420p',str(source)],check=True,capture_output=True,
+            creationflags=0x08000000 if os.name=='nt' else 0)
+        original = source.read_bytes()
+        media = self.post('/media',{'path':source.name}).json()
+        intro = dict(id='intro',mediaId=media['id'],bookend='intro',trackIndex=0,startTime=0,
+            trimStart=0,trimEnd=1,duration=1,speed=1,segments=[])
+        main = dict(id='main',mediaId=media['id'],trackIndex=0,startTime=1,
+            trimStart=0,trimEnd=2,duration=2,speed=1,segments=[dict(id=1,start=.25,end=1,text='VISIBLE TEXT')])
+        project = dict(schemaVersion=1,projectId='clean-export',mediaItems=[media],timelineClips=[intro,main],
+            language='zh',subtitleStyle=dict(fontName='Arial',fontSize=48,posY=50))
+        before = json.dumps(project,sort_keys=True)
+        srts = []
+        for burn in [False, True]:
+            body = dict(project=project,revision=1)
+            if burn: body['burnSubtitles'] = True
+            job = self.post('/export',body).json()
+            deadline = time.monotonic()+30
+            while time.monotonic()<deadline:
+                result = self.client.get('/api/control/jobs/'+job['id'],headers=self.headers).json()
+                if result['status'] not in {'queued','running'}: break
+                time.sleep(.1)
+            self.assertEqual(result['status'],'completed',result)
+            self.assertEqual(result['burnSubtitles'],burn)
+            frame = subprocess.check_output(['ffmpeg','-v','error','-ss','1.5','-i',result['outputPath'],
+                '-frames:v','1','-pix_fmt','gray','-f','rawvideo','pipe:1'],
+                creationflags=0x08000000 if os.name=='nt' else 0)
+            bright = sum(pixel > 200 for pixel in frame)
+            self.assertGreater(bright,50) if burn else self.assertEqual(bright,0)
+            srts.append(Path(result['srtPath']).read_text(encoding='utf-8'))
+            self.assertAlmostEqual(FFmpegService.get_media_info(result['outputPath'])['duration'],3,delta=1/30)
+            publication = self.client.get('/api/control/publications/'+result['publicationId'],headers=self.headers).json()
+            self.assertEqual(publication['mainSegments'],[dict(start=1.25,end=2,text='VISIBLE TEXT')])
+        self.assertEqual(srts[0],srts[1])
+        self.assertIn('00:00:01,250 --> 00:00:02,000',srts[0])
+        self.assertEqual(json.dumps(project,sort_keys=True),before)
+        self.assertEqual(source.read_bytes(),original)
+        self.assertEqual(self.post('/export',dict(project=project,burnSubtitles='false')).json()['detail']['code'],
+            'INVALID_EXPORT_OPTION')
+
     def test_speed_export_without_subtitles(self):
         fixture=create_fixture(self.control.root/'speed.mp4')
         output=self.root/'speed-output.mp4'
@@ -130,6 +176,109 @@ class ControlTests(unittest.TestCase):
             {'video_path':str(fixture),'trim_start':2,'trim_end':6,'speed':2,'output_duration':2}],
             str(self.root/'no-subtitles.ass'),str(output),use_nvenc=False,video_width=640,video_height=360))
         self.assertAlmostEqual(FFmpegService.get_media_info(str(output))['duration'],2,delta=1/30)
+
+    def test_three_transitions_render_without_changing_duration(self):
+        from array import array
+        import math
+        from services.transitions import validate_transitions
+        fixture=create_fixture(self.control.root/'transitions.mp4')
+        source_hash=hashlib.sha256(fixture.read_bytes()).hexdigest()
+        for kind,level in [('fade-black',0),('fade-gray',128),('fade-white',255)]:
+            clips=[dict(video_path=str(fixture),trim_start=0,trim_end=2,speed=1,output_duration=2),
+                   dict(video_path=str(fixture),trim_start=4,trim_end=6,speed=1,output_duration=2,
+                        transition_in=dict(kind=kind,duration=.6))]
+            output=self.root/(kind+'.mp4')
+            list(FFmpegService.export_timeline_with_progress(clips,str(self.root/'none.ass'),str(output),
+                use_nvenc=False,video_width=640,video_height=360))
+            self.assertAlmostEqual(FFmpegService.get_media_info(str(output))['duration'],4,delta=1/30)
+            pixel=subprocess.check_output(['ffmpeg','-v','error','-ss','2','-i',str(output),'-frames:v','1',
+                '-vf','scale=1:1','-pix_fmt','rgb24','-f','rawvideo','pipe:1'],creationflags=0x08000000 if os.name=='nt' else 0)
+            self.assertTrue(all(abs(v-level)<10 for v in pixel),(kind,list(pixel)))
+            pcm=array('f',subprocess.check_output(['ffmpeg','-v','error','-i',str(output),
+                '-vn','-ac','1','-ar','48000','-f','f32le','pipe:1'],
+                creationflags=0x08000000 if os.name=='nt' else 0))
+            def rms(start):
+                samples=pcm[int(start*48000):int((start+.02)*48000)]
+                return math.sqrt(sum(v*v for v in samples)/len(samples))
+            baseline=rms(.04)
+            self.assertGreater(baseline,.1)
+            self.assertLess(rms(2.04)/baseline,.3)
+            self.assertTrue(.35 < rms(2.14)/baseline < .7)
+        self.assertEqual(hashlib.sha256(fixture.read_bytes()).hexdigest(),source_hash)
+        with self.assertRaises(ValueError):
+            validate_transitions([dict(output_duration=.1),dict(output_duration=1,transition_in=dict(kind='fade-black',duration=.6))])
+
+    def test_bookend_file_picker_import(self):
+        source = create_fixture(self.root/'external-video.mp4')
+        content = source.read_bytes()
+        before = self.client.get('/api/control/production-settings', headers=self.headers).json()
+        paths = []
+        for _ in range(2):
+            res = self.client.post('/api/control/bookend-file', headers=self.headers,
+                files={'file':('自訂 片尾.mp4',content,'video/mp4')})
+            self.assertEqual(res.status_code,200,res.text)
+            result = res.json()
+            self.assertEqual(result['filename'],'自訂 片尾.mp4')
+            imported = self.control.path(result['path'],True)
+            self.assertEqual(imported.read_bytes(),content)
+            paths.append(result['path'])
+        self.assertNotEqual(*paths)  # Same names must never overwrite another choice.
+        self.assertEqual(source.read_bytes(),content)
+        self.assertEqual(before,self.client.get('/api/control/production-settings',headers=self.headers).json())
+        res=self.client.post('/api/control/bookend-file',headers=self.headers,files={'file':('bad.exe',b'no','application/octet-stream')})
+        self.assertEqual(res.json()['detail']['code'],'UNSUPPORTED_MEDIA')
+        res=self.client.post('/api/control/bookend-file',files={'file':('test.mp4',content,'video/mp4')})
+        self.assertEqual(res.status_code,401)
+        saved=self.post('/production-settings',dict(expectedSettingsRevision=0,introPath=paths[0],useIntro=True))
+        self.assertEqual(saved.status_code,200,saved.text)
+        prepared=self.post('/bookends-media',{}).json()
+        self.assertEqual(prepared['intro']['filename'],'自訂 片尾.mp4')
+
+    def test_bookend_settings_silent_media_save_reopen_export_srt(self):
+        fixture = create_fixture(self.control.root/'main.mp4')
+        intro = self.control.root/'intro.mp4'
+        outro = self.control.root/'outro.mp4'
+        for path, color, duration in [(intro,'red',1),(outro,'blue',2)]:
+            subprocess.run(['ffmpeg','-v','error','-f','lavfi','-i',f'color={color}:s=320x180:r=30:d={duration}',
+                '-c:v','libx264','-pix_fmt','yuv420p',str(path)],check=True,capture_output=True,
+                creationflags=0x08000000 if os.name=='nt' else 0)
+        hashes = {p:hashlib.sha256(p.read_bytes()).hexdigest() for p in (fixture,intro,outro)}
+        settings = dict(introPath='intro.mp4',outroPath='outro.mp4',useIntro=True,useOutro=True,expectedSettingsRevision=0)
+        saved = self.post('/production-settings',settings)
+        self.assertEqual(saved.status_code,200,saved.text)
+        self.assertEqual(self.post('/production-settings',settings).json()['detail']['code'],'STALE_SETTINGS')
+        self.assertEqual(self.post('/bookends-media',{'outroPath':'../outside.mp4'}).json()['detail']['code'],'OUTSIDE_WORKSPACE')
+        self.assertEqual(self.post('/bookends-media',{'outroPath':'missing.mp4'}).json()['detail']['code'],'FILE_NOT_FOUND')
+        media = self.post('/bookends-media',{}).json()
+        self.assertEqual(media['intro']['id'],self.post('/bookends-media',{}).json()['intro']['id'])
+        main = self.post('/media',{'path':'main.mp4'}).json()
+        def clip(m,role,start):
+            return dict(id=role,mediaId=m['id'],bookend=role,trackIndex=0,startTime=start,trimStart=0,
+                trimEnd=m['info']['duration'],duration=m['info']['duration'],speed=1,segments=[])
+        main_clip=clip(main,'main',1)
+        main_clip.pop('bookend')
+        main_clip['segments']=[dict(id=0,start=4.5,end=5.5,text='字幕跟隨主影片')]
+        project=dict(schemaVersion=1,projectId='bookends',language='zh',
+            subtitleStyle=dict(fontName='Microsoft JhengHei',fontSize=30,posY=90),
+            mediaItems=[media['intro'],main,media['outro']],
+            timelineClips=[clip(media['intro'],'intro',0),main_clip,clip(media['outro'],'outro',9)])
+        self.assertEqual(self.post('/save',{'path':'bookends.ljcut','project':project}).status_code,200)
+        reopened = self.post('/open',{'path':'bookends.ljcut'}).json()
+        self.assertEqual(reopened['timelineClips'],project['timelineClips'])
+        job=self.post('/export',{'project':reopened,'revision':1}).json()
+        deadline=time.monotonic()+60
+        while time.monotonic()<deadline:
+            result=self.client.get('/api/control/jobs/'+job['id'],headers=self.headers).json()
+            if result['status'] not in {'queued','running'}: break
+            time.sleep(.1)
+        self.assertEqual(result['status'],'completed',result)
+        info=FFmpegService.get_media_info(result['outputPath'])
+        self.assertAlmostEqual(info['duration'],11,delta=1/30)
+        self.assertEqual(info['width'],main['info']['width'])
+        self.assertTrue(info.get('audio_codec'))
+        srt=Path(result['srtPath']).read_text(encoding='utf-8')
+        self.assertIn('00:00:05,500 --> 00:00:06,500',srt)
+        self.assertEqual({p:hashlib.sha256(p.read_bytes()).hexdigest() for p in hashes},hashes)
 
 
 if __name__ == '__main__':

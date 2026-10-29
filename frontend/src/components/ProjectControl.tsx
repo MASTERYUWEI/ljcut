@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { controlWorkspace, executeCommand } from '../controlClient';
 import { readState, undo, redo } from '../editSession';
+import { BookendControls } from './BookendControls';
 
 export function ProjectControl() {
     const [workspace, setWorkspace] = useState(controlWorkspace);
@@ -33,6 +34,7 @@ export function ProjectControl() {
                 <button className="btn" disabled={busy} onClick={() => run(redo)}>重做</button>
             </div>
             {workspace && <>
+                <BookendControls />
                 <textarea aria-label="結構化剪輯計畫" placeholder="貼上結構化剪輯計畫，先檢查變更" rows={3} value={plan}
                     onChange={e => { setPlan(e.target.value); setDraft(null); }} />
                 <div style={{ display: 'flex', gap: 8 }}>
@@ -47,7 +49,7 @@ export function ProjectControl() {
                     })}>確認套用這批變更</button>
                 </div>
             </>}
-            {report && <pre style={{ maxHeight: 220, overflow: 'auto', whiteSpace: 'pre-wrap', fontSize: 12 }}>{report}</pre>}
+            {report && <details><summary>操作結果</summary><pre style={{ maxHeight: 220, overflow: 'auto', whiteSpace: 'pre-wrap', fontSize: 12 }}>{report}</pre></details>}
         </div>
     </details>;
 }

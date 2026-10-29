@@ -47,7 +47,7 @@ class Client:
 def main():
     parser = argparse.ArgumentParser(description='LJ Cut local control (no paid services)')
     parser.add_argument('--workspace', required=True)
-    parser.add_argument('command', choices=['state', 'dry_run', 'apply', 'undo', 'redo', 'import', 'save', 'open', 'preview', 'export', 'job', 'cancel', 'result'])
+    parser.add_argument('command', choices=['state', 'dry_run', 'apply', 'undo', 'redo', 'import', 'save', 'open', 'preview', 'export', 'job', 'cancel', 'result', 'production_settings', 'set_production_settings', 'prepare_bookends', 'prepare_transitions', 'publication', 'prepare_covers', 'cover_batch', 'complete_covers', 'select_cover'])
     parser.add_argument('--params', help='UTF-8 JSON file; mutations require projectId and expectedRevision')
     parser.add_argument('--request-id', help='Reuse the SAME ID only with the SAME command after an uncertain response')
     parser.add_argument('--id', help='Job ID or command result ID')

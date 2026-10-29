@@ -1,5 +1,7 @@
 import { useStore } from './store';
-import { durationOf, evaluatePlan, requireEdit, TRACKS, validateProject } from './editCore';
+import { durationOf, evaluateBookends, evaluatePlan, evaluateTransitions, requireEdit, TRACKS, validateProject } from './editCore';
+import type { TransitionKind } from './transitions';
+import type { MediaItem } from './types';
 import type { EditPlan, ProjectData } from './editCore';
 
 let revision = 0;
@@ -70,6 +72,19 @@ export function replaceProject(p: ProjectData, expected: ExpectedVersion) {
 export function dryRun(plan: EditPlan) {
     checkVersion(plan);
     const result = evaluatePlan(projectData(), revision, plan, () => crypto.randomUUID());
+    return rememberDraft(result);
+}
+export function dryRunBookends(expected: ExpectedVersion, intro?: MediaItem, outro?: MediaItem, transitionMode?: TransitionKind | 'random' | 'none', transitionDuration = 0.6) {
+    checkVersion(expected);
+    const result = evaluateBookends(projectData(), intro, outro, () => crypto.randomUUID());
+    if (transitionMode && transitionMode !== 'none') {
+        const transitions = evaluateTransitions(result.next, transitionMode, transitionDuration);
+        result.next = transitions.next;
+        result.changes.push(...transitions.changes);
+    }
+    return rememberDraft(result);
+}
+function rememberDraft(result: ReturnType<typeof evaluatePlan>) {
     const dryRunId = crypto.randomUUID();
     // Only plans at the current revision survive; bound memory for repeated proposals.
     if (drafts.size >= 20) drafts.delete(drafts.keys().next().value!);
@@ -77,6 +92,16 @@ export function dryRun(plan: EditPlan) {
     return { dryRunId, sessionId, projectId, revision, changes: result.changes,
         beforeDuration: result.beforeDuration, afterDuration: result.afterDuration,
         proposedClips: result.next.timelineClips, requiresConfirmation: true };
+}
+export function dryRunTransitions(expected: ExpectedVersion, mode: TransitionKind | 'random' | 'none', duration: number) {
+    checkVersion(expected);
+    return rememberDraft(evaluateTransitions(projectData(), mode, duration));
+}
+export function draftProject(args: ExpectedVersion & { dryRunId: string }) {
+    checkVersion(args);
+    const draft = drafts.get(args.dryRunId);
+    requireEdit(draft && draft.revision === revision && draft.projectId === projectId, 'STALE_DRY_RUN', 'dry-run 已過期，請重新驗證');
+    return structuredClone(draft.next);
 }
 export function applyPlan(args: ExpectedVersion & { dryRunId: string; confirmed: boolean }) {
     checkVersion(args);

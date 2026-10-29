@@ -16,10 +16,12 @@ import time
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, Body, HTTPException, Request
+from fastapi import APIRouter, Body, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 from .ffmpeg_service import FFmpegService
 from .subtitle import SubtitleService
+from .transitions import validate_transitions
+from . import publication as publications
 
 
 def fail(code, message, status=400):
@@ -55,6 +57,10 @@ def project_payload(p):
                 fail('INVALID_SUBTITLE', '字幕文字或時間無效')
             if not 0 <= seg['start'] < seg['end']:
                 fail('INVALID_SUBTITLE', '字幕時間無效')
+    try:
+        validate_transitions(sorted(p['timelineClips'], key=lambda c:c['startTime']))
+    except ValueError as error:
+        fail('INVALID_TRANSITION', str(error))
     return p
 
 
@@ -114,6 +120,160 @@ class LocalControl:
     def _routes(self):
         r = self.router
 
+        def production_settings():
+            target = self.root / 'production-settings.json'
+            if not target.exists():
+                return dict(schemaVersion=1, revision=0, introPath='', outroPath='', useIntro=False, useOutro=False, transitionMode='random', transitionDuration=0.6)
+            try:
+                settings = json.loads(target.read_text(encoding='utf-8'))
+                if settings.get('schemaVersion') != 1 or type(settings.get('revision')) is not int:
+                    raise ValueError()
+                return {'transitionMode':'random', 'transitionDuration':0.6, **settings}
+            except (ValueError, AttributeError):
+                fail('INVALID_SETTINGS', '製作設定無法讀取，請先檢查設定檔')
+
+        def selected_settings(base, body):
+            result = {**base, **{k: body[k] for k in ('introPath', 'outroPath', 'useIntro', 'useOutro', 'transitionMode', 'transitionDuration') if k in body}}
+            if result['transitionMode'] not in ('random','none','fade-black','fade-gray','fade-white'):
+                fail('INVALID_TRANSITION', '不支援的轉場')
+            duration = result['transitionDuration']
+            if type(duration) not in (int,float) or not .2 <= duration <= 1.5:
+                fail('INVALID_TRANSITION', '轉場長度需為 0.2–1.5 秒')
+            for role in ('intro', 'outro'):
+                path, enabled = result[role + 'Path'], result['use' + role.title()]
+                if not isinstance(path, str) or type(enabled) is not bool:
+                    fail('INVALID_SETTINGS', '片頭片尾需為相對路徑及啟用開關')
+                if path:
+                    source = self.path(path, True)
+                    if source.suffix.lower() not in {'.mp4', '.mkv', '.mov', '.webm', '.avi', '.wmv'}:
+                        fail('UNSUPPORTED_MEDIA', '片頭片尾請使用影片檔')
+                elif enabled:
+                    fail('BOOKEND_PATH_REQUIRED', '啟用片頭／片尾前請先指定檔案')
+            return result
+
+        @r.get('/publications/{pid}')
+        async def publication(pid: str, request: Request):
+            self.authorize(request)
+            return publications.publication(pid)
+
+        @r.post('/cover-batches')
+        async def cover_batch(request: Request, body: dict = Body(...)):
+            self.authorize(request)
+            batch = publications.request_batch(body.get('publicationId'), body.get('provider','codex'))
+            return batch
+
+        @r.get('/cover-batches/{bid}')
+        async def read_cover_batch(bid: str, request: Request):
+            self.authorize(request)
+            batch = publications.load(bid)
+            if batch.get('kind') != 'cover-batch':
+                fail('INVALID_BATCH', '找不到封面批次')
+            publications.publication(batch['publicationId'])
+            return batch
+
+        @r.post('/cover-batches/{bid}/complete')
+        async def complete_cover_batch(bid: str, request: Request, body: dict = Body(...)):
+            self.authorize(request)
+            paths = body.get('paths')
+            if not isinstance(paths,list) or len(paths) != 6:
+                fail('SIX_REQUIRED', '請提供工作區內 6 張不同封面的路徑')
+            files = [self.path(p,True) for p in paths]
+            if any(p.suffix.lower() not in ('.jpg','.jpeg','.png','.webp') or p.stat().st_size > 25_000_000 for p in files):
+                fail('INVALID_IMAGE', '請提供 25MB 以內的圖片')
+            return await asyncio.to_thread(publications.complete_batch, bid, body.get('analysis'), [p.read_bytes() for p in files])
+
+        @r.post('/publications/{pid}/select-cover')
+        async def select_cover(pid: str, request: Request, body: dict = Body(...)):
+            self.authorize(request)
+            return publications.select_cover(pid, body.get('batchId'), body.get('file'))
+
+        @r.get('/production-settings')
+        async def get_settings(request: Request):
+            self.authorize(request)
+            return production_settings()
+
+        @r.post('/bookend-file')
+        async def upload_bookend(request: Request, file: UploadFile = File(...)):
+            self.authorize(request)
+            # Receive only the file chosen by the user; never accept an external path to read.
+            name = (file.filename or '').replace('\\', '/').rsplit('/', 1)[-1]
+            if not name or ':' in name or Path(name).suffix.lower() not in {'.mp4', '.mkv', '.mov', '.webm', '.avi', '.wmv'}:
+                await file.close()
+                fail('UNSUPPORTED_MEDIA', '請選擇 MP4、MOV、MKV、WebM、AVI 或 WMV 影片')
+            relative = str(Path('branding') / uuid.uuid4().hex / name)
+            target = self.path(relative)
+            target.parent.mkdir(parents=True, exist_ok=False)
+            complete = False
+            try:
+                with target.open('xb') as stream:
+                    while chunk := await file.read(1024 * 1024):
+                        stream.write(chunk)
+                info = await asyncio.to_thread(FFmpegService.get_media_info, str(target))
+                if not (info.get('duration', 0) > 0 and info.get('width') and info.get('height')):
+                    fail('UNSUPPORTED_MEDIA', '選取的檔案沒有可用的影片畫面')
+                complete = True
+                return {'path': relative.replace('\\', '/'), 'filename': name, 'info': info}
+            finally:
+                await file.close()
+                if not complete:
+                    target.unlink(missing_ok=True)
+                    target.parent.rmdir()
+
+        @r.post('/production-settings')
+        async def save_settings(request: Request, body: dict = Body(...)):
+            self.authorize(request)
+            current = production_settings()
+            if body.get('expectedSettingsRevision') != current['revision']:
+                fail('STALE_SETTINGS', '製作設定已變更，請重新讀取', 409)
+            updated = selected_settings(current, body)
+            updated['revision'] += 1
+            target = self.root / 'production-settings.json'
+            temp = self.root / ('.settings-' + uuid.uuid4().hex)
+            temp.write_text(json.dumps(updated, ensure_ascii=False, indent=2), encoding='utf-8')
+            os.replace(temp, target)
+            return updated
+
+        @r.post('/bookends-media')
+        async def bookends_media(request: Request, body: dict = Body(...)):
+            self.authorize(request)
+            settings = selected_settings(production_settings(), body)
+            selected = {}
+            # Inspect every selected file before copying anything or updating the editor.
+            for role in ('intro', 'outro'):
+                if settings['use' + role.title()]:
+                    source = self.path(settings[role + 'Path'], True)
+                    info = await asyncio.to_thread(FFmpegService.get_media_info, str(source))
+                    if not (info.get('duration', 0) > 0 and info.get('width') and info.get('height')):
+                        fail('UNSUPPORTED_MEDIA', '片頭片尾需包含有效影片畫面')
+                    selected[role] = (source, info)
+            if not selected:
+                fail('BOOKENDS_REQUIRED', '請至少啟用片頭或片尾')
+            result = {'settings': settings}
+            def cache_media(source):
+                with source.open('rb') as stream:
+                    digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+                mid = 'b_' + digest
+                dest = self.uploads / (mid + source.suffix.lower())
+                if not dest.exists():
+                    temp = self.uploads / ('.bookend-' + uuid.uuid4().hex)
+                    try:
+                        shutil.copyfile(source, temp)
+                        with temp.open('rb') as stream:
+                            if hashlib.file_digest(stream, 'sha256').hexdigest() != digest:
+                                fail('MEDIA_CHANGED', '素材在準備期間已變更，請重新檢查')
+                        temp.rename(dest)
+                    finally:
+                        temp.unlink(missing_ok=True)
+                else:
+                    with dest.open('rb') as stream:
+                        if hashlib.file_digest(stream, 'sha256').hexdigest() != digest:
+                            fail('MEDIA_ID_COLLISION', '快取素材內容不一致，拒絕覆寫')
+                return mid, dest
+            for role, (source, info) in selected.items():
+                mid, dest = await asyncio.to_thread(cache_media, source)
+                result[role] = dict(id=mid, filename=source.name, url='/uploads/' + dest.name, info=info, waveformPeaks=[])
+            return result
+
         @r.post('/connect')
         async def connect(request: Request):
             self.authorize(request, bootstrap=True)
@@ -135,7 +295,7 @@ class LocalControl:
                 if self.commands[cid]['request'] != body:
                     fail('REQUEST_ID_REUSED', '同一 id 不可搭配不同內容', 409)
                 return self.commands[cid]
-            if body.get('method') not in {'state', 'dry_run', 'apply', 'undo', 'redo', 'import', 'save', 'open', 'preview', 'export'} or not isinstance(body.get('params', {}), dict):
+            if body.get('method') not in {'state', 'dry_run', 'apply', 'undo', 'redo', 'import', 'save', 'open', 'preview', 'export', 'production_settings', 'set_production_settings', 'prepare_bookends', 'prepare_transitions', 'publication', 'prepare_covers', 'cover_batch', 'complete_covers', 'select_cover'} or not isinstance(body.get('params', {}), dict):
                 fail('UNSUPPORTED_COMMAND', '不支援的控制命令')
             if not self.owner or time.monotonic() - self.seen > 10:
                 fail('EDITOR_OFFLINE', '請先開啟已啟用控制的 LJ Cut 編輯器', 409)
@@ -261,6 +421,9 @@ class LocalControl:
         @r.post('/export')
         async def export(request: Request, body: dict = Body(...)):
             self.authorize(request)
+            burn_subtitles = body.get('burnSubtitles', False)
+            if not isinstance(burn_subtitles, bool):
+                fail('INVALID_EXPORT_OPTION', 'burnSubtitles 必須是布林值')
             project = project_payload(body.get('project'))
             medias = {m['id']: self.media_path(m) for m in project.get('mediaItems', [])}
             infos = {mid: await asyncio.to_thread(FFmpegService.get_media_info, str(path)) for mid, path in medias.items()}
@@ -276,15 +439,15 @@ class LocalControl:
                 if not (0 <= start < end and 1 <= speed <= 5):
                     fail('INVALID_RANGE', '裁切範圍／速度無效')
                 info = infos[c['mediaId']]
-                if end > info.get('duration', 0) + .001 or not info.get('width') or not info.get('audio_codec'):
-                    fail('UNSUPPORTED_MEDIA', '第一階段輸出需為同時含影片與音訊的有效素材')
+                if end > info.get('duration', 0) + .001 or not info.get('width'):
+                    fail('UNSUPPORTED_MEDIA', '輸出需包含有效影片畫面')
                 length = (end - start) / speed
                 if abs(c['duration'] - length) > 1e-6:
                     fail('INVALID_RANGE', '片段長度不一致')
                 clips.append({"video_path": str(medias[c['mediaId']]), "trim_start": start,
-                              "trim_end": end, "speed": speed, "output_duration": length})
+                              "trim_end": end, "speed": speed, "output_duration": length, "transition_in": c.get('transitionIn')})
                 subtitle_clips.append({"segments": c['segments'], "trim_start": start, "trim_end": end,
-                                       "speed": speed, "time_offset": offset})
+                                       "speed": speed, "time_offset": offset, "bookend": c.get('bookend')})
                 offset += length
             if not clips:
                 fail('EMPTY_TIMELINE', '時間軸沒有片段')
@@ -292,13 +455,18 @@ class LocalControl:
             out_dir = self.root / 'exports' / jid
             out_dir.mkdir(parents=True)
             ass = out_dir / 'subtitles.ass'
-            first = infos[project['timelineClips'][0]['mediaId']]
+            main = next((c for c in project['timelineClips'] if not c.get('bookend')), project['timelineClips'][0])
+            first = infos[main['mediaId']]
             width, height = first['width'], first['height']
-            SubtitleService.multi_clip_segments_to_ass(subtitle_clips, str(ass),
+            # Keep source captions in the project and SRT; burn-in is an explicit export choice.
+            SubtitleService.multi_clip_segments_to_ass(subtitle_clips if burn_subtitles else [], str(ass),
                 style=project.get('subtitleStyle', {}), video_width=width, video_height=height)
+            srt_segments = publications.mapped_captions(subtitle_clips)
+            srt_path = out_dir / 'subtitles.srt'
+            SubtitleService.segments_to_srt(sorted(srt_segments, key=lambda s: s['start']), str(srt_path))
             job = {"id": jid, "status": "queued", "progress": 0, "projectId": project['projectId'],
-                   "revision": body.get('revision'), "expectedDuration": offset,
-                   "outputPath": str(out_dir / 'video.mp4'), "cancel": threading.Event()}
+                   "revision": body.get('revision'), "expectedDuration": offset, "burnSubtitles": burn_subtitles,
+                   "outputPath": str(out_dir / 'video.mp4'), "srtPath": str(srt_path), "cancel": threading.Event()}
             self.jobs[jid] = job
 
             def run():
@@ -307,6 +475,9 @@ class LocalControl:
                     for ev in FFmpegService.export_timeline_with_progress(clips, str(ass), job['outputPath'],
                             use_nvenc=False, video_width=width, video_height=height, cancel_event=job['cancel']):
                         job.update(ev)
+                    publication = publications.record_export(job['outputPath'], subtitle_clips, offset,
+                        next(m['filename'] for m in project['mediaItems'] if m['id'] == main['mediaId']))
+                    job['publicationId'] = publication['id']
                     job['status'] = 'completed'
                     job['progress'] = 100
                 except Exception as e:

@@ -1,6 +1,7 @@
 /* ── API 層 (Tauri + 瀏覽器雙模式) ── */
 
 import type { UploadResult, TranscribeResult, Segment } from './types';
+import { controlHeaders } from './controlClient';
 
 // 偵測是否在 Tauri 環境
 const IS_TAURI = !!(window as any).__TAURI_INTERNALS__;
@@ -283,13 +284,13 @@ export const api = {
 
     /** 多 clip 時間軸匯出（含字幕）— 含存檔對話框 + 進度回報 */
     async exportTimeline(
-        clips: { fileId: string; trimStart: number; trimEnd: number; speed: number; segments: Segment[] }[],
+        clips: { fileId: string; trimStart: number; trimEnd: number; speed: number; segments: Segment[]; captionSegments: Segment[]; bookend?: string; transitionIn?: import('./types').TimelineClip['transitionIn'] }[],
         style: Record<string, unknown>,
         defaultFileName: string,
         videoWidth: number,
         videoHeight: number,
         onProgress: (pct: number, stage?: string, etaSeconds?: number | null) => void,
-    ): Promise<{ outputPath: string } | null> {
+    ): Promise<{ outputPath: string; publicationId: string } | null> {
         // 1. 存檔對話框
         let outputPath = '';
         if (IS_TAURI) {
@@ -309,6 +310,9 @@ export const api = {
             body: JSON.stringify({
                 clips: clips.map(c => ({
                     file_id: c.fileId,
+                    caption_segments: c.captionSegments,
+                    bookend: c.bookend,
+                    transition_in: c.transitionIn,
                     trim_start: c.trimStart,
                     trim_end: c.trimEnd,
                     speed: c.speed,
@@ -345,13 +349,14 @@ export const api = {
                     if (evt.error) throw new Error(evt.error);
                     if (evt.progress != null) onProgress(evt.progress, evt.stage, evt.eta_seconds);
                     if (evt.output_path) finalPath = evt.output_path;
+                    if (evt.done && evt.publication_id) return { outputPath: finalPath, publicationId: evt.publication_id };
                 } catch (e) {
                     if (e instanceof Error && e.message) throw e;
                 }
             }
         }
 
-        return { outputPath: finalPath };
+        throw new Error('匯出未完整結束，尚未取得影片與字幕成果');
     },
 
     /** AI 狀態檢查 */
@@ -390,17 +395,6 @@ export const api = {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ texts }),
-        });
-        if (!res.ok) throw new Error(await res.text());
-        return res.json();
-    },
-
-    /** AI 生成 N 款封面候選（內容感知：附逐字稿），回傳可預覽的 URL 與檔名 */
-    async ytGenThumbnails(title: string, transcript = '', count = 5): Promise<{ ok: boolean; items: { file: string; url: string }[]; error?: string }> {
-        const res = await fetch(`${resolvedBase}/api/yt/thumbnails`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ title, transcript, count }),
         });
         if (!res.ok) throw new Error(await res.text());
         return res.json();
@@ -445,13 +439,13 @@ export const api = {
     async ytUpload(
         body: {
             video_path: string; title: string; description: string; tags: string[];
-            privacy: string; thumbnail_time: number | null; thumbnail_path?: string; segments: Segment[];
+            privacy: string; thumbnail_time: number | null; thumbnail_path?: string; publication_id: string; include_srt: boolean;
         },
         onProgress: (pct: number, stage?: string) => void,
     ): Promise<{ video_id: string; watch_url: string; studio_url: string; warnings?: string[] }> {
         const res = await fetch(`${resolvedBase}/api/yt/upload`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...controlHeaders() },
             body: JSON.stringify(body),
         });
         if (!res.ok) throw new Error(await res.text());
@@ -470,7 +464,7 @@ export const api = {
                 const line = block.trim();
                 if (!line.startsWith('data: ')) continue;
                 const evt = JSON.parse(line.slice(6));
-                if (evt.error) throw new Error(evt.error);
+                if (evt.error) throw Object.assign(new Error(evt.error), { studio_url: evt.studio_url });
                 if (evt.progress != null) onProgress(evt.progress, evt.stage);
                 if (evt.done) result = evt;
             }

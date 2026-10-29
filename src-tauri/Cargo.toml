@@ -15,6 +15,9 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [build-dependencies]
 tauri-build = { version = "2.5.4", features = [] }
 
+[features]
+custom-protocol = ["tauri/custom-protocol"]
+
 [dependencies]
 tauri = { version = "2.10.0", features = ["devtools"] }
 tauri-plugin-log = "2"

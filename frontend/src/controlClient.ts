@@ -1,14 +1,19 @@
 import { api, getBase } from './api';
 import { useStore } from './store';
 import { EditError, requireEdit, validateProject, toSourceTime } from './editCore';
-import { applyPlan, checkVersion, dryRun, projectData, readState, redo, replaceProject, requestPreview, undo } from './editSession';
+import { applyPlan, checkVersion, draftProject, dryRun, dryRunBookends, dryRunTransitions, projectData, readState, redo, replaceProject, requestPreview, undo } from './editSession';
 import type { EditPlan, ProjectData } from './editCore';
 import type { MediaItem } from './types';
 
 let token = '';
+let latestControlExport = 0;
 export let controlWorkspace = '';
 let previewReader: (() => { sourceTime: number; ready: boolean; subtitle: string; paused: boolean }) | undefined;
 export function registerPreviewReader(reader: typeof previewReader) { previewReader = reader; }
+export function controlHeaders() {
+    requireEdit(token, 'CONTROL_DISABLED', '請先啟用本機控制');
+    return { Authorization: `Bearer ${token}` };
+}
 export async function controlRequest(path: string, body?: unknown): Promise<any> {
     requireEdit(token, 'CONTROL_DISABLED', '請先以指定工作區啟動本機控制');
     const res = await fetch(`${getBase()}/api/control${path}`, {
@@ -20,14 +25,36 @@ export async function controlRequest(path: string, body?: unknown): Promise<any>
     if (!res.ok) throw new EditError(result.detail?.code ?? 'CONTROL_ERROR', result.detail?.message ?? JSON.stringify(result.detail));
     return result;
 }
+export async function uploadBookend(file: File): Promise<{ path: string; filename: string }> {
+    requireEdit(token, 'CONTROL_DISABLED', '請先啟用本機控制');
+    const body = new FormData();
+    body.append('file', file);
+    const res = await fetch(`${getBase()}/api/control/bookend-file`, {
+        method: 'POST', headers: { Authorization: `Bearer ${token}` }, body,
+    });
+    const result = await res.json();
+    if (!res.ok) throw new EditError(result.detail?.code ?? 'IMPORT_FAILED', result.detail?.message ?? '影片匯入失敗');
+    return result;
+}
 export async function executeCommand(method: string, params: any = {}): Promise<any> {
     if (method === 'state') return readState();
+    if (method === 'publication') return controlRequest(`/publications/${encodeURIComponent(params.publicationId)}`);
+    if (method === 'prepare_covers') return controlRequest('/cover-batches', params);
+    if (method === 'cover_batch') return controlRequest(`/cover-batches/${encodeURIComponent(params.batchId)}`);
+    if (method === 'complete_covers') return controlRequest(`/cover-batches/${encodeURIComponent(params.batchId)}/complete`, params);
+    if (method === 'select_cover') return controlRequest(`/publications/${encodeURIComponent(params.publicationId)}/select-cover`, params);
+    if (method === 'production_settings') return controlRequest('/production-settings');
+    if (method === 'prepare_transitions') {
+        await controlRequest('/validate-media', projectData());
+        return dryRunTransitions(params, params.mode ?? 'random', params.duration ?? 0.6);
+    }
+    if (method === 'set_production_settings') return controlRequest('/production-settings', params);
     if (method === 'dry_run') {
         await controlRequest('/validate-media', projectData());
         return dryRun(params as EditPlan);
     }
     if (method === 'apply') {
-        await controlRequest('/validate-media', projectData());
+        await controlRequest('/validate-media', draftProject(params));
         return applyPlan(params);
     }
     if (method === 'undo' || method === 'redo') {
@@ -55,6 +82,15 @@ export async function executeCommand(method: string, params: any = {}): Promise<
     }
     checkVersion(params);
     requireEdit(!useStore.getState().isTranscribing && !useStore.getState().isUploading, 'EDITOR_BUSY', '請等待匯入／辨識完成');
+    if (method === 'prepare_bookends') {
+        await controlRequest('/validate-media', projectData());
+        const media = await controlRequest('/bookends-media', params);
+        for (const m of [media.intro, media.outro]) {
+            if (m) { m.url = api.mediaUrl(m.url); m.thumbnailUrl = api.getThumbnailUrl(m.id); }
+        }
+        const result = dryRunBookends(params, media.intro, media.outro, media.settings.transitionMode ?? 'random', media.settings.transitionDuration ?? 0.6);
+        return { ...result, settings: media.settings };
+    }
     if (method === 'import') {
         const media: MediaItem = await controlRequest('/media', { path: params.path });
         checkVersion(params);
@@ -84,7 +120,22 @@ export async function executeCommand(method: string, params: any = {}): Promise<
     if (method === 'export') {
         const p = projectData();
         validateProject(p, true);
-        return controlRequest('/export', { project: p, revision: params.expectedRevision });
+        const exportSequence = ++latestControlExport;
+        const job = await controlRequest('/export', { project: p, revision: params.expectedRevision,
+            burnSubtitles: params.burnSubtitles ?? false });
+        const watch = async () => {
+            try {
+                const next = await controlRequest(`/jobs/${job.id}`);
+                if (next.status === 'completed') {
+                    // The artifact remains queryable, but an old export must not replace the current project's result.
+                    checkVersion(params);
+                    if (exportSequence === latestControlExport) window.dispatchEvent(new CustomEvent('ljcut-export-ready', { detail: next }));
+                }
+                else if (['queued','running'].includes(next.status)) setTimeout(watch, 1500);
+            } catch { /* Export remains queryable via its job ID. */ }
+        };
+        void watch();
+        return job;
     }
     throw new EditError('UNSUPPORTED_COMMAND', `不支援的命令 ${method}`);
 }

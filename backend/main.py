@@ -20,7 +20,7 @@ import asyncio
 from pathlib import Path
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Body
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Body, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -30,8 +30,8 @@ from services.subtitle import SubtitleService
 from services.ffmpeg_service import FFmpegService
 from services.llm_service import LLMService
 from services.youtube_service import YouTubeService
-from services.thumb_service import ThumbService
 from services.control import LocalControl
+from services import publication as publication_service
 
 # ---------- 設定 ----------
 UPLOAD_DIR = Path("./uploads")
@@ -301,6 +301,7 @@ async def export_timeline(body: dict = Body(default={})):
     # 解析每個 clip，找到對應的影片檔案
     ffmpeg_clips = []
     ass_clips_data = []
+    caption_clips = []
     cumulative_offset = 0.0
 
     for clip in clips_input:
@@ -326,6 +327,7 @@ async def export_timeline(body: dict = Body(default={})):
             "trim_end": trim_end,
             "speed": speed,
             "output_duration": output_duration,
+            "transition_in": clip.get('transition_in'),
         })
 
         # 字幕資訊（含時間偏移）
@@ -338,11 +340,13 @@ async def export_timeline(body: dict = Body(default={})):
         })
 
         cumulative_offset += output_duration
+        caption_clips.append({**ass_clips_data[-1], 'segments': clip.get('caption_segments', segments),
+                              'bookend': clip.get('bookend')})
 
     print(f"📋 匯出時間軸: {len(ffmpeg_clips)} clip(s), 總長 {cumulative_offset:.1f}s")
 
     # 產生合併 ASS
-    ass_path = str(OUTPUT_DIR / "timeline_merged.ass")
+    ass_path = str(OUTPUT_DIR / f"timeline_{uuid.uuid4().hex}.ass")
     SubtitleService.multi_clip_segments_to_ass(
         ass_clips_data, ass_path, style=style,
         video_width=video_width, video_height=video_height,
@@ -359,7 +363,8 @@ async def export_timeline(body: dict = Body(default={})):
                 video_width=video_width, video_height=video_height,
             ):
                 yield f"data: {json.dumps(event)}\n\n"
-            yield f"data: {json.dumps({'progress': 100, 'done': True, 'output_path': output_path})}\n\n"
+            publication = publication_service.record_export(output_path, caption_clips, cumulative_offset)
+            yield f"data: {json.dumps({'progress': 100, 'done': True, 'output_path': output_path, 'publication_id': publication['id']})}\n\n"
         except Exception as e:
             print(f"❌ 匯出失敗: {e}")
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
@@ -478,11 +483,7 @@ async def ai_generate_titles(body: dict = Body(default={})):
 
 @app.post("/api/yt/thumbnails")
 async def yt_generate_thumbnails(body: dict = Body(default={})):
-    """AI 生成 N 款 16:9 封面候選（2.5D 像素風 + 本地標題合成）"""
-    return await ThumbService.generate_candidates(
-        body.get("title", ""), int(body.get("count", 5)),
-        transcript=body.get("transcript", ""),
-    )
+    raise HTTPException(409, '封面已改由 Codex 生成；請在 YouTube 面板建立六張候選請求')
 
 
 @app.post("/api/yt/credentials")
@@ -510,36 +511,36 @@ def yt_disconnect():
 
 
 @app.post("/api/yt/upload")
-def yt_upload(body: dict = Body(default={})):
+def yt_upload(request: Request, body: dict = Body(default={})):
     """上傳影片到 YouTube（+ 縮圖 + SRT 字幕）— SSE 進度"""
-    video_path = body.get("video_path", "")
-    if not video_path or not os.path.exists(video_path):
-        raise HTTPException(404, f"找不到影片檔: {video_path}")
-
-    # SRT：前端傳入已映射到成品時間軸的 segments
-    segments = body.get("segments") or []
-    srt_path = None
-    if segments:
-        srt_path = str(OUTPUT_DIR / "yt_upload.srt")
-        SubtitleService.segments_to_srt(segments, srt_path)
+    local_control.authorize(request)
+    publication = publication_service.publication(body.get('publication_id'))
+    video_path = publication['videoPath']
+    # Use the exact exported captions. Never accept current-editor/raw ASR time here.
+    srt_path = publication['srtPath'] if body.get('include_srt',True) and publication['segments'] else None
+    upload_dir = OUTPUT_DIR / f'yt_upload_{uuid.uuid4().hex}'
+    upload_dir.mkdir()
+    if srt_path:
+        shutil.copyfile(srt_path, upload_dir / 'subtitles.srt')
+        srt_path = str(upload_dir / 'subtitles.srt')
 
     # 縮圖：優先用 AI 生成封面檔（outputs/ 內、防路徑跳脫）；否則從成品影片抓幀
     thumb_path = None
     tp = body.get("thumbnail_path", "")
     if tp:
-        cand = (OUTPUT_DIR / Path(tp).name).resolve()
-        if cand.exists() and cand.suffix.lower() in (".jpg", ".jpeg", ".png"):
-            thumb_path = str(cand)
+        cand = publication_service.selected_path(publication, tp)
+        shutil.copyfile(cand, upload_dir / 'cover.jpg')
+        thumb_path = str(upload_dir / 'cover.jpg')
     t = body.get("thumbnail_time", None)
     if thumb_path is None and isinstance(t, (int, float)):
-        thumb_path = str(OUTPUT_DIR / "yt_thumb.jpg")
+        thumb_path = str(upload_dir / 'cover.jpg')
         subprocess.run(
             ["ffmpeg", "-y", "-ss", str(max(0.0, float(t))), "-i", video_path,
              "-frames:v", "1", "-q:v", "2", thumb_path],
-            capture_output=True,
+            capture_output=True, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
         )
         if not os.path.exists(thumb_path):
-            thumb_path = None
+            raise HTTPException(400, '無法取得所選封面畫面，請重新選擇')
 
     def generate():
         try:

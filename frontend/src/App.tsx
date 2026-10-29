@@ -14,6 +14,7 @@ import { ProjectControl } from './components/ProjectControl';
 import { pushUndo, undo, redo, projectData } from './editSession';
 import { clippedSegments, splitClip, timelineSegments, toSourceTime, toTimelineTime, validateProject } from './editCore';
 import { registerPreviewReader } from './controlClient';
+import { transitionVisual } from './transitions';
 
 export default function App() {
     // 雙緩衝：兩個 <video> 疊在一起，永遠只有一個顯示(active)，另一個(standby)預載下一段。
@@ -22,6 +23,18 @@ export default function App() {
     const vid1Ref = useRef<HTMLVideoElement | null>(null);
     const activeIdxRef = useRef(0); // 0 或 1：目前 active 的元素
     const videoRef = useRef<HTMLVideoElement | null>(null);
+    const transitionOverlayRef = useRef<HTMLDivElement>(null);
+    const videoContainerRef = useRef<HTMLDivElement>(null);
+    const [previewSize, setPreviewSize] = useState({ width: 0, height: 0 });
+    useEffect(() => {
+        const container = videoContainerRef.current;
+        if (!container) return;
+        const observer = new ResizeObserver(([entry]) => {
+            setPreviewSize({ width: entry.contentRect.width, height: entry.contentRect.height });
+        });
+        observer.observe(container);
+        return () => observer.disconnect();
+    }, []);
     const primedClipRef = useRef<string | null>(null); // standby 已預載好的 clip ID（null=未預載）
     const fileInputRef = useRef<HTMLInputElement>(null);
     const tracksRef = useRef<HTMLDivElement>(null);
@@ -50,7 +63,22 @@ export default function App() {
     const [transProg, setTransProg] = useState<{ pct: number; cur: number; total: number } | null>(null);
     const [transElapsed, setTransElapsed] = useState(0);
     // 最近一次匯出成品路徑（YouTube 上傳用）
-    const [lastExport, setLastExport] = useState<string | null>(null);
+    const [lastExport, setLastExport] = useState<string | null>(() => localStorage.getItem('ljcut-export-path'));
+    const [publicationId, setPublicationId] = useState(() => localStorage.getItem('ljcut-publication-id') || '');
+    useEffect(() => {
+        if (lastExport && publicationId) {
+            localStorage.setItem('ljcut-export-path', lastExport);
+            localStorage.setItem('ljcut-publication-id', publicationId);
+        }
+    }, [lastExport, publicationId]);
+    useEffect(() => {
+        const ready = (event: Event) => {
+            const result = (event as CustomEvent).detail;
+            setLastExport(result.outputPath); setPublicationId(result.publicationId);
+        };
+        window.addEventListener('ljcut-export-ready', ready);
+        return () => window.removeEventListener('ljcut-export-ready', ready);
+    }, []);
     // 匯出時是否把字幕燒進畫面（false = 乾淨畫面，YouTube 用 CC/SRT 顯示字幕）
     const [burnSubs, setBurnSubs] = useState(false);
     const [showExportModal, setShowExportModal] = useState(false);
@@ -1012,10 +1040,12 @@ export default function App() {
         try {
             validateProject(projectData(), true);
             const v = videoRef.current;
-            const videoW = v?.videoWidth || 1920;
-            const videoH = v?.videoHeight || 1080;
+            const mainClip = track0Clips.find(c => !c.bookend) ?? track0Clips[0];
+            const outputMedia = mediaItems.find(m => m.id === mainClip.mediaId);
+            const videoW = outputMedia?.info.width || v?.videoWidth || 1920;
+            const videoH = outputMedia?.info.height || v?.videoHeight || 1080;
 
-            let result: { outputPath: string } | null = null;
+            let result: { outputPath: string; publicationId: string } | null = null;
 
             // 單段與多段共用相同的時間軸輸出流程
             const clipsPayload = track0Clips.map(clip => {
@@ -1026,6 +1056,9 @@ export default function App() {
                     trimEnd: clip.trimEnd,
                     speed: clip.speed,
                     segments: burnSubs ? (clip.segments ?? []) : [],
+                    captionSegments: clip.segments ?? [],
+                    bookend: clip.bookend,
+                    transitionIn: clip.transitionIn,
                 };
             });
             const defaultFileName = 'timeline_output.mp4';
@@ -1041,6 +1074,7 @@ export default function App() {
             if (result) {
                 setExportProgress(100);
                 setLastExport(result.outputPath);
+                setPublicationId(result.publicationId);
                 setTimeout(async () => {
                     alert(`✅ 匯出完成！\n輸出路徑：${result!.outputPath}`);
                     setExportProgress(-1);
@@ -1084,6 +1118,35 @@ export default function App() {
     }, [timelineClips]);
 
     // ── 雙緩衝輔助 ──
+    const updateTransition = useCallback((time: number) => {
+        const visual = transitionVisual(timelineClips, time);
+        const layer = transitionOverlayRef.current;
+        if (layer) {
+            layer.style.backgroundColor = visual.color;
+            layer.style.opacity = String(visual.opacity);
+            const main = timelineClips.find(c => !c.bookend) ?? timelineClips[0];
+            const info = mediaItems.find(m => m.id === main?.mediaId)?.info;
+            const container = videoContainerRef.current;
+            if (container && info?.width && info.height) {
+                const scale = Math.min(container.clientWidth / info.width, container.clientHeight / info.height);
+                layer.style.width = `${info.width * scale}px`;
+                layer.style.height = `${info.height * scale}px`;
+                // Use the same main-video canvas as export, including mixed-aspect bookends.
+                for (const video of [vid0Ref.current, vid1Ref.current]) {
+                    if (!video) continue;
+                    video.style.width = layer.style.width;
+                    video.style.height = layer.style.height;
+                    video.style.inset = 'auto';
+                    video.style.left = '50%';
+                    video.style.top = '50%';
+                    video.style.transform = 'translate(-50%, -50%)';
+                    video.style.backgroundColor = '#000';
+                }
+            }
+        }
+        if (videoRef.current) videoRef.current.volume = 1 - visual.opacity;
+    }, [timelineClips, mediaItems]);
+    useEffect(() => { updateTransition(currentTime); }, [currentTime, previewSize, updateTransition]);
     const getActiveVideo = useCallback(() => (activeIdxRef.current === 0 ? vid0Ref.current : vid1Ref.current), []);
     const getStandbyVideo = useCallback(() => (activeIdxRef.current === 0 ? vid1Ref.current : vid0Ref.current), []);
 
@@ -1723,6 +1786,8 @@ export default function App() {
                 currentTimeRef.current = mediaTime;
                 timelinePosRef.current = tl;
 
+                updateTransition(tl);
+
                 // 同步 store 的 currentTime（節流：每 250ms 更新一次，避免 60fps re-render）
                 if (Math.abs(tl - (useStore.getState().currentTime)) > 0.25) {
                     setCurrentTime(tl);
@@ -1791,7 +1856,7 @@ export default function App() {
             cancelAnimationFrame(raf);
             setCurrentTime(timelinePosRef.current);
         };
-    }, [isPlaying, pixelsPerSecond, duration, timelineClips, goToClip, primeStandby, syncRulerScroll, setCurrentTime, setIsPlaying, setActiveSegment]);
+    }, [isPlaying, pixelsPerSecond, duration, timelineClips, goToClip, primeStandby, syncRulerScroll, setCurrentTime, setIsPlaying, setActiveSegment, updateTransition]);
 
     // ── 閒置（未播放）時在 active 元素顯示目前播放頭所在片段的畫面 ──
     // （雙緩衝後 video 不再有宣告式 src，需在此補上靜止預覽幀；播放中由 tick/swap 管理，不介入）
@@ -2084,7 +2149,7 @@ export default function App() {
 
                 {/* 中間：影片 */}
                 <main className="panel-center">
-                    <div className="video-container" onDrop={handleDrop} onDragOver={(e) => e.preventDefault()}>
+                    <div ref={videoContainerRef} className="video-container" onDrop={handleDrop} onDragOver={(e) => e.preventDefault()}>
                         {primaryMedia ? (
                             <>
                                 {/* 雙緩衝：兩個 video 疊放，imperative 控制 opacity（不走 React style 以免被覆蓋） */}
@@ -2115,6 +2180,7 @@ export default function App() {
                             </div>
                         )}
 
+                        <div ref={transitionOverlayRef} className="transition-preview" aria-hidden="true" />
                         {/* 字幕即時預覽 overlay */}
                         {primaryMedia && timelineClips.some(c => c.segments.length > 0) && (() => {
                             // 字幕文字與顯示/隱藏改由 tick(播放中) 與 paused-overlay effect(暫停時)
@@ -2123,13 +2189,17 @@ export default function App() {
 
                             // 計算影片實際顯示範圍（object-fit: contain 的 letterbox）
                             const v = videoRef.current;
+                            const previewClip = timelineClips.find(c => currentTime >= c.startTime && currentTime < c.startTime + c.duration);
+                            const previewMedia = mediaItems.find(m => m.id === previewClip?.mediaId);
+                            const sourceWidth = previewMedia?.info.width || v?.videoWidth || 0;
+                            const sourceHeight = previewMedia?.info.height || v?.videoHeight || 0;
                             let frameTop = 0, frameLeft = 0, frameW = 0, frameH = 0, scale = 1;
-                            if (v && v.videoWidth && v.videoHeight) {
-                                const containerRect = v.parentElement?.getBoundingClientRect();
+                            if (sourceWidth && sourceHeight) {
+                                const containerRect = previewSize;
                                 if (containerRect) {
                                     const cW = containerRect.width;
                                     const cH = containerRect.height;
-                                    const videoAspect = v.videoWidth / v.videoHeight;
+                                    const videoAspect = sourceWidth / sourceHeight;
                                     const containerAspect = cW / cH;
                                     if (containerAspect > videoAspect) {
                                         // pillarbox（上下填滿，左右有黑邊）
@@ -2144,7 +2214,7 @@ export default function App() {
                                         frameLeft = 0;
                                         frameTop = (cH - frameH) / 2;
                                     }
-                                    scale = frameH / v.videoHeight;
+                                    scale = frameH / sourceHeight;
                                 }
                             }
 
@@ -2156,10 +2226,12 @@ export default function App() {
                                     ref={subtitleOverlayRef}
                                     className={`subtitle-preview-overlay ${isDraggingPreview ? 'dragging' : ''}`}
                                     style={{
+                                        visibility: frameW > 0 && frameH > 0 ? 'visible' : 'hidden',
                                         top: `${frameTop + frameH * (subtitleStyle.posY / 100)}px`,
                                         left: `${frameLeft + frameW / 2}px`,
                                         fontFamily: subtitleStyle.fontName,
                                         fontSize: `${scaledFontSize}px`,
+                                        padding: `${4 * scale}px ${14 * scale}px`,
                                         WebkitTextStroke: `${scaledOutline}px #000`,
                                         paintOrder: 'stroke fill',
                                         backgroundColor: bgAlpha > 0 ? `rgba(0,0,0,${bgAlpha})` : 'transparent',
@@ -2619,9 +2691,9 @@ export default function App() {
             {showYtUpload && lastExport && (
                 <YouTubeUploadModal
                     videoPath={lastExport}
+                    publicationId={publicationId}
                     defaultTitle={(primaryMedia?.filename || 'LJCUT 影片').replace(/\.[^.]+$/, '')}
                     defaultDescription={''}
-                    segments={buildTimelineSegments()}
                     thumbnailTime={currentTime}
                     onClose={() => setShowYtUpload(false)}
                 />

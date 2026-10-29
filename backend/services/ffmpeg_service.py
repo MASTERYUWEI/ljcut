@@ -267,6 +267,8 @@ class FFmpegService:
             raise RuntimeError('Export cancelled')
         if not clips:
             raise ValueError('No timeline clips')
+        from .transitions import validate_transitions, transition_filters
+        validate_transitions(clips)
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         temp_dir = Path(tempfile.mkdtemp(prefix='_temp_concat_', dir=Path(output_path).parent)).resolve()
         temp_files: list[str] = []
@@ -331,6 +333,10 @@ class FFmpegService:
                 if trim_start > 0:
                     cmd += ["-ss", str(trim_start)]
                 cmd += ["-i", video_path]
+                has_audio = bool(FFmpegService.get_media_info(video_path).get('audio_codec'))
+                if not has_audio:
+                    cmd += ['-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=48000']
+                cmd += ['-map', '0:v:0', '-map', '0:a:0' if has_audio else '1:a:0']
                 if clip_dur > 0:
                     cmd += ["-t", str(clip_dur / speed)]
 
@@ -345,6 +351,8 @@ class FFmpegService:
                     "setsar=1",
                     f"fps={target_fps}",  # 統一影格率 → 強制 CFR
                 ]
+                transition_video, transition_audio = transition_filters(clips, idx)
+                vf_parts.extend(transition_video)
                 cmd += ["-vf", ",".join(vf_parts)]
 
                 # 音訊：重置 PTS（+ 變速）並統一格式
@@ -357,6 +365,7 @@ class FFmpegService:
                     if remaining < 0.5:
                         remaining = 0.5
                     af_parts.append(f"atempo={remaining:.4f}")
+                af_parts.extend(transition_audio)
                 cmd += ["-af", ",".join(af_parts)]
 
                 cmd += [
@@ -502,7 +511,7 @@ class FFmpegService:
                             pct = 70 + min(int(us / (total_duration * 1_000_000) * 29), 29)
                             if pct > last_pct:
                                 last_pct = pct
-                                yield {"progress": pct, "stage": "燒入字幕",
+                                yield {"progress": pct, "stage": "燒入字幕" if has_subs else "封裝乾淨影片",
                                        "eta_seconds": calc_eta(total_duration + us / 1_000_000)}
                     except ValueError:
                         pass

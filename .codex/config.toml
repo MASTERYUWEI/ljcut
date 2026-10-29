@@ -1,0 +1,8 @@
+# Default for editing work in this project; explicit task selections take precedence.
+model = "gpt-6-sol"
+model_reasoning_effort = "medium"
+service_tier = "default"
+
+[agents]
+default_subagent_model = "gpt-6-sol"
+default_subagent_reasoning_effort = "medium"

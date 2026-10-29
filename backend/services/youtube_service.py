@@ -247,6 +247,11 @@ class YouTubeService:
     ):
         """generator：邊上傳邊 yield 進度 dict（給 SSE）。"""
         warnings: list[str] = []
+        for asset in (thumbnail_path, srt_path):
+            if asset and not os.path.isfile(asset):
+                yield {'error':'所選封面或字幕不存在，未開始上傳', 'stage':'preflight'}
+                return
+        requested_privacy = privacy if privacy in ('private','unlisted','public') else 'private'
         total = os.path.getsize(video_path)
         yield {"progress": 1, "stage": "init"}
 
@@ -262,7 +267,7 @@ class YouTubeService:
                 "defaultAudioLanguage": "zh-TW",
             },
             "status": {
-                "privacyStatus": privacy if privacy in ("private", "unlisted", "public") else "private",
+                "privacyStatus": "private",
                 "selfDeclaredMadeForKids": False,
             },
         }
@@ -376,6 +381,22 @@ class YouTubeService:
                         warnings.append(f"字幕注入失敗 HTTP {r.status_code}: {r.text[:120]}")
                 except Exception as e:
                     warnings.append(f"字幕注入失敗: {e}")
+
+            if warnings:
+                yield {'error':'影片已保留私人；封面或字幕設定失敗，未發布。'+'；'.join(warnings),
+                    'stage':'attachments', 'video_id':video_id,
+                    'studio_url':f'https://studio.youtube.com/video/{video_id}/edit'}
+                return
+            if requested_privacy != 'private':
+                yield {'progress':98, 'stage':'publish'}
+                r = client.put(f'{API}/videos', params={'part':'status'},
+                    headers={'Authorization':f'Bearer {_get_access_token()}'},
+                    json={'id':video_id,'status':{'privacyStatus':requested_privacy,'selfDeclaredMadeForKids':False}})
+                if r.status_code != 200 or r.json().get('status',{}).get('privacyStatus') != requested_privacy:
+                    yield {'error':'封面與字幕已送出，但公開設定未完成，請至 Studio 檢查。',
+                        'stage':'publish', 'video_id':video_id,
+                        'studio_url':f'https://studio.youtube.com/video/{video_id}/edit'}
+                    return
 
         yield {
             "progress": 100,

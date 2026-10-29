@@ -1,5 +1,6 @@
 import type { MediaItem, Segment, TimelineClip } from './types';
 import type { SubtitleStyle } from './store';
+import { TRANSITIONS, type TransitionKind } from './transitions';
 
 export const TRACKS = [{ id: 'video-main', index: 0, kind: 'video-with-audio' as const },
     { id: 'subtitles-main', index: 1, kind: 'clip-subtitles' as const }];
@@ -43,7 +44,7 @@ export function splitClip(c: TimelineClip, sourceTime: number, rightId: string):
     return [
         { ...c, trimEnd: sourceTime, duration: (sourceTime - c.trimStart) / c.speed,
             segments: clippedSegments(c.segments, c.trimStart, sourceTime) },
-        { ...c, id: rightId, startTime: toTimelineTime(c, sourceTime), trimStart: sourceTime,
+        { ...c, transitionIn: undefined, id: rightId, startTime: toTimelineTime(c, sourceTime), trimStart: sourceTime,
             duration: (c.trimEnd - sourceTime) / c.speed,
             segments: clippedSegments(c.segments, sourceTime, c.trimEnd) },
     ];
@@ -69,6 +70,21 @@ export function validateProject(p: ProjectData, continuous = false): void {
         mediaIds.add(m.id);
     }
     const ids = new Set<string>();
+    const ordered = [...p.timelineClips].sort((a, b) => a.startTime - b.startTime);
+    for (let i = 0; i < ordered.length; i++) {
+        const c = ordered[i], t = c.transitionIn;
+        if (!t) continue;
+        requireEdit(Object.prototype.hasOwnProperty.call(TRANSITIONS, t.kind) && finite(t.duration) && t.duration >= 0.2 && t.duration <= 1.5,
+            'INVALID_TRANSITION', '轉場需為淡黑、柔灰或淡白，長度 0.2–1.5 秒');
+        if (continuous) {
+            if (i === 0) continue; // Moving/deleting the previous clip leaves no incoming boundary.
+            requireEdit(t.duration / 2 <= ordered[i - 1].duration && t.duration / 2 <= c.duration,
+                'INVALID_TRANSITION', '轉場必須有前一片段，且不可超出相鄰片段長度');
+            const next = ordered[i + 1]?.transitionIn;
+            requireEdit(t.duration / 2 + (next?.duration ?? 0) / 2 <= c.duration,
+                'INVALID_TRANSITION', '片段太短，轉場範圍重疊');
+        }
+    }
     let end = 0;
     for (const c of [...p.timelineClips].sort((a, b) => a.startTime - b.startTime)) {
         requireEdit(typeof c.id === 'string' && !ids.has(c.id), 'INVALID_CLIP', '片段 ID 必須唯一');
@@ -111,6 +127,58 @@ export interface EditPlan {
         review?: 'confirmed' | 'needs_review';
         reason?: string;
     }>;
+}
+export function evaluateTransitions(project: ProjectData, mode: TransitionKind | 'random' | 'none', duration: number, random = Math.random) {
+    validateProject(project, true);
+    requireEdit(mode === 'random' || mode === 'none' || Object.prototype.hasOwnProperty.call(TRANSITIONS, mode), 'INVALID_TRANSITION', '不支援的轉場');
+    requireEdit(finite(duration) && duration >= 0.2 && duration <= 1.5, 'INVALID_TRANSITION', '轉場長度需為 0.2–1.5 秒');
+    const next = structuredClone(project);
+    next.timelineClips.sort((a, b) => a.startTime - b.startTime);
+    const changes: object[] = [];
+    const kinds = Object.keys(TRANSITIONS) as TransitionKind[];
+    for (let i = 1; i < next.timelineClips.length; i++) {
+        const left = next.timelineClips[i - 1], right = next.timelineClips[i];
+        if (left.bookend !== 'intro' && right.bookend !== 'outro') continue;
+        const kind = mode === 'random' ? kinds[Math.floor(random() * kinds.length)] : mode;
+        if (kind === 'none') delete right.transitionIn;
+        else right.transitionIn = { kind, duration };
+        changes.push({ type: 'bookend_transition', clipId: right.id, fromClipId: left.id,
+            kind, label: kind === 'none' ? '直接切換' : TRANSITIONS[kind].label, duration: kind === 'none' ? 0 : duration,
+            at: right.startTime });
+    }
+    requireEdit(changes.length, 'NO_BOOKEND_BOUNDARY', '請先加入片頭或片尾，再設定轉場');
+    validateProject(next, true);
+    return { next, changes, beforeDuration: durationOf(project.timelineClips), afterDuration: durationOf(next.timelineClips) };
+}
+/** Bookends keep ASR/subtitle source times intact; only timeline positions move. */
+export function evaluateBookends(project: ProjectData, intro: MediaItem | undefined, outro: MediaItem | undefined, id: () => string) {
+    validateProject(project, true);
+    requireEdit(project.timelineClips.length, 'EMPTY_TIMELINE', '請先加入主影片');
+    requireEdit(intro || outro, 'BOOKENDS_REQUIRED', '請至少選擇片頭或片尾');
+    requireEdit(!project.timelineClips.some(c => (intro && c.bookend === 'intro') || (outro && c.bookend === 'outro')),
+        'BOOKENDS_ALREADY_PRESENT', '已存在相同用途的片頭／片尾，請先復原或移除，避免重複加入');
+    const next = structuredClone(project);
+    const beforeDuration = durationOf(next.timelineClips);
+    const changes: object[] = [];
+    for (const [role, media] of [['intro', intro], ['outro', outro]] as const) {
+        if (!media) continue;
+        requireEdit(media.info.width && media.info.height, 'UNSUPPORTED_MEDIA', '片頭片尾需為影片檔');
+        const existing = next.mediaItems.find(m => m.id === media.id);
+        requireEdit(!existing || JSON.stringify(existing) === JSON.stringify(media), 'MEDIA_ID_COLLISION', '素材 ID 已存在但內容不同');
+        if (!existing) next.mediaItems.push(structuredClone(media));
+        const length = media.info.duration;
+        const startTime = role === 'intro' ? 0 : durationOf(next.timelineClips);
+        if (role === 'intro') next.timelineClips.forEach(c => { c.startTime += length; });
+        const clip: TimelineClip = { id: id(), mediaId: media.id, bookend: role, trackIndex: 0,
+            startTime, trimStart: 0, trimEnd: length, speed: 1, duration: length, segments: [] };
+        next.timelineClips.push(clip);
+        changes.push({ type: 'add_bookend', role, clipId: clip.id, mediaId: media.id, filename: media.filename,
+            timeline: [startTime, startTime + length], subtitleShiftSeconds: role === 'intro' ? length : 0,
+            linked: ['video', 'embedded-audio', 'clip-subtitles'] });
+    }
+    next.timelineClips.sort((a, b) => a.startTime - b.startTime);
+    validateProject(next, true);
+    return { next, changes, beforeDuration, afterDuration: durationOf(next.timelineClips) };
 }
 export function evaluatePlan(project: ProjectData, revision: number, plan: EditPlan, id: () => string) {
     requireEdit(plan && plan.projectId === project.projectId && plan.expectedRevision === revision,
