@@ -133,6 +133,13 @@ export default function App() {
     const overlayMenuRef = useRef<HTMLDivElement>(null);
     const runOpsRef = useRef<(ops: Record<string, unknown>[], what: string) => unknown>(() => null);
     const [showReplace, setShowReplace] = useState(false);
+    const [aiToolsOpen, setAiToolsOpen] = useState(false);
+    useEffect(() => {
+        if (!aiToolsOpen) return;
+        const close = (e: MouseEvent) => { if (!(e.target as HTMLElement).closest?.('.ai-tools-wrap')) setAiToolsOpen(false); };
+        window.addEventListener('mousedown', close);
+        return () => window.removeEventListener('mousedown', close);
+    }, [aiToolsOpen]);
     const [retranscribeArmed, setRetranscribeArmed] = useState(false);
     // AI 潤飾改過的句子：key = 片段:句子 → 原句（文字已被改回就不再標示）
     const [aiChanged, setAiChanged] = useState<Map<string, string>>(new Map());
@@ -869,16 +876,30 @@ export default function App() {
                 setPolishProg(`${i + 1}／${targets.length} 段`);
                 results.push({ id: c.id, before: c.segments, after: await api.polishSubtitles(c.segments) });
             }
-            let changed = 0, total = 0;
+            let changed = 0, total = 0;   // changed 之後改成實際寫回的句數
             for (const r of results) for (let i = 0; i < r.after.length; i++) { total++; if (r.after[i]?.text !== r.before[i]?.text) changed++; }
             if (!changed) { toast('info', `潤飾完成：${total} 句都不需要修改`); return; }
+            // 潤飾期間使用者或 AI 可能改過字幕：只更新「文字和開始時一樣」的句子，其餘保留目前內容
             pushUndo('AI 潤飾字幕');
             const marks = new Map<string, string>();
+            let skipped = 0, applied = 0;
             for (const r of results) {
-                r.after.forEach((s, i) => { if (s && r.before[i] && s.text !== r.before[i].text) marks.set(`${r.id}:${s.id}`, r.before[i].text); });
-                setClipSegments(r.id, r.after);
+                const now = useStore.getState().timelineClips.find(c => c.id === r.id);
+                if (!now) { skipped += r.after.length; continue; }
+                const beforeText = new Map(r.before.map(s => [s.id, s.text]));
+                const polished = new Map(r.after.map(s => [s.id, s.text]));
+                const next = now.segments.map(s => {
+                    const was = beforeText.get(s.id), out = polished.get(s.id);
+                    if (out === undefined || was === undefined || out === was) return s;
+                    if (s.text !== was) { skipped++; return s; }          // 期間被改過：不蓋掉
+                    applied++; marks.set(`${r.id}:${s.id}`, was);
+                    return { ...s, text: out };
+                });
+                setClipSegments(r.id, next);
             }
             setAiChanged(marks);
+            if (skipped) toast('info', `潤飾期間有 ${skipped} 句被改過，已保留你的版本、沒有覆蓋。`);
+            changed = applied;
             toast('success', `已潤飾全部字幕：${total} 句中改了 ${changed} 句`, [
                 { label: '只看改過的', run: () => setOnlyAiChanged(true) }, { label: '全部復原', run: handleUndo }], { key: 'history' });
         } catch (err) {
@@ -1709,7 +1730,6 @@ export default function App() {
         return { totalSubs: n, subNumber: m };
     }, [listClips, activeClipId, segments]);
     const editUndoArmed = useRef(false);
-    const cutArmed = useRef(0);
     const multiMedia = useMemo(() => new Set(listClips.filter(c => c.segments.length).map(c => c.mediaId)).size > 1, [listClips]);
     // 校稿模式：右欄加寬成主角
     const [proofMode, setProofMode] = useState(false);
@@ -1862,11 +1882,12 @@ export default function App() {
                 if (e.shiftKey || e.key.toLowerCase() === 'y') handleRedo(); else handleUndo();
                 return;
             }
-            // 空白鍵 播放/暫停
+            // 空白鍵 播放/暫停：全域有效（不會再「重按」剛點過的按鈕）；文字框內用 Ctrl+空白鍵
             if (e.code !== 'Space') return;
+            if ((tag === 'TEXTAREA' || tag === 'INPUT') && (e.ctrlKey || e.metaKey)) { e.preventDefault(); togglePlay(); return; }
             if (tag === 'TEXTAREA' || tag === 'INPUT' || tag === 'SELECT') return;
-            // 焦點在按鈕、頁籤、字幕項目上時，空白鍵是「按下它」，不是播放
-            if ((e.target as HTMLElement).closest?.('button, a, summary, [role="button"], [role="tab"], [role="listitem"]')) return;
+            // 對話框、選單、彈出框裡維持「按下按鈕」
+            if ((e.target as HTMLElement).closest?.('[role="dialog"], [role="alertdialog"], [role="menu"], .project-file-pop, .ai-log, .modal-overlay')) return;
             e.preventDefault();
             togglePlay();
         };
@@ -2913,7 +2934,7 @@ export default function App() {
                                         const r = e.currentTarget.getBoundingClientRect();
                                         speedUndoPushedRef.current = false;
                                         setSpeedMenu({ clipId: clip.id, x: r.left, y: r.bottom, splitTime: t });
-                                    }}><Gauge aria-hidden />片段 {activeClipSpeed}x ▾</button>
+                                    }}><Gauge aria-hidden />片段選單 ▾{activeClipSpeed !== 1 && <span className="speed-badge">{activeClipSpeed}x</span>}</button>
                             </>}
                         </div>
                     )}
@@ -2940,6 +2961,10 @@ export default function App() {
                             <span className="seg-group" role="group" aria-label={`時間軸比例 ${Math.round(zoom * 100)}%`}>
                                 <button className="btn" onClick={() => setZoom(z => Math.max(z * 0.8, 0.1))} aria-label="縮小時間軸比例" title="縮小時間軸比例（Ctrl+－）"><Minus aria-hidden /></button>
                                 <span className="seg-value" title="時間軸比例（Ctrl+＋／－）"><MoveHorizontal aria-hidden />{Math.round(zoom * 100)}%</span>
+                                <button className="btn seg-fit" onClick={() => {
+                                    const w = (timelineAreaRef.current?.clientWidth ?? 600) - LABEL_W - 24;
+                                    if (duration > 0) setZoom(Math.max(0.1, Math.min(50, w / (duration * 10))));
+                                }} title="讓整段影片剛好放進時間軸寬度" aria-label="時間軸顯示整段">整段</button>
                                 <button className="btn" onClick={() => setZoom(z => Math.min(z * 1.25, 50))} aria-label="放大時間軸比例" title="放大時間軸比例（Ctrl+＋）"><Plus aria-hidden /></button>
                             </span>
                             </div>
@@ -3267,12 +3292,21 @@ export default function App() {
                     {totalSubs > 0 && (
                         <div className="subtitle-toolbar">
                             <div className="st-row">
-                                <button className="btn st-btn" onClick={handlePolishSubtitles} disabled={isPolishing || isTranscribing}
-                                    title={`AI 修錯字、去贅字、補標點：整條時間軸 ${totalSubs} 句（使用 Gemini 額度；時間碼不變、Ctrl+Z 可復原）`}><Sparkles aria-hidden />{isPolishing ? `潤飾中 ${polishProg}` : '潤飾'}</button>
-                                <button className="btn st-btn" onClick={handleScanTypos} disabled={isScanningTypos}
-                                    title="AI 掃描重複出現的可疑錯字，一鍵全部取代"><SpellCheck aria-hidden />{isScanningTypos ? '掃描中' : '掃錯字'}</button>
-                                <button className="btn st-btn" onClick={handleScanFlow} disabled={isScanningFlow}
-                                    title="AI 找出語意不通順的句子，點擊定位手動修改"><Brain aria-hidden />{isScanningFlow ? '掃描中' : '掃語意'}</button>
+                                <span className="ai-tools-wrap">
+                                    <button className="btn st-btn" aria-haspopup="menu" aria-expanded={aiToolsOpen} onClick={() => setAiToolsOpen(v => !v)}
+                                        disabled={isPolishing || isScanningTypos || isScanningFlow}>
+                                        <Sparkles aria-hidden />{isPolishing ? `潤飾中 ${polishProg}` : isScanningTypos || isScanningFlow ? 'AI 檢查中…' : 'AI 校稿 ▾'}</button>
+                                    {aiToolsOpen && <div className="ai-tools-menu" role="menu" aria-label="AI 校稿工具"
+                                        onKeyDown={e => { if (e.key === 'Escape') { e.stopPropagation(); setAiToolsOpen(false); } }}>
+                                        <p className="ai-tools-note">會使用 Gemini 額度；整條時間軸共 {totalSubs} 句</p>
+                                        <button role="menuitem" autoFocus onClick={() => { setAiToolsOpen(false); void handlePolishSubtitles(); }} disabled={isTranscribing}>
+                                            <Sparkles aria-hidden /><span><strong>潤飾全部字幕</strong><small>修錯字、去贅字、補標點；改過的句子會標出來，可逐句還原</small></span></button>
+                                        <button role="menuitem" onClick={() => { setAiToolsOpen(false); void handleScanTypos(); }}>
+                                            <SpellCheck aria-hidden /><span><strong>找重複錯字</strong><small>列出可疑錯字，確認後一鍵取代</small></span></button>
+                                        <button role="menuitem" onClick={() => { setAiToolsOpen(false); void handleScanFlow(); }}>
+                                            <Brain aria-hidden /><span><strong>找不通順的句子</strong><small>列出來，點一下跳過去手動修改</small></span></button>
+                                    </div>}
+                                </span>
                                 <button className={`btn st-btn ${showReplace ? 'on' : ''}`} aria-expanded={showReplace} onClick={() => setShowReplace(v => !v)}
                                     title="整條時間軸尋找並取代文字"><Replace aria-hidden />取代</button>
                             </div>
@@ -3384,13 +3418,6 @@ export default function App() {
                                             } else if ((e.key === 'Delete' || (e.key.toLowerCase() === 'x' && (e.ctrlKey || e.metaKey))) && isActive) {
                                                 e.preventDefault(); e.stopPropagation();
                                                 const ids = selectedSegIds.size ? mergeIds : new Set([seg.id]);
-                                                if (e.key === 'Delete' && !(cutArmed.current && Date.now() - cutArmed.current < 3000)) {
-                                                    cutArmed.current = Date.now();
-                                                    const secs = segments.filter(s => ids.has(s.id)).reduce((n, s) => n + (s.end - s.start) / clip.speed, 0);
-                                                    toast('info', `再按一次 Delete 剪掉 ${ids.size} 句（${secs.toFixed(1)} 秒）`, undefined, { key: 'history' });
-                                                    return;
-                                                }
-                                                cutArmed.current = 0;
                                                 handleCutSegments(ids);
                                             } else if (e.key.toLowerCase() === 'm' && (e.ctrlKey || e.metaKey) && canMergeSelected) {
                                                 e.preventDefault(); handleMergeSelected();
@@ -3406,7 +3433,7 @@ export default function App() {
                                             <div className="time-range" title={clip.speed !== 1 || clip.startTime !== clip.trimStart ? `原始影片 ${formatTimestamp(seg.start)} → ${formatTimestamp(seg.end)}` : undefined}>
                                                 {formatTimestamp(tl(seg.start))} → {formatTimestamp(tl(seg.end))}
                                             </div>
-                                            {on && !sel ? (
+                                            {on && !sel && !isPolishing ? (
                                                 <textarea value={seg.text} aria-label={`第 ${no} 句字幕文字`} aria-describedby="sub-edit-hint"
                                                     onFocus={() => { editUndoArmed.current = true; }}
                                                     onChange={(e) => {
@@ -3414,6 +3441,7 @@ export default function App() {
                                                         updateSegment(seg.id, { text: e.target.value });
                                                     }}
                                                     onKeyDown={(e) => {
+                                                        if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); (e.currentTarget.closest('.subtitle-item') as HTMLElement | null)?.focus(); return; }
                                                         if (e.key === 'Enter' && !e.shiftKey) {
                                                             e.preventDefault();
                                                             const pos = (e.target as HTMLTextAreaElement).selectionStart;
@@ -3422,7 +3450,7 @@ export default function App() {
                                                     }}
                                                     onClick={(e) => e.stopPropagation()} rows={2} />
                                             ) : null}
-                                            {on && !sel ? (
+                                            {on && !sel && !isPolishing ? (
                                                 <div className="sub-edit-row">
                                                     <div className="sub-edit-hint" id="sub-edit-hint">Enter 分句 · Ctrl／Shift＋點多選</div>
                                                     <button className="btn btn-sm btn-danger-soft" onClick={(e) => { e.stopPropagation(); handleCutSegments(new Set([seg.id])); }}

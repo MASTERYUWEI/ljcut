@@ -3153,3 +3153,19 @@ button.ai-status:not(.active) .ai-dot { background: var(--fg-overlay0); }
 .track-empty-hint { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); font-size: 12px; color: var(--fg-overlay0); white-space: nowrap; pointer-events: none; }
 .subtitle-header { gap: 6px; }
 .subtitle-header .btn-sm { order: 3; }
+
+/* AI 校稿選單 */
+.ai-tools-wrap { position: relative; }
+.ai-tools-menu { position: absolute; left: 0; top: calc(100% + 4px); z-index: 50; width: 280px; padding: 6px; border-radius: 8px;
+  background: var(--bg-surface0); border: 1px solid var(--bg-surface2); box-shadow: 0 10px 30px rgba(0,0,0,.45); display: grid; gap: 2px; }
+.ai-tools-note { margin: 2px 6px 6px; font-size: 12px; color: var(--warn); }
+.ai-tools-menu button { display: flex; gap: 8px; align-items: flex-start; text-align: left; padding: 8px; border: 0; border-radius: 6px;
+  background: transparent; color: var(--fg-text); cursor: pointer; }
+.ai-tools-menu button:hover, .ai-tools-menu button:focus-visible { background: var(--bg-surface1); }
+.ai-tools-menu button svg { width: 15px; height: 15px; margin-top: 2px; flex-shrink: 0; color: var(--accent-amber); }
+.ai-tools-menu strong { display: block; font-size: 13px; font-weight: 600; }
+.ai-tools-menu small { display: block; font-size: 12px; color: var(--fg-subtext0); margin-top: 2px; }
+.speed-badge { margin-left: 4px; color: var(--accent-amber); font-family: var(--font-mono); }
+.seg-fit { font-size: 12px; padding: 4px 8px !important; border-left: 1px solid var(--bg-surface1) !important; }
+.help-dot { width: 20px; height: 20px; font-size: 12px; }
+.help-faq-group h4 { margin: 8px 0 2px; font-size: 12px; font-weight: 600; color: var(--accent-amber); }

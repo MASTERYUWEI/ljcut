@@ -22,6 +22,8 @@ let keyCache = { revision: -1, key: '' };
 export function contentKey() {
     if (keyCache.revision !== revision) {
         const { projectId: _id, ...rest } = projectData();
+        // 波形是背景補抓的顯示資料，不算專案修改
+        rest.mediaItems = rest.mediaItems.map(m => ({ ...m, waveformPeaks: [] }));
         keyCache = { revision, key: JSON.stringify(rest) };
     }
     return keyCache.key;

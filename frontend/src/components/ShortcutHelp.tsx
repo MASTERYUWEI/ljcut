@@ -31,8 +31,8 @@ const GROUPS: { title: string; keys: [string, string][] }[] = [
         ['Shift + 拖曳預覽畫面', '框出標註範圍'], ['Esc', '取消選取、關閉對話框'],
     ] },
     { title: '字幕', keys: [
-        ['↑ ／ ↓', '在字幕清單上下移動'], ['Enter', '跳到該句（編輯中則在游標處分句）'],
-        ['Ctrl + 點 ／ Shift + 點', '多選／範圍選取字幕'], ['Delete（按兩次）／ Ctrl + X', '剪掉選取的句子'],
+        ['↑ ／ ↓', '在字幕清單上下移動'], ['Enter', '跳到該句（編輯中則在游標處分句）'], ['Esc（編輯中）', '離開文字框回到清單'], ['Ctrl + 空白鍵', '在文字框裡播放／暫停'],
+        ['Ctrl + 點 ／ Shift + 點', '多選／範圍選取字幕'], ['Delete ／ Ctrl + X', '剪掉選取的句子（可 Ctrl+Z 復原）'],
         ['Ctrl + M', '合併選取的句子'], ['?', '開啟這個說明'],
     ] },
 ];
@@ -57,6 +57,14 @@ const FAQ: [string, string][] = [
     ['為什麼選「公開」上傳後還是私人？', 'LJCUT 的上傳功能還沒通過 Google 審核，YouTube 會先把影片鎖成私人；到 YouTube 後台手動改成公開即可。'],
 ];
 
+const used = new Set<string>();
+// 常見問題分組（依關鍵字歸類；每題只歸一組，順序即優先）
+const FAQ_GROUPS: [string, RegExp][] = [
+    ['AI 助理', /AI/],
+    ['剪輯', /剪|放大|標註|子母|片頭|片尾/],
+    ['字幕與匯出', /字幕|SRT|CC|燒|匯出|YouTube|公開/],
+    ['存檔與專案', /存|專案|影片|.*/],
+];
 export function ShortcutHelp({ onClose, query = '' }: { onClose: () => void; query?: string }) {
     const ref = useRef<HTMLDivElement>(null);
     useDialog(ref);
@@ -86,7 +94,13 @@ export function ShortcutHelp({ onClose, query = '' }: { onClose: () => void; que
                 {faq.length > 0 && <>
                     <h3 className="help-h">常見問題與名詞</h3>
                     <div className="help-faq">
-                        {faq.map(([t, d]) => <details key={t} open={!!q.trim()}><summary>{t}</summary><p>{d}</p></details>)}
+                        {(() => { used.clear(); return null; })()}
+                        {FAQ_GROUPS.map(([g, re]) => {
+                            const items = faq.filter(([t, d]) => re.test(t + d) && !used.has(t));
+                            items.forEach(([t]) => used.add(t));
+                            return items.length ? <section key={g} className="help-faq-group"><h4>{g}</h4>
+                                {items.map(([t, d]) => <details key={t} open={!!q.trim()}><summary>{t}</summary><p>{d}</p></details>)}</section> : null;
+                        })}
                     </div>
                 </>}
                 <div className="help-grid">

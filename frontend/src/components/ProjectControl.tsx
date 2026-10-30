@@ -1,7 +1,7 @@
 /* 本機控制相關介面：拆成「頂部專案按鈕」與「設定裡的開發者工具」，不再常駐主畫面 */
 import { FolderOpen, Save, FolderSearch, FilePlus } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
-import { AUTOSAVE_PATH, autosaveProject, controlRequest, controlWorkspace, executeCommand, projectFile, startNewProject } from '../controlClient';
+import { AUTOSAVE_PATH, autosaveProject, controlRequest, controlWorkspace, executeCommand, projectFile, retryControl, startNewProject } from '../controlClient';
 import { useStore } from '../store';
 import { StatusText } from './StatusText';
 import { useDialog } from '../useDialog';
@@ -208,7 +208,8 @@ export function ProjectFileButtons() {
     }, [workspace]);
     if (!workspace) return controlFailed ? <div className="project-file">
         <span className="control-down" role="status">無法存檔：本機控制未連線</span>
-        <button className="btn btn-sm" onClick={() => location.reload()} title="重新整理畫面並重新連線（未儲存的修改會遺失）">重新連線</button>
+        <button className="btn btn-sm" onClick={() => { void retryControl().then(ok => toast(ok ? 'success' : 'error', ok ? '本機控制已重新連上，可以存檔了' : '還是連不上 LJCUT 後端服務。請等幾秒再試，或重新開啟 LJCUT。')); }}
+            title="在背景重新連線，不會重新整理畫面、不會丟掉修改">重新連線</button>
     </div> : null;
     const target = path.trim();
     const normalized = /\.ljcut$/i.test(target) ? target : `${target}.ljcut`;
@@ -239,8 +240,7 @@ export function ProjectFileButtons() {
                 void doRun(open, !/\.ljcut$/i.test(target) ? `${target}.ljcut` : target);
             }}>
             {open === 'open' ? <>
-                <button type="button" className="btn new-project-btn" onClick={askNew} title="清空編輯器，開始下一支影片（Ctrl+N）"><FilePlus aria-hidden />新專案<kbd>Ctrl N</kbd></button>
-                <div className="pop-title">或選擇要開啟的專案</div>
+                <div className="pop-title">選擇要開啟的專案</div>
                 {projects.length ? <ul className="project-list" role="listbox" aria-label="專案資料夾裡的專案">
                     {projects.map(pr => <li key={pr.path}>
                         <button type="button" role="option" aria-selected={pr.path === path} className={`project-item ${pr.path === path ? 'on' : ''} ${pr.autosave ? 'autosave' : ''}`}
@@ -258,6 +258,7 @@ export function ProjectFileButtons() {
                     </li>)}
                 </ul> : <p className="bookends-note">專案資料夾裡還沒有專案。</p>}
                 <input id="project-path" ref={inputRef} type="hidden" value={path} readOnly />
+                <button type="button" className="btn new-project-btn" onClick={askNew} title="清空編輯器，開始下一支影片（Ctrl+N）"><FilePlus aria-hidden />開新專案<kbd>Ctrl N</kbd></button>
             </> : <>
                 <label htmlFor="project-path">專案名稱</label>
                 <input id="project-path" ref={inputRef} className="st-input" value={path} onChange={e => setPath(e.target.value)}

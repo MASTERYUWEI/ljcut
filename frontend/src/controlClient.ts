@@ -206,6 +206,8 @@ const EXTERNAL_LABEL: Record<string, string> = {
 /** 最近一次 AI 動作（標題列常駐顯示，不只 5 秒通知）＋本次開啟以來的紀錄 */
 /** AI 最近修改的時間軸位置（給時間軸畫標記） */
 export const aiMarks: { t: number; text: string; at: number }[] = [];
+// 存檔或開啟專案後清除 AI 修改標記（已經看過、存好了）
+if (typeof window !== 'undefined') window.addEventListener('ljcut-project-file', () => { aiMarks.length = 0; });
 export const aiActivity = { text: '', at: 0, lastCommandAt: 0, edits: 0, log: [] as { text: string; at: number; details: string[]; depth?: number; jump?: number }[] };
 const CHANGE_LABEL: Record<string, string> = {
     ripple_delete: '刪除區段並補位', delete_clip: '刪除片段', split: '分割片段', move_clip: '移動片段', set_speed: '調整速度',
@@ -255,6 +257,8 @@ function announceExternal(method: string, result: any, params?: any) {
     }
 }
 
+/** 本機控制沒連上時，在背景重試（不重新整理畫面、不丟修改） */
+export async function retryControl() { started = false; await startControl(); return !!token; }
 export async function startControl() {
     if (started) return;
     started = true;
