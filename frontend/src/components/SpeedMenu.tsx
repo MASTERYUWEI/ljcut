@@ -60,15 +60,6 @@ export function SpeedMenu({ clip, x, y, canSplit, splitTime, onSplit, onDelete, 
                 >
                     <Scissors aria-hidden /> {canSplit ? `在播放頭分割（${formatTimestamp(splitTime)}）` : '分割（播放頭不在此片段）'}{canSplit && <kbd className="menu-kbd">S</kbd>}
                 </button>
-                <hr className="menu-sep" />
-                <button
-                    className="speed-preset-btn"
-                    style={{ width: '100%', marginBottom: 10, marginTop: 6, color: 'var(--danger)' }}
-                    onClick={onDelete}
-                    title={onlyClip ? '這是時間軸上唯一的片段，刪除後時間軸會清空（可 Ctrl+Z 復原）' : '從時間軸刪除此片段（可 Ctrl+Z 復原）'}
-                >
-                    <Trash2 aria-hidden /> {onlyClip ? '刪除片段（時間軸會清空）' : '刪除片段'}
-                </button>
                 <div className="speed-menu-title"><Gauge aria-hidden /> 影片速度</div>
                 <div className="speed-menu-value">{clip.speed.toFixed(1)}x</div>
                 <input type="range" className="speed-slider" aria-label="影片速度"
@@ -82,6 +73,16 @@ export function SpeedMenu({ clip, x, y, canSplit, splitTime, onSplit, onDelete, 
                             onClick={() => onSetSpeed(clip.id, s)}>{s}x</button>
                     ))}
                 </div>
+
+                <hr className="menu-sep" />
+                <button
+                    className="speed-preset-btn"
+                    style={{ width: '100%', marginBottom: 0, marginTop: 6, color: 'var(--danger)' }}
+                    onClick={onDelete}
+                    title={onlyClip ? '這是時間軸上唯一的片段，刪除後時間軸會清空（可 Ctrl+Z 復原）' : '從時間軸刪除此片段（可 Ctrl+Z 復原）'}
+                >
+                    <Trash2 aria-hidden /> {onlyClip ? '刪除片段（時間軸會清空）' : '刪除片段'}
+                </button>
             </div>
         </div>
     );

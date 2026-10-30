@@ -34,6 +34,9 @@ const FRIENDLY: [RegExp, string][] = [
     [/EACCES|Permission denied|WinError 32|being used by another process|拒絕存取/i, '檔案被其他程式占用或沒有寫入權限。請關閉正在使用它的程式，或改存到其他位置。'],
     [/RESOURCE_EXHAUSTED|\b429\b|quota/i, 'AI 服務額度用完或請求太頻繁，請稍後再試。'],
     [/API_KEY_INVALID|API key not valid|PERMISSION_DENIED/i, 'AI 金鑰無效或沒有權限，請到「設定」檢查 Gemini API Key。'],
+    [/CONTROL_DISABLED|請先啟用本機控制/i, '本機控制沒有連上，暫時不能存檔或接收 AI 命令。請按標題列的「重新連線」，或重新開啟 LJCUT。'],
+    [/STALE_PROJECT|STALE_DRY_RUN|已過期|已變更/i, '專案剛被改過（可能是 AI 或另一個操作），這一步沒有套用。請再做一次。'],
+    [/OUTSIDE_WORKSPACE|工作區外/i, '這個檔案不在專案資料夾裡，請改存到專案資料夾。'],
     [/ffmpeg|Invalid data found|moov atom/i, '影片處理失敗，檔案可能損壞或格式不支援。可按「複製詳情」把錯誤交給 AI 或開發者檢查。'],
 ];
 export function humanizeError(raw: string): { message: string; detail?: string } {
@@ -42,7 +45,7 @@ export function humanizeError(raw: string): { message: string; detail?: string }
         const clean = raw.replace(/\b(Type|Reference|Syntax)?Error:\s*/g, '');
         // 沒對到常見錯誤：保留原文，並給一個下一步
         return /[一-鿿]/.test(clean) && clean.length < 80 ? { message: clean, detail: raw }
-            : { message: `${clean.slice(0, 120)}${clean.length > 120 ? '…' : ''}（可按「複製詳情」交給 AI 助理判斷）`, detail: raw };
+            : { message: `${/[一-鿿]/.test(clean.slice(0, 12)) ? clean.slice(0, clean.search(/[:：]/) > 0 ? clean.search(/[:：]/) : 30) + '：' : ''}發生未預期的錯誤。可按「複製詳情」交給 AI 助理判斷。`, detail: raw };
     }
     const context = raw.match(/^([^:：\n]{1,30}?)\s*[:：]/)?.[1];          // 例如「匯出失敗」
     const lead = context && /[一-鿿]/.test(context) ? `${context}：` : '';

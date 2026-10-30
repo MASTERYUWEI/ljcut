@@ -1,6 +1,6 @@
 /* ── LJCUT 主應用 ── */
 
-import { Clapperboard, Upload, CircleDot, Settings, Play, Pause, Square, Video, FolderOpen, Film, ZoomIn, PenLine, Captions, Plus, Sparkles, SpellCheck, Brain, Copy, Check, Download, X, Image as ImageIcon, ArrowUpRight, Type, Code, Focus, ListOrdered, Gauge, Undo2, Redo2, TriangleAlert, CheckCheck, CircleHelp, MousePointerClick, Minus, Scissors, Replace, MoveHorizontal, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
+import { Clapperboard, Upload, CircleDot, Settings, Play, Pause, Square, Video, FolderOpen, Film, ZoomIn, PenLine, Captions, Plus, Sparkles, SpellCheck, Brain, Copy, Check, Download, X, Image as ImageIcon, ArrowUpRight, Type, Code, Focus, ListOrdered, Gauge, Undo2, Redo2, TriangleAlert, CheckCheck, CircleHelp, MousePointerClick, Minus, Scissors, Replace, MoveHorizontal, PanelLeftClose, PanelLeftOpen, FolderInput } from 'lucide-react';
 import { useRef, useCallback, useState, useEffect, useLayoutEffect, useMemo } from 'react';
 import { useStore } from './store';
 import { api, onApiReady, getBase } from './api';
@@ -26,7 +26,7 @@ import { notify, toast, humanizeError } from './toast';
 import { useDialog } from './useDialog';
 import { pushUndo, undo, redo, projectData, dryRun, applyPlan, readState, history as editHistory, contentKey, sameContent, requestPreview, peekHistory, labelNextUndo } from './editSession';
 import { clippedSegments, splitClip, timelineSegments, toSourceTime, toTimelineTime, validateProject } from './editCore';
-import { registerPreviewReader } from './controlClient';
+import { registerPreviewReader , aiMarks } from './controlClient';
 import { transitionVisual } from './transitions';
 
 /** 找出時間點所在的字幕：區間左閉右開，並容忍跳轉時的微小誤差（點第 2 句不會亮第 1 句） */
@@ -858,13 +858,17 @@ export default function App() {
 
     // ── AI 逐句潤飾字幕（修錯字／去贅字／補標點，時間碼不變）──
     const [isPolishing, setIsPolishing] = useState(false);
+    const [polishProg, setPolishProg] = useState('');
     const handlePolishSubtitles = useCallback(async () => {
         const targets = timelineClips.filter(c => c.trackIndex === 0 && c.segments.length);
         if (!targets.length) { notify('還沒有字幕可潤飾，請先辨識字幕'); return; }
         setIsPolishing(true);
         try {
             const results = [];
-            for (const c of targets) results.push({ id: c.id, before: c.segments, after: await api.polishSubtitles(c.segments) });
+            for (const [i, c] of targets.entries()) {
+                setPolishProg(`${i + 1}／${targets.length} 段`);
+                results.push({ id: c.id, before: c.segments, after: await api.polishSubtitles(c.segments) });
+            }
             let changed = 0, total = 0;
             for (const r of results) for (let i = 0; i < r.after.length; i++) { total++; if (r.after[i]?.text !== r.before[i]?.text) changed++; }
             if (!changed) { toast('info', `潤飾完成：${total} 句都不需要修改`); return; }
@@ -880,7 +884,7 @@ export default function App() {
         } catch (err) {
             notify(`潤飾失敗: ${err}`);
         } finally {
-            setIsPolishing(false);
+            setIsPolishing(false); setPolishProg('');
         }
     }, [timelineClips, setClipSegments, handleUndo]);
 
@@ -1705,6 +1709,11 @@ export default function App() {
         return { totalSubs: n, subNumber: m };
     }, [listClips, activeClipId, segments]);
     const editUndoArmed = useRef(false);
+    const cutArmed = useRef(0);
+    const multiMedia = useMemo(() => new Set(listClips.filter(c => c.segments.length).map(c => c.mediaId)).size > 1, [listClips]);
+    // 校稿模式：右欄加寬成主角
+    const [proofMode, setProofMode] = useState(false);
+    const normalRight = useRef(0);
 
     // ── 從字幕直接剪：把選取句子的影片區間剪掉（相鄰的句子連同中間空白一起剪）──
     const handleCutSegments = useCallback((ids: Set<number>) => {
@@ -2484,7 +2493,7 @@ export default function App() {
             for (let c = 0; c < cells; c++) {
                 const y = h - (c + 1) * (cellH + gapY);
                 const rc = c / maxCells;
-                ctx.fillStyle = rc > 0.85 ? '#e04050' : rc > 0.7 ? '#e0a040' : '#6eccc0';
+                ctx.fillStyle = rc > 0.7 ? 'rgba(110, 204, 192, 0.85)' : 'rgba(110, 204, 192, 0.55)';   // 單色：只表示有沒有聲音，不用紅黃（像錯誤）
                 ctx.fillRect(x, y, barW, cellH);
             }
         }
@@ -2522,7 +2531,7 @@ export default function App() {
                         <span className="header-sep" aria-hidden />
                         <button className="btn btn-accent" onClick={() => setShowExportModal(true)} disabled={isBurning}>
                             {isBurning ? `匯出中 ${exportProgress >= 0 ? exportProgress + '%' : '…'}` : <><Clapperboard aria-hidden />匯出影片
-                                {timelineClips.some(c => c.segments.length) && <span className="export-badge" title={burnSubs ? '字幕會燒進畫面' : '乾淨畫面＋另附 SRT 字幕檔'}>{burnSubs ? '字幕燒入' : '＋SRT'}</span>}</>}
+                                {timelineClips.some(c => c.segments.length) && <span className="export-badge" title={burnSubs ? '字幕會燒進畫面' : '乾淨畫面＋另附 SRT 字幕檔'}>{burnSubs ? '字幕燒入' : '附字幕檔'}</span>}</>}
                         </button>
                         <button className={`btn ${!lastExport ? 'btn-soft-disabled' : ''}`} onClick={() => {
                             if (!lastExport) { toast('info', '要先匯出影片，才能上傳到 YouTube。', [{ label: '匯出影片', run: () => setShowExportModal(true) }]); return; }
@@ -2591,8 +2600,8 @@ export default function App() {
                         <div className="left-rail">
                             <button className="btn btn-icon" onClick={() => setLeftCollapsed(false)} aria-label="展開左欄" title="展開左欄"><PanelLeftOpen aria-hidden /><span className="rail-label">展開</span></button>
                             <button className="btn btn-icon" onClick={() => { setLeftTab('media'); setLeftCollapsed(false); }} aria-label="媒體" title="媒體"><Film aria-hidden /><span className="rail-label">媒體</span></button>
-                            <button className="btn btn-icon" onClick={() => { setLeftTab('subtitle'); setLeftCollapsed(false); }} aria-label="字幕辨識" title="字幕辨識"><Captions aria-hidden /><span className="rail-label">字幕</span></button>
-                            <button className="btn btn-icon" onClick={() => fileInputRef.current?.click()} aria-label="匯入影片" title="匯入影片"><Upload aria-hidden /><span className="rail-label">匯入</span></button>
+                            <button className="btn btn-icon" onClick={() => { setLeftTab('subtitle'); setLeftCollapsed(false); }} aria-label="字幕辨識" title="字幕辨識"><Captions aria-hidden /><span className="rail-label">辨識</span></button>
+                            <button className="btn btn-icon" onClick={() => fileInputRef.current?.click()} aria-label="匯入影片" title="匯入影片"><FolderInput aria-hidden /><span className="rail-label">匯入</span></button>
                         </div>
                     ) : <>
                     {/* 頁籤切換 */}
@@ -2745,10 +2754,7 @@ export default function App() {
                     <div ref={videoContainerRef} className="video-container" onDrop={handleDrop} onDragOver={(e) => e.preventDefault()}>
                         {(selectedOverlayId || selectedZoomId) ? (
                             <span className="preview-hint" role="note">Shift＋點畫面{selectedOverlayId ? '移動位置；Shift＋拖曳框出範圍' : '設定放大中心'}</span>
-                        ) : hasTimeline && (
-                            <button type="button" className="preview-hint preview-hint-idle" onClick={() => openHelp('Shift')}
-                                title="在時間軸點一個縮放或標註後：Shift＋點畫面設定位置、Shift＋拖曳框出範圍">畫面手勢 · Shift＋點／拖</button>
-                        )}
+                        ) : null}
                         {primaryMedia ? (
                             <>
                                 {/* 雙緩衝：兩個 video 疊放，imperative 控制 opacity（不走 React style 以免被覆蓋） */}
@@ -2780,11 +2786,11 @@ export default function App() {
                                 <div className="icon"><Film aria-hidden /></div><p>匯入影片或音訊開始剪輯</p>
                                 <ol className="first-steps" aria-label="三個步驟">
                                     <li><strong>匯入</strong>把檔案拖進來，或按左側「點一下匯入影片」</li>
-                                    <li><strong>辨識字幕</strong>左側「辨識」頁籤按「開始辨識」</li>
+                                    <li><strong>辨識字幕</strong>左側「字幕辨識」頁籤按「開始辨識」</li>
                                     <li><strong>剪掉講錯的句子</strong>在右欄點一句按「剪掉這句」，再「匯出影片」</li>
                                 </ol>
                                 <div className="first-actions">
-                                    <button className="btn btn-primary" onClick={() => fileInputRef.current?.click()}><Upload aria-hidden />匯入影片</button>
+                                    <button className="btn btn-primary" onClick={() => fileInputRef.current?.click()}><FolderInput aria-hidden />匯入影片</button>
                                     <button className="btn" onClick={() => setShowHelp(true)}><CircleHelp aria-hidden />完整說明</button>
                                 </div>
                             </div>
@@ -2907,14 +2913,8 @@ export default function App() {
                                         const r = e.currentTarget.getBoundingClientRect();
                                         speedUndoPushedRef.current = false;
                                         setSpeedMenu({ clipId: clip.id, x: r.left, y: r.bottom, splitTime: t });
-                                    }}><Gauge aria-hidden />{activeClipSpeed}x</button>
+                                    }}><Gauge aria-hidden />片段 {activeClipSpeed}x ▾</button>
                             </>}
-                            {hasTimeline && <span className="mark-group" role="group" aria-label="I／O 標記">
-                                <button className={`btn btn-compact ${marks.in != null ? 'on' : ''}`} onClick={() => setMarks(m => ({ ...m, in: timelinePosRef.current }))}
-                                    title="在播放頭標記要剪掉的起點（I）" aria-label="標記起點 I">I</button>
-                                <button className={`btn btn-compact ${marks.out != null ? 'on' : ''}`} onClick={() => setMarks(m => ({ ...m, out: timelinePosRef.current }))}
-                                    title="在播放頭標記要剪掉的終點（O）" aria-label="標記終點 O">O</button>
-                            </span>}
                         </div>
                     )}
 
@@ -2925,6 +2925,12 @@ export default function App() {
                     {(hasTimeline || primaryMedia) && (
                         <div className="timeline-area" ref={timelineAreaRef} onWheel={handleTimelineWheel} style={{ height: timelineHeight }}>
                             <div className="timeline-tools">
+                            {hasTimeline && <span className="mark-group" role="group" aria-label="I／O 標記">
+                                <button className={`btn btn-compact ${marks.in != null ? 'on' : ''}`} onClick={() => setMarks(m => ({ ...m, in: timelinePosRef.current }))}
+                                    title="在播放頭標記要剪掉的起點（I）" aria-label="標記起點 I">起點 I</button>
+                                <button className={`btn btn-compact ${marks.out != null ? 'on' : ''}`} onClick={() => setMarks(m => ({ ...m, out: timelinePosRef.current }))}
+                                    title="在播放頭標記要剪掉的終點（O）" aria-label="標記終點 O">終點 O</button>
+                            </span>}
                             {(marks.in != null || marks.out != null) && <span className="mark-group" role="group" aria-label="I／O 區間">
                                 <button className="btn btn-compact btn-danger-soft" disabled={marks.in == null || marks.out == null} onClick={cutMarkedRange}
                                     title={marks.in == null || marks.out == null ? '再按 I 或 O 標記另一端' : '剪掉 I 到 O 之間（X；Ctrl+Z 可復原）'}>
@@ -3043,9 +3049,9 @@ export default function App() {
                                                         }}
                                                         title={`${formatTimestamp(toTimelineTime(clip, seg.start))} → ${formatTimestamp(toTimelineTime(clip, seg.end))}\n${seg.text}\n拖兩側邊緣可微調起訖`}
                                                     >
-                                                        <div className="cue-handle cue-handle-left"
+                                                        <div className="cue-handle cue-handle-left" title="拖曳微調這句的開始時間"
                                                             onMouseDown={(e) => handleCueEdgeDrag(e, clip.id, seg.id, 'left')} />
-                                                        {width >= 36 && <span className="clip-text">{seg.text}</span>}
+                                                        {width >= 60 && <span className="clip-text">{seg.text}</span>}
                                                         <div className="cue-handle cue-handle-right"
                                                             onMouseDown={(e) => handleCueEdgeDrag(e, clip.id, seg.id, 'right')} />
                                                     </div>
@@ -3059,7 +3065,7 @@ export default function App() {
                                 {mediaItems.some(m => m.info.width) && (
                                     <div className="track zoom-track">
                                         <div className="track-label zoom-track-label" style={{ width: LABEL_W }}>
-                                            <span><ZoomIn aria-hidden /> 縮放</span>
+                                            <span><ZoomIn aria-hidden /> 畫面放大</span>
                                             <span className="zoom-track-actions">
                                                 <button className="zoom-mini-btn" title="在播放頭加入 3 秒、2 倍的縮放（選取後 Shift+點預覽畫面設定放大位置）"
                                                     onClick={(e) => { e.stopPropagation(); addZoomAtPlayhead(); }} aria-label="在播放頭加入縮放"><Plus aria-hidden /></button>
@@ -3068,6 +3074,7 @@ export default function App() {
                                             </span>
                                         </div>
                                         <div className="track-content" style={{ width: timelineWidth }}>
+                                            {!mediaItems.some(m => m.zooms?.length) && <span className="track-empty-hint">按左邊「＋」或 Z 在播放頭加入畫面放大，也可以請 AI 助理加</span>}
                                             {timelineClips.filter(c => c.trackIndex === 0).flatMap(clip => {
                                                 const media = mediaItems.find(m => m.id === clip.mediaId);
                                                 return (media?.zooms ?? []).filter((z: ZoomRegion) => z.start < clip.trimEnd && z.end > clip.trimStart).map((z: ZoomRegion) => {
@@ -3191,6 +3198,11 @@ export default function App() {
                                     />
                                 )}
 
+                                {/* AI 最近修改的位置 */}
+                                {duration > 0 && aiMarks.filter(m => Date.now() - m.at < 10 * 60000 && m.t <= duration).map((m, i) => (
+                                    <button key={`${m.at}-${i}`} type="button" className="ai-mark" style={{ left: m.t * pixelsPerSecond + LABEL_W }}
+                                        onClick={() => seekTo(m.t)} title={`AI 修改：${m.text}（點一下跳過去）`} aria-label={`AI 修改位置 ${formatTime(m.t)}`} />
+                                ))}
                                 {/* I／O 標記區間 */}
                                 {(marks.in != null || marks.out != null) && duration > 0 && (() => {
                                     const a0 = marks.in ?? marks.out!, b0 = marks.out ?? marks.in!;
@@ -3238,6 +3250,11 @@ export default function App() {
                     )}
                     <div className="right-subs" hidden={!!(selectedOverlay || selectedZoom) && rightTab === 'props'}>
                     <div className="subtitle-header">
+                        <button className={`btn btn-sm ${proofMode ? 'on' : ''}`} aria-pressed={proofMode} onClick={() => {
+                            if (!proofMode) { normalRight.current = rightWidth; setRightWidth(Math.round(window.innerWidth * 0.5)); }
+                            else setRightWidth(normalRight.current || 290);
+                            setProofMode(!proofMode);
+                        }} title="把字幕欄放大成一半畫面，專心校稿">{proofMode ? '一般版面' : '校稿模式'}</button>
                         <h2>字幕 <button type="button" className="help-dot" onClick={() => openHelp('字幕')} aria-label="字幕工具說明">?</button></h2>
                         {[...aiChanged].some(([k, v]) => { const [cid, sid] = k.split(':'); return timelineClips.find(c => c.id === cid)?.segments.find(s => String(s.id) === sid)?.text !== v; }) && (
                             <button className={`btn btn-sm ${onlyAiChanged ? 'on' : ''}`} aria-pressed={onlyAiChanged} onClick={() => setOnlyAiChanged(v => !v)}
@@ -3251,7 +3268,7 @@ export default function App() {
                         <div className="subtitle-toolbar">
                             <div className="st-row">
                                 <button className="btn st-btn" onClick={handlePolishSubtitles} disabled={isPolishing || isTranscribing}
-                                    title={`AI 修錯字、去贅字、補標點：整條時間軸 ${totalSubs} 句（使用 Gemini 額度；時間碼不變、Ctrl+Z 可復原）`}><Sparkles aria-hidden />{isPolishing ? '潤飾中' : '潤飾'}</button>
+                                    title={`AI 修錯字、去贅字、補標點：整條時間軸 ${totalSubs} 句（使用 Gemini 額度；時間碼不變、Ctrl+Z 可復原）`}><Sparkles aria-hidden />{isPolishing ? `潤飾中 ${polishProg}` : '潤飾'}</button>
                                 <button className="btn st-btn" onClick={handleScanTypos} disabled={isScanningTypos}
                                     title="AI 掃描重複出現的可疑錯字，一鍵全部取代"><SpellCheck aria-hidden />{isScanningTypos ? '掃描中' : '掃錯字'}</button>
                                 <button className="btn st-btn" onClick={handleScanFlow} disabled={isScanningFlow}
@@ -3336,7 +3353,7 @@ export default function App() {
                                     if (!segs.length) return null;
                                     return <div key={clip.id} className={`sub-group ${isActive ? 'active' : ''}`} role="group"
                                         aria-label={`片段 ${ci + 1}，${formatTime(clip.startTime)} 起`}>
-                                        {listClips.length > 1 && <div className="sub-group-head">
+                                        {multiMedia && <div className="sub-group-head">
                                             片段 {ci + 1}<span>{formatTime(clip.startTime)}–{formatTime(clip.startTime + clip.duration)} · {segs.length} 句</span>
                                         </div>}
                                         {segs.map((seg) => {
@@ -3366,7 +3383,15 @@ export default function App() {
                                                 handleSubtitleItemClick(seg.id, e as unknown as React.MouseEvent, clip.id);
                                             } else if ((e.key === 'Delete' || (e.key.toLowerCase() === 'x' && (e.ctrlKey || e.metaKey))) && isActive) {
                                                 e.preventDefault(); e.stopPropagation();
-                                                handleCutSegments(selectedSegIds.size ? mergeIds : new Set([seg.id]));
+                                                const ids = selectedSegIds.size ? mergeIds : new Set([seg.id]);
+                                                if (e.key === 'Delete' && !(cutArmed.current && Date.now() - cutArmed.current < 3000)) {
+                                                    cutArmed.current = Date.now();
+                                                    const secs = segments.filter(s => ids.has(s.id)).reduce((n, s) => n + (s.end - s.start) / clip.speed, 0);
+                                                    toast('info', `再按一次 Delete 剪掉 ${ids.size} 句（${secs.toFixed(1)} 秒）`, undefined, { key: 'history' });
+                                                    return;
+                                                }
+                                                cutArmed.current = 0;
+                                                handleCutSegments(ids);
                                             } else if (e.key.toLowerCase() === 'm' && (e.ctrlKey || e.metaKey) && canMergeSelected) {
                                                 e.preventDefault(); handleMergeSelected();
                                             }
@@ -3517,6 +3542,14 @@ export default function App() {
             }
             if (el.closest?.('[role="tablist"], .subtitle-list, .speed-menu, .project-file, .add-menu, .ai-status-wrap')) return;   // 這些區塊自己處理方向鍵
             const t = timelinePosRef.current;
+            if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'e') { e.preventDefault(); if (timelineClips.length) setShowExportModal(true); return; }
+            if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'b') { e.preventDefault(); setLeftCollapsed(v => !v); return; }
+            if (!e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && (e.key === 'z' || e.key === 'Z')) { e.preventDefault(); addZoomAtPlayhead(); return; }
+            if (!e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && (e.key === 'a' || e.key === 'A')) {
+                const btn = document.querySelector<HTMLElement>('.overlay-track .zoom-mini-btn[aria-haspopup="menu"]');
+                if (btn) { e.preventDefault(); btn.click(); }
+                return;
+            }
             if (e.ctrlKey || e.metaKey) {
                 if (e.key === '=' || e.key === '+') { e.preventDefault(); setZoom(z => Math.min(z * 1.25, 50)); }
                 else if (e.key === '-') { e.preventDefault(); setZoom(z => Math.max(z * 0.8, 0.1)); }
@@ -3554,7 +3587,7 @@ export default function App() {
         window.addEventListener('keydown', onKey);
         return () => window.removeEventListener('keydown', onKey);
     }, [speedMenu, showExportModal, showYtUpload, showSettings, showRecSettings, showHelp, selectedOverlayId, selectedZoomId,
-        activeClipId, timelineClips, duration, isPlaying, handleSplitClip, handleClipDelete, runZoomOps, seekTo, togglePlay]);
+        activeClipId, timelineClips, duration, isPlaying, handleSplitClip, handleClipDelete, runZoomOps, seekTo, togglePlay, addZoomAtPlayhead, openHelp]);
 
     return (
         <>

@@ -204,6 +204,8 @@ const EXTERNAL_LABEL: Record<string, string> = {
     import: 'AI 匯入了素材', transcribe: 'AI 完成字幕辨識',
 };
 /** 最近一次 AI 動作（標題列常駐顯示，不只 5 秒通知）＋本次開啟以來的紀錄 */
+/** AI 最近修改的時間軸位置（給時間軸畫標記） */
+export const aiMarks: { t: number; text: string; at: number }[] = [];
 export const aiActivity = { text: '', at: 0, lastCommandAt: 0, edits: 0, log: [] as { text: string; at: number; details: string[]; depth?: number; jump?: number }[] };
 const CHANGE_LABEL: Record<string, string> = {
     ripple_delete: '刪除區段並補位', delete_clip: '刪除片段', split: '分割片段', move_clip: '移動片段', set_speed: '調整速度',
@@ -241,6 +243,13 @@ function announceExternal(method: string, result: any, params?: any) {
             const first = method === 'apply' && Array.isArray(result?.changes) ? result.changes.find((c: any) => Array.isArray(c?.timeline) || Number.isFinite(c?.at)) : null;
             const jump = first ? (Array.isArray(first.timeline) ? first.timeline[0] : first.at) : undefined;
             aiActivity.log = [{ text, at: aiActivity.at, details, depth: method === 'apply' ? editHistory().depth : undefined, jump }, ...aiActivity.log].slice(0, 20);
+            if (method === 'apply' && Array.isArray(result?.changes)) {
+                for (const ch of result.changes.slice(0, 30)) {
+                    const t = Array.isArray(ch?.timeline) ? ch.timeline[0] : Number.isFinite(ch?.at) ? ch.at : undefined;
+                    if (t !== undefined) aiMarks.push({ t, text: describeChange(ch), at: Date.now() });
+                }
+                while (aiMarks.length > 60) aiMarks.shift();
+            }
         }
         window.dispatchEvent(new Event('ljcut-ai-activity'));
     }
@@ -250,7 +259,7 @@ export async function startControl() {
     if (started) return;
     started = true;
     const res = await fetch(`${getBase()}/api/control/connect`, { method: 'POST' }).catch(() => null);
-    if (!res?.ok) return;
+    if (!res?.ok) { started = false; window.dispatchEvent(new Event('ljcut-control-failed')); return; }
     const config = await res.json();
     token = config.token;
     controlWorkspace = config.workspace;

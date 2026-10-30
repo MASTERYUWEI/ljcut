@@ -80,7 +80,7 @@ const count = (p: ProjectData, k: 'zooms' | 'overlays') => p.mediaItems.reduce((
 const subs = (p: ProjectData) => p.timelineClips.reduce((n, c) => n + c.segments.length, 0);
 /** 用白話描述兩個專案狀態的差異（給「已復原：…」提示用） */
 export function describeChange(from: ProjectData, to: ProjectData): string {
-    const mmss = (t: number) => `${Math.floor(t / 60)}:${String(Math.round(t % 60)).padStart(2, '0')}`;
+    const mmss = (t: number) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
     const parts: string[] = [];
     const da = durationOf(from.timelineClips), db = durationOf(to.timelineClips);
     if (Math.abs(db - da) >= 0.05) parts.push(`影片長度 ${mmss(da)} → ${mmss(db)}`);

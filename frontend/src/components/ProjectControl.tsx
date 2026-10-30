@@ -42,6 +42,14 @@ function useProjectStatus() {
 /** 頂部：專案名稱＋未儲存標記、開啟／儲存（只有啟用本機控制時出現）。Ctrl+S 儲存、Ctrl+Shift+S 另存新檔 */
 export function ProjectFileButtons() {
     const workspace = useControlWorkspace();
+    const [controlFailed, setControlFailed] = useState(false);
+    useEffect(() => {
+        const t = setTimeout(() => { if (!controlWorkspace) setControlFailed(true); }, 8000);   // 8 秒還沒連上就說明
+        const onReady = () => setControlFailed(!controlWorkspace);
+        window.addEventListener('ljcut-control-ready', onReady);
+        window.addEventListener('ljcut-control-failed', onReady);
+        return () => { clearTimeout(t); window.removeEventListener('ljcut-control-ready', onReady); window.removeEventListener('ljcut-control-failed', onReady); };
+    }, []);
     const status = useProjectStatus();
     const [open, setOpen] = useState<null | 'save' | 'open'>(null);
     const [path, setPath] = useState('教學剪輯.ljcut');
@@ -74,8 +82,15 @@ export function ProjectFileButtons() {
         finally { setBusy(false); }
     };
     const submitRef = useRef<HTMLButtonElement>(null);
+    const saveOpenRef = useRef<HTMLButtonElement>(null);
+    // 放棄修改前先留一份自動存檔，開啟後可「回到剛才的進度」
+    const discardAndOpen = async (target: string) => {
+        try { await autosaveProject(); } catch { /* 備份失敗仍讓使用者決定 */ }
+        await doRun('open', target);
+        toast('info', '已放棄剛才的修改並開啟新專案。', [{ label: '回到剛才的進度', run: () => { void doRun('open', AUTOSAVE_PATH); } }]);
+    };
     const openFromList = (target: string) => {
-        if (statusRef.current.dirty) { setPath(target); submitRef.current?.focus(); return; }   // 先讓使用者決定要不要儲存
+        if (statusRef.current.dirty) { setPath(target); (saveOpenRef.current ?? submitRef.current)?.focus(); return; }   // 有修改：焦點給「儲存後開啟」
         void doRun('open', target);
     };
     const saveThenOpen = async (target: string) => {
@@ -191,7 +206,10 @@ export function ProjectFileButtons() {
         return () => window.removeEventListener('keydown', onKey);
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [workspace]);
-    if (!workspace) return null;
+    if (!workspace) return controlFailed ? <div className="project-file">
+        <span className="control-down" role="status">無法存檔：本機控制未連線</span>
+        <button className="btn btn-sm" onClick={() => location.reload()} title="重新整理畫面並重新連線（未儲存的修改會遺失）">重新連線</button>
+    </div> : null;
     const target = path.trim();
     const normalized = /\.ljcut$/i.test(target) ? target : `${target}.ljcut`;
     const nameTaken = open === 'save' && !!target && normalized !== status.path && projects.some(x => !x.autosave && x.path.toLowerCase() === normalized.toLowerCase());
@@ -206,7 +224,20 @@ export function ProjectFileButtons() {
         <button className="btn" disabled={busy} aria-label="儲存專案" onClick={() => save(false)} title={status.path ? `儲存到 ${status.path}（Ctrl+S）；另存新檔 Ctrl+Shift+S` : '儲存成專案檔（Ctrl+S）'}>
             <Save aria-hidden /><span className="btn-label">{busy && !open ? '儲存中…' : '儲存'}</span></button>
         {open && <form className="project-file-pop" role="dialog" aria-label={open === 'save' ? '另存專案' : '開啟專案'}
-            onSubmit={e => { e.preventDefault(); if (target) void doRun(open, open === 'save' && !/\.ljcut$/i.test(target) ? `${target}.ljcut` : target); }}>
+            onSubmit={e => {
+                e.preventDefault();
+                if (!target) return;
+                if (open === 'open' && status.dirty) {
+                    // 有未儲存修改時，Enter 的預設動作是「儲存後開啟」，永遠不會直接丟掉修改
+                    if (status.path) void saveThenOpen(target);
+                    else toast('info', '這個專案還沒取名：請先按「儲存」取名，或明確按「放棄修改並開啟」。');
+                    return;
+                }
+                if (open === 'open') { const prev = status.path; void doRun('open', target).then(() => {
+                    if (prev && prev !== target) toast('success', `已開啟「${target.replace(/\.ljcut$/i, '')}」`, [{ label: `回到「${prev.replace(/\.ljcut$/i, '')}」`, run: () => { void doRun('open', prev); } }]);
+                }); return; }
+                void doRun(open, !/\.ljcut$/i.test(target) ? `${target}.ljcut` : target);
+            }}>
             {open === 'open' ? <>
                 <button type="button" className="btn new-project-btn" onClick={askNew} title="清空編輯器，開始下一支影片（Ctrl+N）"><FilePlus aria-hidden />新專案<kbd>Ctrl N</kbd></button>
                 <div className="pop-title">或選擇要開啟的專案</div>
@@ -242,11 +273,13 @@ export function ProjectFileButtons() {
             {open === 'open' && status.dirty && <StatusText kind="warn" text="目前的修改還沒儲存，開啟後會被取代（可先按「儲存」）。" />}
             {overwrite && status.path && <StatusText kind="info" text={`會另存成新檔；原本的「${status.path}」不變。已有同名專案時會請你換名稱，不會覆蓋。`} />}
             <div className="pop-actions">
-                {open === 'open' && status.dirty && status.path && <button type="button" className="btn btn-primary" disabled={busy || !target}
-                    onClick={() => void saveThenOpen(target)}>儲存後開啟</button>}
-                <button ref={submitRef} className={`btn ${open === 'open' && status.dirty && status.path ? '' : 'btn-primary'}`} type="submit" disabled={busy || !target || nameTaken || (open === 'open' && target === status.path && !status.dirty)}>
-                    {busy ? '處理中…' : open === 'save' ? '儲存' : status.dirty ? '放棄修改並開啟' : '開啟'}
-                </button>
+                {open === 'open' && status.dirty ? <>
+                    <button type="button" className="btn btn-danger-soft" disabled={busy || !target} onClick={() => void discardAndOpen(target)}
+                        title="會先自動備份目前的進度，開啟後仍可回到剛才的進度">放棄修改並開啟</button>
+                    {status.path && <button ref={saveOpenRef} type="submit" className="btn btn-primary" disabled={busy || !target}>儲存後開啟</button>}
+                </> : <button ref={submitRef} className="btn btn-primary" type="submit" disabled={busy || !target || nameTaken || (open === 'open' && target === status.path && !status.dirty)}>
+                    {busy ? '處理中…' : open === 'save' ? '儲存' : '開啟'}
+                </button>}
             </div>
         </form>}
         {pendingNew && <div className="modal-overlay">
