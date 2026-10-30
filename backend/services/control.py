@@ -577,6 +577,16 @@ class LocalControl:
                                             target / 'assets' if overwrite else None)
                     media['url'] = '/uploads/' + source.name
                     media.pop('thumbnailUrl', None)
+                # 子母畫面用的圖片／影片也放進專案（之前漏掉 → 換電腦或換安裝版開啟後匯出會找不到素材）
+                overlay_dir = staging / 'assets' / 'overlay'
+                for media, _ in sources:
+                    for o in media.get('overlays') or []:
+                        aid = (o.get('asset') or {}).get('id') if isinstance(o, dict) else None
+                        src = asset_service.find(self.uploads, aid) if aid else None
+                        if src and not (overlay_dir / src.name).exists():
+                            overlay_dir.mkdir(exist_ok=True)
+                            await asyncio.to_thread(place_asset, src, overlay_dir / src.name,
+                                                    target / 'assets' / 'overlay' if overwrite else None)
                 (staging / 'project.json').write_text(json.dumps(p, ensure_ascii=False, indent=2), encoding='utf-8')
                 target.parent.mkdir(parents=True, exist_ok=True)
                 if overwrite:
@@ -636,6 +646,13 @@ class LocalControl:
                     await asyncio.to_thread(shutil.copyfile, asset, dest)
                 m['url'] = '/uploads/' + name
                 m['info'] = await asyncio.to_thread(FFmpegService.get_media_info, str(asset))
+            # 還原專案內的子母畫面素材（已存在就不覆寫）
+            overlay_src = source / 'assets' / 'overlay'
+            if overlay_src.is_dir():
+                dest_dir = asset_service.asset_dir(self.uploads)
+                for f in overlay_src.iterdir():
+                    if f.is_file() and re.fullmatch(r'[a-zA-Z0-9_-]+\.[a-zA-Z0-9]+', f.name) and not (dest_dir / f.name).exists():
+                        await asyncio.to_thread(shutil.copyfile, f, dest_dir / f.name)
             return p
 
         @r.post('/export')

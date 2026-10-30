@@ -147,6 +147,10 @@ class PublicationTests(unittest.TestCase):
             p=P.publication(events[-1]['publication_id'])
             self.assertEqual(p['segments'][0]['start'],15)
             self.assertEqual(p['segments'][0]['end'],16.5)
+            # 乾淨影片旁邊有同檔名的 SRT
+            sidecar=Path(events[-1]['srt_path'])
+            self.assertEqual(sidecar.with_suffix('.mp4').name,Path(events[-1]['output_path']).name)
+            self.assertIn('00:00:15,000 --> 00:00:16,500',sidecar.read_text(encoding='utf-8'))
             b=P.complete_batch(P.request_batch(p['id'])['id'],self.analysis,self.images)
             p=P.select_cover(p['id'],b['id'],b['items'][1]['file'])
             body={'publication_id':p['id'],'title':'Test','thumbnail_path':p['selected']['file'],

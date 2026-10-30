@@ -383,7 +383,16 @@ async def export_timeline(body: dict = Body(default={})):
             ):
                 yield f"data: {json.dumps(event)}\n\n"
             publication = publication_service.record_export(output_path, caption_clips, cumulative_offset)
-            yield f"data: {json.dumps({'progress': 100, 'done': True, 'output_path': output_path, 'publication_id': publication['id']})}\n\n"
+            # 乾淨影片＋獨立 SRT：在成品旁邊放一份同檔名的字幕檔
+            srt_sidecar = None
+            if publication.get('segments'):
+                try:
+                    srt_sidecar = str(Path(output_path).with_suffix('.srt'))
+                    shutil.copyfile(publication['srtPath'], srt_sidecar)
+                except OSError as err:
+                    print(f"⚠️ 無法在成品旁寫入 SRT: {err}")
+                    srt_sidecar = None
+            yield f"data: {json.dumps({'progress': 100, 'done': True, 'output_path': output_path, 'publication_id': publication['id'], 'srt_path': srt_sidecar})}\n\n"
         except Exception as e:
             if cancel.is_set():
                 print("⏹ 匯出已取消")

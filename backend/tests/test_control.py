@@ -109,6 +109,18 @@ class ControlTests(unittest.TestCase):
         # 再次儲存不重複複製素材：專案裡的素材是同一份檔案（硬連結）
         asset=next((self.control.root/'saved.ljcut'/'assets').iterdir())
         self.assertGreaterEqual(os.stat(asset).st_nlink,2)
+        # 子母畫面素材要一起存進專案，開啟時還原到 uploads/assets（換電腦／換安裝版也能匯出）
+        aid='a_0123456789ab'
+        (self.control.uploads/'assets').mkdir(exist_ok=True)
+        (self.control.uploads/'assets'/f'{aid}.png').write_bytes(b'png-bytes')
+        pip={'id':'pip1','kind':'media','start':4.5,'end':5.5,'x':0.8,'y':0.1,'w':0.2,
+             'asset':{'id':aid,'type':'image','filename':'logo.png','url':f'/uploads/assets/{aid}.png','width':10,'height':10,'duration':0}}
+        project3=dict(project,mediaItems=[dict(media,overlays=[pip])])
+        self.assertEqual(self.post('/save',{'path':'pip.ljcut','project':project3}).status_code,200)
+        self.assertTrue((self.control.root/'pip.ljcut'/'assets'/'overlay'/f'{aid}.png').is_file())
+        (self.control.uploads/'assets'/f'{aid}.png').unlink()
+        self.assertEqual(self.post('/open',{'path':'pip.ljcut'}).status_code,200)
+        self.assertEqual((self.control.uploads/'assets'/f'{aid}.png').read_bytes(),b'png-bytes')
         self.assertEqual(self.post('/save',{'path':'saved.ljcut','project':project,'overwrite':True}).status_code,200)
         (self.control.root/'notproject.ljcut').mkdir()
         self.assertEqual(self.post('/save',{'path':'notproject.ljcut','project':project,'overwrite':True}).status_code,409)
