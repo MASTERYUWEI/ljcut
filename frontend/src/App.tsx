@@ -3033,6 +3033,7 @@ export default function App() {
                                                     }}
                                                     title={`${media?.filename ?? 'clip'}${clip.speed !== 1 ? ` (${clip.speed}x)` : ''}\n${formatTimestamp(clip.startTime)} → ${formatTimestamp(clip.startTime + clip.duration)}\n拖曳左右邊緣可裁切；右鍵（或 Shift+F10）可分割/刪除/調速`}>
                                                     <canvas data-clip-id={clip.id} className="waveform-canvas"
+                                                        ref={el => { if (el && media?.waveformPeaks?.length && el.dataset.drawn !== '1') drawFullWaveform(el, media.waveformPeaks, waveFullW); }}
                                                         style={{ width: `${waveFullW}px`, transform: `translateX(${waveTx}px)` }} />
                                                     <span className="clip-text clip-text-over-waveform">{media?.filename ?? ''}</span>
                                                     {clip.speed !== 1 && <span style={{ position: 'absolute', right: 4, top: 2, fontSize: 10, color: 'var(--accent-amber)', fontWeight: 700 }}>{clip.speed}x</span>}

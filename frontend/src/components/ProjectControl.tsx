@@ -43,6 +43,18 @@ function useProjectStatus() {
 export function ProjectFileButtons() {
     const workspace = useControlWorkspace();
     const [controlFailed, setControlFailed] = useState(false);
+    // 沒連上本機控制時，Ctrl+S 也要攔下來說明（不然會跳出瀏覽器的「另存網頁」）
+    useEffect(() => {
+        if (workspace) return;
+        const onKey = (e: KeyboardEvent) => {
+            if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+                e.preventDefault();
+                toast('error', '無法存檔：本機控制沒有連上。請按標題列的「重新連線」，或重新開啟 LJCUT。');
+            }
+        };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    }, [workspace]);
     useEffect(() => {
         const t = setTimeout(() => { if (!controlWorkspace) setControlFailed(true); }, 8000);   // 8 秒還沒連上就說明
         const onReady = () => setControlFailed(!controlWorkspace);

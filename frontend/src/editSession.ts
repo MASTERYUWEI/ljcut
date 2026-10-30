@@ -68,6 +68,9 @@ function restore(snap: Snapshot, keepTime = false) {
     const active = (keepTime && prevActive ? p.timelineClips.find(c => c.id === prevActive) : undefined)
         ?? (snap.activeClipId ? p.timelineClips.find(c => c.id === snap.activeClipId) : undefined);
     projectId = p.projectId;
+    // 波形是顯示用資料：同一個素材已經抓過就沿用（開專案、復原、AI 套用後不會變成空白）
+    const peaks = new Map(useStore.getState().mediaItems.filter(m => m.waveformPeaks?.length).map(m => [m.id, m.waveformPeaks]));
+    p.mediaItems = p.mediaItems.map(m => (!m.waveformPeaks?.length && peaks.has(m.id) ? { ...m, waveformPeaks: peaks.get(m.id)! } : m));
     const time = keepTime ? Math.min(useStore.getState().currentTime, durationOf(p.timelineClips)) : 0;
     useStore.setState({ mediaItems: p.mediaItems, timelineClips: p.timelineClips, subtitleStyle: p.subtitleStyle,
         language: p.language, activeClipId: active?.id ?? null, segments: active?.segments ?? [],
