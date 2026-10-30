@@ -3108,7 +3108,7 @@ button.ai-status:not(.active) .ai-dot { background: var(--fg-overlay0); }
 .btn { white-space: nowrap; }
 .app-header .project-name { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 @media (max-width: 1240px) { .export-badge { display: none; } }
-@media (max-width: 1140px) {
+@media (max-width: 900px) {
   .header-actions .btn-label, .project-file > .btn .btn-label { display: none; }
   .app-header .project-name { max-width: 120px; }
 }
@@ -3126,3 +3126,19 @@ button.ai-status:not(.active) .ai-dot { background: var(--fg-overlay0); }
 .video-container:not(:hover) .preview-hint-idle { opacity: 0; }
 .left-rail .btn-icon { flex-direction: column; gap: 2px; padding: 6px 4px; width: 38px; }
 .rail-label { font-size: 11px; line-height: 1; color: var(--fg-subtext0); }
+
+/* ── 第 15 輪 ── */
+:root { --mark: #5fa8ff; }
+.mark-range { background: color-mix(in srgb, var(--mark) 14%, transparent); border-left-color: var(--mark); border-right-color: var(--mark); }
+.mark-tag { background: var(--mark); color: #0b1020; }
+.mark-group .btn.on { color: var(--mark); border-color: color-mix(in srgb, var(--mark) 55%, transparent); }
+.mark-group .btn-compact { font-family: var(--font-sans, inherit); font-weight: 700; }
+.timeline-area { position: relative; }
+.timeline-tools { position: absolute; top: 2px; right: 8px; z-index: 30; display: flex; gap: 6px; align-items: center; }
+.timeline-tools .seg-group, .timeline-tools .mark-group { background: var(--bg-surface0); box-shadow: 0 2px 8px rgba(0,0,0,.35); border-radius: var(--radius-sm); }
+.menu-sep { border: 0; border-top: 1px solid var(--bg-surface1); margin: 2px 0 4px; }
+.subtitle-item.ai-changed { box-shadow: inset 3px 0 0 var(--accent-amber); }
+.ai-changed-row { display: flex; align-items: center; gap: 8px; margin-bottom: 2px; }
+.ai-changed-tag { font-size: 11px; padding: 0 6px; border-radius: 999px; color: var(--accent-amber); border: 1px solid color-mix(in srgb, var(--accent-amber) 45%, transparent); }
+.ai-changed-row .link-btn { margin-left: 0; }
+.subtitle-header .btn-sm.on { border-color: var(--accent-amber); color: var(--fg-text); }

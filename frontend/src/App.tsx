@@ -24,7 +24,7 @@ import { AiStatus } from './components/AiStatus';
 import { OverlayInspector } from './components/OverlayInspector';
 import { notify, toast, humanizeError } from './toast';
 import { useDialog } from './useDialog';
-import { pushUndo, undo, redo, projectData, dryRun, applyPlan, readState, history as editHistory, contentKey, sameContent, requestPreview, peekHistory } from './editSession';
+import { pushUndo, undo, redo, projectData, dryRun, applyPlan, readState, history as editHistory, contentKey, sameContent, requestPreview, peekHistory, labelNextUndo } from './editSession';
 import { clippedSegments, splitClip, timelineSegments, toSourceTime, toTimelineTime, validateProject } from './editCore';
 import { registerPreviewReader } from './controlClient';
 import { transitionVisual } from './transitions';
@@ -134,6 +134,22 @@ export default function App() {
     const runOpsRef = useRef<(ops: Record<string, unknown>[], what: string) => unknown>(() => null);
     const [showReplace, setShowReplace] = useState(false);
     const [retranscribeArmed, setRetranscribeArmed] = useState(false);
+    // AI 潤飾改過的句子：key = 片段:句子 → 原句（文字已被改回就不再標示）
+    const [aiChanged, setAiChanged] = useState<Map<string, string>>(new Map());
+    const [onlyAiChanged, setOnlyAiChanged] = useState(false);
+    useEffect(() => {
+        const clear = () => { setAiChanged(new Map()); setOnlyAiChanged(false); };
+        window.addEventListener('ljcut-project-file', clear);
+        return () => window.removeEventListener('ljcut-project-file', clear);
+    }, []);
+    const restoreAiSentence = (clipId: string, segId: number) => {
+        const before = aiChanged.get(`${clipId}:${segId}`);
+        const clip = useStore.getState().timelineClips.find(c => c.id === clipId);
+        if (before === undefined || !clip) return;
+        pushUndo('還原 AI 改過的句子');
+        setClipSegments(clipId, clip.segments.map(s => s.id === segId ? { ...s, text: before } : s));
+        toast('info', '已還原原句', [{ label: '復原', run: handleUndo }], { key: 'history' });
+    };
     const [overlayExpanded, setOverlayExpanded] = useState(() => { try { return localStorage.getItem('ljcut-overlay-expanded') !== '0'; } catch { return true; } });
     useEffect(() => { try { localStorage.setItem('ljcut-overlay-expanded', overlayExpanded ? '1' : '0'); } catch { /* 無法記住不影響 */ } }, [overlayExpanded]);
     const [rightTab, setRightTab] = useState<'props' | 'subs'>('props');
@@ -465,6 +481,16 @@ export default function App() {
         } catch (err) { notify(`匯入失敗: ${err}`); }
         finally { setIsUploading(false); }
     }, [addMedia, addClip, updateMedia, setIsUploading]);
+
+    // 波形：開專案或 AI 匯入的素材沒有波形資料時，背景補抓（每個素材只抓一次）
+    const waveRequested = useRef(new Set<string>());
+    useEffect(() => {
+        for (const m of mediaItems) {
+            if (m.waveformPeaks?.length || waveRequested.current.has(m.id)) continue;
+            waveRequested.current.add(m.id);
+            api.getWaveform(m.id).then(peaks => { if (peaks?.length) updateMedia(m.id, { waveformPeaks: peaks }); }).catch(() => { waveRequested.current.delete(m.id); });
+        }
+    }, [mediaItems, updateMedia]);
 
     // ── 螢幕錄影 ──
     const IS_TAURI = !!(window as any).__TAURI_INTERNALS__;
@@ -842,9 +868,15 @@ export default function App() {
             let changed = 0, total = 0;
             for (const r of results) for (let i = 0; i < r.after.length; i++) { total++; if (r.after[i]?.text !== r.before[i]?.text) changed++; }
             if (!changed) { toast('info', `潤飾完成：${total} 句都不需要修改`); return; }
-            pushUndo();
-            for (const r of results) setClipSegments(r.id, r.after);
-            toast('success', `已潤飾全部字幕：${total} 句中改了 ${changed} 句`, [{ label: '復原', run: handleUndo }], { key: 'history' });
+            pushUndo('AI 潤飾字幕');
+            const marks = new Map<string, string>();
+            for (const r of results) {
+                r.after.forEach((s, i) => { if (s && r.before[i] && s.text !== r.before[i].text) marks.set(`${r.id}:${s.id}`, r.before[i].text); });
+                setClipSegments(r.id, r.after);
+            }
+            setAiChanged(marks);
+            toast('success', `已潤飾全部字幕：${total} 句中改了 ${changed} 句`, [
+                { label: '只看改過的', run: () => setOnlyAiChanged(true) }, { label: '全部復原', run: handleUndo }], { key: 'history' });
         } catch (err) {
             notify(`潤飾失敗: ${err}`);
         } finally {
@@ -1987,6 +2019,7 @@ export default function App() {
             const s = readState();
             const v = { sessionId: s.sessionId, projectId: s.projectId, expectedRevision: s.revision };
             const draft = dryRun({ ...v, timeUnit: 'seconds', operations: operations.map(o => ({ trackId: 'video-main', timeDomain: 'source', ...o })) } as never);
+            labelNextUndo(what);
             applyPlan({ ...v, dryRunId: draft.dryRunId, confirmed: true });
             return draft.changes as { zoomId?: string }[];
         } catch (e) {
@@ -2882,6 +2915,16 @@ export default function App() {
                                 <button className={`btn btn-compact ${marks.out != null ? 'on' : ''}`} onClick={() => setMarks(m => ({ ...m, out: timelinePosRef.current }))}
                                     title="在播放頭標記要剪掉的終點（O）" aria-label="標記終點 O">O</button>
                             </span>}
+                        </div>
+                    )}
+
+                    {/* Timeline Resize Handle（水平） */}
+                    {(hasTimeline || primaryMedia) && <div className="resize-handle-h" onMouseDown={(e) => startResize('timeline', e)} />}
+
+                    {/* ── 多軌時間軸 ── */}
+                    {(hasTimeline || primaryMedia) && (
+                        <div className="timeline-area" ref={timelineAreaRef} onWheel={handleTimelineWheel} style={{ height: timelineHeight }}>
+                            <div className="timeline-tools">
                             {(marks.in != null || marks.out != null) && <span className="mark-group" role="group" aria-label="I／O 區間">
                                 <button className="btn btn-compact btn-danger-soft" disabled={marks.in == null || marks.out == null} onClick={cutMarkedRange}
                                     title={marks.in == null || marks.out == null ? '再按 I 或 O 標記另一端' : '剪掉 I 到 O 之間（X；Ctrl+Z 可復原）'}>
@@ -2893,15 +2936,7 @@ export default function App() {
                                 <span className="seg-value" title="時間軸比例（Ctrl+＋／－）"><MoveHorizontal aria-hidden />{Math.round(zoom * 100)}%</span>
                                 <button className="btn" onClick={() => setZoom(z => Math.min(z * 1.25, 50))} aria-label="放大時間軸比例" title="放大時間軸比例（Ctrl+＋）"><Plus aria-hidden /></button>
                             </span>
-                        </div>
-                    )}
-
-                    {/* Timeline Resize Handle（水平） */}
-                    {(hasTimeline || primaryMedia) && <div className="resize-handle-h" onMouseDown={(e) => startResize('timeline', e)} />}
-
-                    {/* ── 多軌時間軸 ── */}
-                    {(hasTimeline || primaryMedia) && (
-                        <div className="timeline-area" ref={timelineAreaRef} onWheel={handleTimelineWheel} style={{ height: timelineHeight }}>
+                            </div>
                             {/* 時間刻度尺 */}
                             <div className="timeline-ruler" ref={rulerRef}>
                                 <div className="ruler-pad" style={{ width: LABEL_W }} />
@@ -3010,7 +3045,7 @@ export default function App() {
                                                     >
                                                         <div className="cue-handle cue-handle-left"
                                                             onMouseDown={(e) => handleCueEdgeDrag(e, clip.id, seg.id, 'left')} />
-                                                        <span className="clip-text">{seg.text}</span>
+                                                        {width >= 36 && <span className="clip-text">{seg.text}</span>}
                                                         <div className="cue-handle cue-handle-right"
                                                             onMouseDown={(e) => handleCueEdgeDrag(e, clip.id, seg.id, 'right')} />
                                                     </div>
@@ -3126,7 +3161,7 @@ export default function App() {
                                                             style={{ left, width, top: 4 + row * 28, height: 24 }}
                                                             onClick={(e) => { e.stopPropagation(); selectOverlay(o.id); seekTo(toTimelineTime(clip, Math.min(b - 0.01, a + Math.min(0.6, (b - a) / 2)))); }}
                                                             title={`${OVERLAY_LABEL[o.kind]}${o.text ? `：${o.text}` : ''}\n${formatTimestamp(toTimelineTime(clip, a))} → ${formatTimestamp(toTimelineTime(clip, b))}\n點一下在右欄編輯屬性`}>
-                                                            <span className="clip-text">{icon[o.kind]}{width >= 56 || selected ? ` ${o.text ?? OVERLAY_LABEL[o.kind]}` : width >= 30 ? ` ${(o.text ?? OVERLAY_LABEL[o.kind]).slice(0, 1)}` : null}</span>
+                                                            <span className="clip-text">{icon[o.kind]}{width >= 56 || selected ? ` ${o.text ?? OVERLAY_LABEL[o.kind]}` : null}</span>
                                                         </div>
                                                     );
                                                 })}
@@ -3204,6 +3239,10 @@ export default function App() {
                     <div className="right-subs" hidden={!!(selectedOverlay || selectedZoom) && rightTab === 'props'}>
                     <div className="subtitle-header">
                         <h2>字幕 <button type="button" className="help-dot" onClick={() => openHelp('字幕')} aria-label="字幕工具說明">?</button></h2>
+                        {[...aiChanged].some(([k, v]) => { const [cid, sid] = k.split(':'); return timelineClips.find(c => c.id === cid)?.segments.find(s => String(s.id) === sid)?.text !== v; }) && (
+                            <button className={`btn btn-sm ${onlyAiChanged ? 'on' : ''}`} aria-pressed={onlyAiChanged} onClick={() => setOnlyAiChanged(v => !v)}
+                                title="只列出 AI 潤飾改過的句子">{onlyAiChanged ? '顯示全部' : '只看 AI 改過的'}</button>
+                        )}
                         {totalSubs > 0 && (
                             <span className="sub-count">共 {totalSubs} 句{listClips.filter(c => c.segments.length).length > 1 ? ` · ${listClips.filter(c => c.segments.length).length} 個片段` : ''}</span>
                         )}
@@ -3212,7 +3251,7 @@ export default function App() {
                         <div className="subtitle-toolbar">
                             <div className="st-row">
                                 <button className="btn st-btn" onClick={handlePolishSubtitles} disabled={isPolishing || isTranscribing}
-                                    title="AI 修錯字、去贅字、補標點（時間碼不變、Ctrl+Z 可復原）"><Sparkles aria-hidden />{isPolishing ? '潤飾中' : '潤飾'}</button>
+                                    title={`AI 修錯字、去贅字、補標點：整條時間軸 ${totalSubs} 句（使用 Gemini 額度；時間碼不變、Ctrl+Z 可復原）`}><Sparkles aria-hidden />{isPolishing ? '潤飾中' : '潤飾'}</button>
                                 <button className="btn st-btn" onClick={handleScanTypos} disabled={isScanningTypos}
                                     title="AI 掃描重複出現的可疑錯字，一鍵全部取代"><SpellCheck aria-hidden />{isScanningTypos ? '掃描中' : '掃錯字'}</button>
                                 <button className="btn st-btn" onClick={handleScanFlow} disabled={isScanningFlow}
@@ -3301,6 +3340,9 @@ export default function App() {
                                             片段 {ci + 1}<span>{formatTime(clip.startTime)}–{formatTime(clip.startTime + clip.duration)} · {segs.length} 句</span>
                                         </div>}
                                         {segs.map((seg) => {
+                                            const aiBefore = aiChanged.get(`${clip.id}:${seg.id}`);
+                                            const aiMark = aiBefore !== undefined && aiBefore !== seg.text;
+                                            if (onlyAiChanged && !aiMark) return null;
                                             const on = isActive && seg.id === activeSegmentId;
                                             const sel = isActive && selectedSegIds.has(seg.id);
                                             const tl = (t: number) => (t - clip.trimStart) / clip.speed + clip.startTime;
@@ -3308,7 +3350,7 @@ export default function App() {
                                             return (
                                     <div key={seg.id}
                                         data-seg-id={isActive ? seg.id : undefined}
-                                        className={`subtitle-item ${on ? 'active' : ''} ${sel ? 'selected' : ''}`}
+                                        className={`subtitle-item ${on ? 'active' : ''} ${sel ? 'selected' : ''} ${aiMark ? 'ai-changed' : ''}`}
                                         role="listitem" tabIndex={on || (activeSegmentId == null && isActive && seg === segs[0]) ? 0 : -1}
                                         aria-current={on ? 'true' : undefined}
                                         aria-label={`第 ${no} 句，${formatTimestamp(tl(seg.start))}：${seg.text}`}
@@ -3332,6 +3374,10 @@ export default function App() {
                                         onClick={(e) => handleSubtitleItemClick(seg.id, e, clip.id)}>
                                         <div className="index">{no}</div>
                                         <div className="content">
+                                            {aiMark && <div className="ai-changed-row">
+                                                <span className="ai-changed-tag" title={`原句：${aiBefore}`}>AI 改過</span>
+                                                <button className="link-btn" onClick={(e) => { e.stopPropagation(); restoreAiSentence(clip.id, seg.id); }} title={`還原成：${aiBefore}`}>還原原句</button>
+                                            </div>}
                                             <div className="time-range" title={clip.speed !== 1 || clip.startTime !== clip.trimStart ? `原始影片 ${formatTimestamp(seg.start)} → ${formatTimestamp(seg.end)}` : undefined}>
                                                 {formatTimestamp(tl(seg.start))} → {formatTimestamp(tl(seg.end))}
                                             </div>
@@ -3442,6 +3488,14 @@ export default function App() {
             if (['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName) || el.isContentEditable) return;
             if (showExportModal || showYtUpload || showSettings || showRecSettings || showHelp) return;
             if (e.key === '?') { e.preventDefault(); openHelp(); return; }
+            if (e.altKey && e.shiftKey && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+                e.preventDefault();
+                const now = timelinePosRef.current;
+                const cuts = [...new Set(useStore.getState().timelineClips.filter(c => c.trackIndex === 0).flatMap(c => [c.startTime, c.startTime + c.duration]))].sort((x, y) => x - y);
+                const target = e.key === 'ArrowDown' ? cuts.find(t => t > now + 0.05) : [...cuts].reverse().find(t => t < now - 0.05);
+                if (target !== undefined) seekTo(Math.min(target, useStore.getState().getDuration()));
+                return;
+            }
             if (e.altKey && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
                 // 跳到下一句／上一句字幕
                 e.preventDefault();
@@ -3515,6 +3569,7 @@ export default function App() {
                     canSplit={canSplitMenuClip}
                     splitTime={splitT}
                     onSplit={() => handleSplitClip(speedMenuClip.id, splitT)}
+                    onlyClip={timelineClips.filter(c => c.trackIndex === 0).length === 1}
                     onDelete={() => { const d = speedMenuClip.duration; handleClipDelete(speedMenuClip.id); toast('info', `已刪除片段（${d.toFixed(1)} 秒）`, [{ label: '復原', run: handleUndo }], { key: 'history' }); }}
                     onSetSpeed={(id, sp) => {
                         if (!speedUndoPushedRef.current) { speedUndoPushedRef.current = true; pushUndo(); }
@@ -3575,7 +3630,7 @@ export default function App() {
                                     <dt>成品長度</dt><dd>{formatTime(duration)}</dd>
                                     <dt>片頭／片尾</dt><dd>{intro ? '有' : '無'}／{outro ? '有' : '無'}
                                         {controlWorkspace && (!intro || !outro) && <button type="button" className="link-btn" onClick={() => {
-                                            setShowExportModal(false); setLeftTab('media');
+                                            setShowExportModal(false); setLeftTab('media'); setLeftCollapsed(false);
                                             setTimeout(() => document.getElementById('bookend-section')?.scrollIntoView({ block: 'center' }), 50);
                                         }}>到左側設定</button>}</dd>
                                     <dt>字幕</dt><dd>{subs} 句{subs === 0 ? '（上傳時不會有 CC）' : ''}</dd>

@@ -25,6 +25,7 @@ function fmtEta(s: number): string {
 export function ExportProgress({ progress, etaSeconds, stage, onCancel, done, onClose, onOpenFolder, onUpload }: Props) {
     const [cancelling, setCancelling] = useState(false);
     const [copied, setCopied] = useState(false);
+    const [armed, setArmed] = useState(false);
     const firstBtn = useRef<HTMLButtonElement>(null);
     const doneRef = useRef<HTMLDivElement>(null);
     useDialog(doneRef, !!done);
@@ -71,8 +72,11 @@ export function ExportProgress({ progress, etaSeconds, stage, onCancel, done, on
                 {progress >= 100 && <div className="export-progress-done">完成</div>}
                 {progress < 100 && onCancel && (
                     <button className="btn" style={{ marginTop: 14, width: '100%', justifyContent: 'center' }} disabled={cancelling}
-                        onClick={() => { setCancelling(true); onCancel(); }}>
-                        {cancelling ? '取消中…' : '取消匯出'}
+                        onClick={() => {
+                            if (!armed) { setArmed(true); setTimeout(() => setArmed(false), 4000); return; }
+                            setCancelling(true); onCancel();
+                        }}>
+                        {cancelling ? '取消中…' : armed ? `再按一次取消（已完成 ${progress}%）` : '取消匯出'}
                     </button>
                 )}
             </div>

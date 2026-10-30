@@ -8,7 +8,7 @@ let revision = 0;
 const sessionId = crypto.randomUUID();
 let projectId: string = crypto.randomUUID();
 let restoring = false;
-type Snapshot = { project: ProjectData; activeClipId: string | null };
+type Snapshot = { project: ProjectData; activeClipId: string | null; label?: string };
 const past: Snapshot[] = [];
 const future: Snapshot[] = [];
 const drafts = new Map<string, ReturnType<typeof evaluatePlan> & { revision: number; projectId: string }>();
@@ -47,7 +47,13 @@ useStore.subscribe((s, prev) => {
     }
 });
 const snapshot = (): Snapshot => ({ project: projectData(), activeClipId: useStore.getState().activeClipId });
-export function pushUndo() { past.push(snapshot()); if (past.length > 50) past.shift(); future.length = 0; notifyHistory(); }
+let nextLabel = '';
+/** 下一筆復原的操作名稱（例如「修改醒目框」），沒有結構變化時用它描述 */
+export function labelNextUndo(label: string) { nextLabel = label; }
+export function pushUndo(label?: string) {
+    past.push({ ...snapshot(), label: label ?? (nextLabel || undefined) }); nextLabel = '';
+    if (past.length > 50) past.shift(); future.length = 0; notifyHistory();
+}
 export interface ExpectedVersion { sessionId: string; projectId: string; expectedRevision: number }
 export function checkVersion(args: ExpectedVersion) {
     requireEdit(args.sessionId === sessionId && args.projectId === projectId && args.expectedRevision === revision,
@@ -85,28 +91,28 @@ export function describeChange(from: ProjectData, to: ProjectData): string {
     const oa = count(from, 'overlays'), ob = count(to, 'overlays');
     if (oa !== ob) parts.push(`標註 ${oa} → ${ob} 個`);
     if (!parts.length && from.timelineClips.length !== to.timelineClips.length) parts.push(`片段 ${from.timelineClips.length} → ${to.timelineClips.length} 段`);
-    return parts.length ? parts.join('，') : '文字或位置的修改';
+    return parts.length ? parts.join('，') : '';
 }
 /** 下一步復原／重做會發生什麼（給按鈕提示用） */
 export function peekHistory(which: 'undo' | 'redo') {
     const snap = which === 'undo' ? past[past.length - 1] : future[future.length - 1];
-    return snap ? describeChange(projectData(), snap.project) : '';
+    return snap ? (describeChange(projectData(), snap.project) || snap.label || '上一步的修改') : '';
 }
 export function undo() {
     const snap = past.pop();
     requireEdit(snap, 'NOTHING_TO_UNDO', '沒有可撤銷的操作');
     const before = snapshot();
-    future.push(before); restoring = true;
+    future.push({ ...before, label: snap.label }); restoring = true;
     try { restore(snap, true); } finally { restoring = false; }
-    return { ...readState(), change: describeChange(before.project, snap.project) };
+    return { ...readState(), change: describeChange(before.project, snap.project) || snap.label || '上一步的修改' };
 }
 export function redo() {
     const snap = future.pop();
     requireEdit(snap, 'NOTHING_TO_REDO', '沒有可重做的操作');
     const before = snapshot();
-    past.push(before); restoring = true;
+    past.push({ ...before, label: snap.label }); restoring = true;
     try { restore(snap, true); } finally { restoring = false; }
-    return { ...readState(), change: describeChange(before.project, snap.project) };
+    return { ...readState(), change: describeChange(before.project, snap.project) || snap.label || '剛才復原的修改' };
 }
 export function replaceProject(p: ProjectData, expected: ExpectedVersion) {
     validateProject(p);

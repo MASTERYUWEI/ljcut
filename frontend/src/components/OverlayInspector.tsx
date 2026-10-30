@@ -43,11 +43,24 @@ function Field({ label, value, onCommit, type = 'text', step, min, max, suffix, 
     const [draft, setDraft] = useState(String(value));
     const sent = useRef(String(value));          // 最後送出的值：Enter 送出後緊接的 blur 不重送
     useEffect(() => { setDraft(String(value)); sent.current = String(value); }, [value]);
+    const [ownErr, setOwnErr] = useState('');
+    const skipBlur = useRef(false);
+    useEffect(() => { setOwnErr(''); }, [value]);
     const commit = () => {
         if (draft === sent.current) return;
+        if (type === 'number') {
+            const n = Number(draft);
+            const fmt = (x: number) => `${Math.round(x * 10) / 10}${suffix ?? ''}`;
+            if (draft.trim() === '' || !Number.isFinite(n)) { setOwnErr('請輸入數字'); return; }
+            if ((min !== undefined && n < min) || (max !== undefined && n > max)) {
+                setOwnErr(min !== undefined && max !== undefined ? `要在 ${fmt(min)}～${fmt(max)} 之間${max < 100 && suffix === '%' ? '（不能超出畫面）' : ''}` : min !== undefined ? `至少 ${fmt(min)}` : `最多 ${fmt(max!)}`);
+                return;                                           // 保留輸入讓使用者改；Esc 還原
+            }
+        }
+        setOwnErr('');
         const r = onCommit(draft);
-        if (r === false || r === null) { setDraft(String(value)); sent.current = String(value); }   // 被拒：回到目前的值
-        else sent.current = draft;
+        if (r === null) { setDraft(String(value)); sent.current = String(value); }   // 引擎拒絕：回到目前的值
+        else if (r !== false) sent.current = draft;
     };
     const errId = useRef(`f-${Math.random().toString(36).slice(2)}`).current;
     return (
@@ -55,12 +68,15 @@ function Field({ label, value, onCommit, type = 'text', step, min, max, suffix, 
             <span>{label}</span>
             <span className="insp-input-wrap">
                 <input className="st-input" type={type} value={draft} step={step} min={min} max={max} maxLength={maxLength}
-                    aria-label={suffix ? `${label}（${suffix}）` : label} aria-invalid={error ? true : undefined} aria-describedby={error ? errId : undefined}
-                    onChange={e => setDraft(e.target.value)} onBlur={commit}
-                    onKeyDown={e => { if (e.key === 'Enter') { commit(); e.currentTarget.blur(); } if (e.key === 'Escape') { setDraft(String(value)); e.stopPropagation(); } }} />
+                    aria-label={suffix ? `${label}（${suffix}）` : label} aria-invalid={(error || ownErr) ? true : undefined} aria-describedby={(error || ownErr) ? errId : undefined}
+                    onChange={e => setDraft(e.target.value)} onBlur={() => { if (skipBlur.current) { skipBlur.current = false; return; } commit(); }}
+                    onKeyDown={e => {
+                        if (e.key === 'Enter') { commit(); skipBlur.current = true; e.currentTarget.blur(); }
+                        if (e.key === 'Escape') { setDraft(String(value)); setOwnErr(''); e.stopPropagation(); }
+                    }} />
                 {suffix && <span className="insp-suffix">{suffix}</span>}
             </span>
-            {error && <span className="insp-error" id={errId} role="alert">{error}</span>}
+            {(error || ownErr) && <span className="insp-error" id={errId} role="alert">{error || ownErr}</span>}
         </label>
     );
 }
@@ -163,15 +179,15 @@ export function OverlayInspector({ media, overlay, zoom, clips, onOps, onClose, 
 
             {overlay && kind !== 'title' && kind !== 'html' && (
                 <div className="insp-grid">
-                    <Field label={kind === 'box' || kind === 'spotlight' || kind === 'media' ? '左' : 'X'} type="number" step={0.5} min={0} max={100}
+                    <Field label={kind === 'box' || kind === 'spotlight' || kind === 'media' ? '左' : 'X'} type="number" step={0.5} min={0} max={kind === 'box' || kind === 'spotlight' ? Math.round((100 - pct(overlay.w)) * 10) / 10 : 100}
                         value={pct(overlay.x)} onCommit={v => edit({ x: fromPct(v) })} suffix="%" />
-                    <Field label={kind === 'box' || kind === 'spotlight' || kind === 'media' ? '上' : 'Y'} type="number" step={0.5} min={0} max={100}
+                    <Field label={kind === 'box' || kind === 'spotlight' || kind === 'media' ? '上' : 'Y'} type="number" step={0.5} min={0} max={kind === 'box' || kind === 'spotlight' ? Math.round((100 - pct(overlay.h)) * 10) / 10 : 100}
                         value={pct(overlay.y)} onCommit={v => edit({ y: fromPct(v) })} suffix="%" />
                     {(kind === 'box' || kind === 'spotlight' || kind === 'media') && (
-                        <Field label="寬" type="number" step={0.5} min={1} max={100} value={pct(overlay.w)} onCommit={v => edit({ w: Math.max(0.01, fromPct(v)) })} suffix="%" />
+                        <Field label="寬" type="number" step={0.5} min={kind === 'media' ? 5 : 1} max={kind === 'media' ? 100 : Math.round((100 - pct(overlay.x)) * 10) / 10} value={pct(overlay.w)} onCommit={v => edit({ w: Math.max(0.01, fromPct(v)) })} suffix="%" />
                     )}
                     {(kind === 'box' || kind === 'spotlight') && (
-                        <Field label="高" type="number" step={0.5} min={1} max={100} value={pct(overlay.h)} onCommit={v => edit({ h: Math.max(0.01, fromPct(v)) })} suffix="%" />
+                        <Field label="高" type="number" step={0.5} min={1} max={Math.round((100 - pct(overlay.y)) * 10) / 10} value={pct(overlay.h)} onCommit={v => edit({ h: Math.max(0.01, fromPct(v)) })} suffix="%" />
                     )}
                 </div>
             )}

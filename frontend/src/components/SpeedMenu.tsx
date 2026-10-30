@@ -14,9 +14,10 @@ interface Props {
     onDelete: () => void;
     onSetSpeed: (clipId: string, speed: number) => void;
     onClose: () => void;
+    onlyClip?: boolean;
 }
 
-export function SpeedMenu({ clip, x, y, canSplit, splitTime, onSplit, onDelete, onSetSpeed, onClose }: Props) {
+export function SpeedMenu({ clip, x, y, canSplit, splitTime, onSplit, onDelete, onSetSpeed, onClose, onlyClip = false }: Props) {
     const boxRef = useRef<HTMLDivElement>(null);
     // 依實際尺寸放在畫面內（原本假設 220×200，實際較大會跑出畫面）
     useLayoutEffect(() => {
@@ -59,13 +60,14 @@ export function SpeedMenu({ clip, x, y, canSplit, splitTime, onSplit, onDelete, 
                 >
                     <Scissors aria-hidden /> {canSplit ? `在播放頭分割（${formatTimestamp(splitTime)}）` : '分割（播放頭不在此片段）'}{canSplit && <kbd className="menu-kbd">S</kbd>}
                 </button>
+                <hr className="menu-sep" />
                 <button
                     className="speed-preset-btn"
-                    style={{ width: '100%', marginBottom: 10, color: 'var(--danger)' }}
+                    style={{ width: '100%', marginBottom: 10, marginTop: 6, color: 'var(--danger)' }}
                     onClick={onDelete}
-                    title="從時間軸刪除此片段"
+                    title={onlyClip ? '這是時間軸上唯一的片段，刪除後時間軸會清空（可 Ctrl+Z 復原）' : '從時間軸刪除此片段（可 Ctrl+Z 復原）'}
                 >
-                    <Trash2 aria-hidden /> 刪除片段<kbd className="menu-kbd">Delete</kbd>
+                    <Trash2 aria-hidden /> {onlyClip ? '刪除片段（時間軸會清空）' : '刪除片段'}
                 </button>
                 <div className="speed-menu-title"><Gauge aria-hidden /> 影片速度</div>
                 <div className="speed-menu-value">{clip.speed.toFixed(1)}x</div>
