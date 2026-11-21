@@ -148,6 +148,9 @@ dry-run 回傳來源／時間軸區間、前後長度、新片段 ID、受影響
 - `job --id JOB_ID` 查詢 `queued/running/completed/failed/cancelled`、進度、錯誤；`cancel --id JOB_ID` 取消自有的編碼程序樹，不會停止其他軟體的 FFmpeg。
 - CLI 意外中斷時，使用 `result --id REQUEST_ID` 查結果，或用**相同 `--request-id` 與完全相同內容**重試。已完成命令不會重複套用；不要以新 ID 盲目重送修改。超時不是「操作未發生」。
 - UI 必須保持開啟。後端只傳遞命令；沒有編輯器時回 `EDITOR_OFFLINE`。同一後端只允許一個編輯器持有工作階段，不自動把未完成命令交給另一個專案。
+- 編輯器端的接收迴圈（`frontend/src/controlClient.ts`）：每次輪詢／回覆 15 秒沒回應就放棄重來；超過 30 秒沒有一次成功的輪詢，標題列 AI 藥丸轉紅顯示「AI 連線中斷，重連中…」（點開可「立刻重連」）；迴圈 3 分鐘沒動靜，看門狗換新迴圈接手（同一個編輯器識別碼，不會讓執行中的命令被判失敗）。後端重啟（憑證換新）會自動重新握手。
+  另一個編輯器持有工作階段時，本視窗停止輪詢並顯示「另一個 LJ Cut 視窗正在控制此工作區」，不會自動搶回；對方關閉後按「改由本視窗接管」。
+  迴圈的啟動／失敗／恢復都寫進 `%LOCALAPPDATA%	w.ljcut.app\logs\LJCUT.log`（`[frontend]` 標記；上限 20 MB、保留 3 份），`EDITOR_OFFLINE` 時先看這份日誌。查日誌時不要用 PowerShell `Get-Content -Wait` 一直開著它（檔案跨過上限要改名輪替時會被擋住、新紀錄暫時寫不進去），先 `Copy-Item` 一份再讀，或用 Git Bash 的 `tail -f`。
 
 ## 可重現驗收
 

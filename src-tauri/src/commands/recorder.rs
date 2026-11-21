@@ -78,6 +78,9 @@ pub struct RecOptions {
     pub cursor_scale: f32,
     #[serde(default)]
     pub cursor_hidden: bool,
+    /// 錄影時是否顯示置頂的計時指示條（不會錄進影片；關掉後用 F10 停止）
+    #[serde(default = "default_true")]
+    pub show_indicator: bool,
 }
 
 fn default_glow_color() -> String {
@@ -88,6 +91,9 @@ fn default_click_color() -> String {
 }
 fn default_scale() -> f32 {
     1.0
+}
+fn default_true() -> bool {
+    true
 }
 
 fn default_fps() -> u32 {
@@ -153,6 +159,7 @@ pub async fn set_rec_options(
     click_color: Option<String>,
     cursor_scale: Option<f32>,
     cursor_hidden: Option<bool>,
+    show_indicator: Option<bool>,
 ) -> Result<(), String> {
     let opts = RecOptions {
         sys_audio,
@@ -169,14 +176,16 @@ pub async fn set_rec_options(
         click_color: click_color.unwrap_or_else(default_click_color),
         cursor_scale: cursor_scale.unwrap_or(1.0),
         cursor_hidden: cursor_hidden.unwrap_or(false),
+        show_indicator: show_indicator.unwrap_or(true),
     };
     log::info!(
-        "🎙️ 錄影選項: sys={}({:.0}%), mic={}({:.0}%), fps={}",
+        "🎙️ 錄影選項: sys={}({:.0}%), mic={}({:.0}%), fps={}, indicator={}",
         opts.sys_audio,
         opts.sys_vol * 100.0,
         opts.mic,
         opts.mic_vol * 100.0,
-        opts.fps
+        opts.fps,
+        opts.show_indicator
     );
     *RECORDING_OPTIONS.lock().unwrap() = Some(opts);
     Ok(())
@@ -347,55 +356,205 @@ fn find_recorder_exe() -> Option<PathBuf> {
 }
 
 // ── 錄製中的置頂指示小視窗（最小化主視窗時仍可見；排除於錄影擷取）──
+//
+// 不透明＋用視窗區域裁圓角，不走透明視窗：WebView2 透明視窗在 Windows 10 每秒重繪計時
+// 時周圍會殘留破圖，陰影也會被視窗邊界切成方框。位置放在錄影區域外，才不會壓到要錄的畫面。
 
-fn show_rec_indicator(app: &AppHandle) {
+/// 一塊矩形（物理像素）
+#[derive(Clone, Copy, Debug)]
+pub struct PxRect {
+    pub x: i32,
+    pub y: i32,
+    pub w: u32,
+    pub h: u32,
+}
+
+impl PxRect {
+    fn right(&self) -> i32 {
+        self.x + self.w as i32
+    }
+    fn bottom(&self) -> i32 {
+        self.y + self.h as i32
+    }
+}
+
+/// 錄影區域與其所在螢幕（物理像素）
+#[derive(Clone, Debug)]
+pub struct CaptureGeom {
+    /// 錄影區域所在螢幕的工作區（扣掉工作列）
+    pub work: PxRect,
+    pub scale: f64,
+    /// 錄影區域（螢幕本地座標，相對 mon_x/mon_y）
+    pub mon_x: i32,
+    pub mon_y: i32,
+    pub x: u32,
+    pub y: u32,
+    pub w: u32,
+    pub h: u32,
+    /// 其他螢幕的工作區：錄影區域佔滿本螢幕時，計時條退到別顆螢幕的角落（完全不遮內容）
+    pub others: Vec<PxRect>,
+}
+
+const INDICATOR_W: f64 = 164.0; // 邏輯像素
+const INDICATOR_H: f64 = 32.0;
+
+fn geom_of(m: &tauri::Monitor, local: Option<(u32, u32, u32, u32)>, others: Vec<PxRect>) -> CaptureGeom {
+    let wa = m.work_area();
+    let (x, y, w, h) = local.unwrap_or((0, 0, m.size().width, m.size().height));
+    CaptureGeom {
+        work: PxRect { x: wa.position.x, y: wa.position.y, w: wa.size.width, h: wa.size.height },
+        scale: m.scale_factor(),
+        mon_x: m.position().x,
+        mon_y: m.position().y,
+        x,
+        y,
+        w,
+        h,
+        others,
+    }
+}
+
+fn work_areas_except(app: &AppHandle, skip: &tauri::Monitor) -> Vec<PxRect> {
+    app.available_monitors()
+        .unwrap_or_default()
+        .iter()
+        .filter(|m| m.position() != skip.position() || m.size() != skip.size())
+        .map(|m| {
+            let wa = m.work_area();
+            PxRect { x: wa.position.x, y: wa.position.y, w: wa.size.width, h: wa.size.height }
+        })
+        .collect()
+}
+
+/// 指示條左上角（物理像素）：優先放在錄影區域外（上→下→右→左，都限制在工作區內，不壓工作列）；
+/// 本螢幕放不下時退到別顆螢幕工作區的右下角；只有一顆螢幕才退回本螢幕工作區右下角（蓋到的多半是狀態列）。
+fn indicator_position(g: &CaptureGeom, iw: i32, ih: i32) -> (i32, i32) {
+    let gap = (8.0 * g.scale).round() as i32;
+    let a = g.work;
+    let clamp_x = |x: i32| x.clamp(a.x, (a.right() - iw).max(a.x));
+    let clamp_y = |y: i32| y.clamp(a.y, (a.bottom() - ih).max(a.y));
+    let (rx, ry, rw, rh) = (g.mon_x + g.x as i32, g.mon_y + g.y as i32, g.w as i32, g.h as i32);
+    let cx = clamp_x(rx + (rw - iw) / 2);
+    let candidates = [
+        (cx, ry - gap - ih),           // 上
+        (cx, ry + rh + gap),           // 下
+        (rx + rw + gap, clamp_y(ry)),  // 右
+        (rx - gap - iw, clamp_y(ry)),  // 左
+    ];
+    let fits = |&(x, y): &(i32, i32)| x >= a.x && y >= a.y && x + iw <= a.right() && y + ih <= a.bottom();
+    if let Some(p) = candidates.iter().copied().find(fits) {
+        return p;
+    }
+    let corner = |r: &PxRect| (r.right() - iw - gap, r.bottom() - ih - gap);
+    let (x, y) = g.others.first().map(corner).unwrap_or_else(|| corner(&a));
+    if g.others.is_empty() {
+        (clamp_x(x), clamp_y(y))
+    } else {
+        (x, y)
+    }
+}
+
+/// 把視窗裁成藥丸形（Windows 10 不會替無邊框視窗做圓角）。區域是固定像素、交給系統持有；
+/// 視窗被拖到不同 DPI 的螢幕或系統依 DPI 重算尺寸時要重建，否則會露出方角或裁掉內容。
+fn apply_pill_region(hwnd: isize, w: i32, h: i32) {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::Graphics::Gdi::{CreateRoundRectRgn, SetWindowRgn};
+    if w < 2 || h < 2 {
+        return;
+    }
+    unsafe {
+        let rgn = CreateRoundRectRgn(0, 0, w + 1, h + 1, h, h);
+        if rgn.is_invalid() {
+            log::warn!("計時條：CreateRoundRectRgn 失敗 ({w}x{h})");
+            return;
+        }
+        if SetWindowRgn(HWND(hwnd as *mut _), Some(rgn), true) == 0 {
+            log::warn!("計時條：SetWindowRgn 失敗 ({w}x{h})");
+        }
+    }
+}
+
+fn show_rec_indicator(app: &AppHandle, geom: Option<CaptureGeom>) {
     if app.get_webview_window("rec-indicator").is_some() {
         return;
     }
-    let (mon_w, scale) = app
-        .primary_monitor()
-        .ok()
-        .flatten()
-        .map(|m| (m.size().width as f64, m.scale_factor()))
-        .unwrap_or((1920.0, 1.0));
-    let logical_w = mon_w / scale;
-    let iw = 240.0;
-    let ih = 44.0;
-    let x = ((logical_w - iw) / 2.0).max(0.0);
+    // 沒有區域資訊時當作整個主螢幕都在錄（會退到別顆螢幕或右下角）
+    let g = geom
+        .or_else(|| {
+            app.primary_monitor().ok().flatten().map(|m| {
+                let others = work_areas_except(app, &m);
+                geom_of(&m, None, others)
+            })
+        })
+        .unwrap_or(CaptureGeom {
+            work: PxRect { x: 0, y: 0, w: 1920, h: 1080 },
+            scale: 1.0,
+            mon_x: 0,
+            mon_y: 0,
+            x: 0,
+            y: 0,
+            w: 1920,
+            h: 1080,
+            others: Vec::new(),
+        });
+    let iw = (INDICATOR_W * g.scale).round() as i32;
+    let ih = (INDICATOR_H * g.scale).round() as i32;
+    let (px, py) = indicator_position(&g, iw, ih);
+    log::info!(
+        "🕒 計時條：錄影區域 ({},{}) {}x{} 於螢幕 ({},{}) 工作區 ({},{}) {}x{} scale={:.2} 其他螢幕 {} 顆 → 放在 ({px},{py}) {iw}x{ih}",
+        g.mon_x + g.x as i32, g.mon_y + g.y as i32, g.w, g.h, g.mon_x, g.mon_y,
+        g.work.x, g.work.y, g.work.w, g.work.h, g.scale, g.others.len()
+    );
 
+    // 建視窗時的 position 是邏輯座標，混合 DPI 多螢幕時 tao 可能先把視窗建在別顆螢幕；
+    // 所以 build 後一律再用物理座標定位（跨 DPI 搬移會觸發系統重算尺寸）→ 再以物理像素定尺寸
+    // → 最後依實際尺寸裁區域。不用 visible(false)+show()：tao 的 show 會啟用視窗、搶走被錄程式的焦點。
     match WebviewWindowBuilder::new(
         app,
         "rec-indicator",
         WebviewUrl::App("rec-indicator.html".into()),
     )
     .title("LJCUT 錄製中")
-    .inner_size(iw, ih)
-    .position(x, 10.0)
+    .inner_size(INDICATOR_W, INDICATOR_H)
+    .position(px as f64 / g.scale, py as f64 / g.scale)
     .resizable(false)
     .decorations(false)
-    .transparent(true)
+    .shadow(false)
+    .background_color(tauri::window::Color(20, 20, 28, 255))
     .always_on_top(true)
     .skip_taskbar(true)
     .focused(false)
     .build()
     {
         Ok(win) => {
-            // 排除於螢幕擷取：使用者看得到，但不會被錄進影片裡
-            // 注意：Tauri 的 hwnd() 來自 windows 0.61，本 crate 的 Win32 呼叫用 0.62，
-            // 兩者 HWND 型別不同，用內部指標 .0 橋接。
+            let _ = win.set_position(tauri::PhysicalPosition::new(px, py));
+            let _ = win.set_size(tauri::PhysicalSize::new(iw.max(1) as u32, ih.max(1) as u32));
+            // tauri 與本 crate 同用 windows 0.62；拆成原始指標是為了放進事件閉包（Send）
             if let Ok(hwnd) = win.hwnd() {
                 use windows::Win32::Foundation::HWND;
-                use windows::Win32::UI::WindowsAndMessaging::{
-                    SetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE,
-                };
-                unsafe {
-                    let _ = SetWindowDisplayAffinity(HWND(hwnd.0), WDA_EXCLUDEFROMCAPTURE);
-                }
+                use windows::Win32::UI::WindowsAndMessaging::{SetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE};
+                let raw = hwnd.0 as isize;
+                // 排除於螢幕擷取：使用者看得到，但不會被錄進影片裡
+                let excluded = unsafe { SetWindowDisplayAffinity(HWND(hwnd.0), WDA_EXCLUDEFROMCAPTURE).is_ok() };
+                let (aw, ah) = win
+                    .outer_size()
+                    .map(|s| (s.width as i32, s.height as i32))
+                    .unwrap_or((iw, ih));
+                apply_pill_region(raw, aw, ah);
+                log::info!("🕒 計時條：實際尺寸 {aw}x{ah}，排除擷取={excluded}");
+                win.on_window_event(move |e| match e {
+                    tauri::WindowEvent::Resized(sz) => apply_pill_region(raw, sz.width as i32, sz.height as i32),
+                    tauri::WindowEvent::ScaleFactorChanged { new_inner_size, .. } => {
+                        apply_pill_region(raw, new_inner_size.width as i32, new_inner_size.height as i32)
+                    }
+                    _ => {}
+                });
             }
         }
         Err(e) => log::warn!("建立錄製指示視窗失敗: {e}"),
     }
 }
+
 
 fn hide_rec_indicator(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("rec-indicator") {
@@ -421,6 +580,7 @@ fn current_rec_opts() -> RecOptions {
         click_color: default_click_color(),
         cursor_scale: 1.0,
         cursor_hidden: false,
+        show_indicator: true,
     })
 }
 
@@ -435,6 +595,7 @@ fn begin_recording(
     h: u32,
     fps: u32,
     target: String,
+    geom: Option<CaptureGeom>,
 ) -> Result<String, String> {
     let recorder_exe = find_recorder_exe().ok_or("找不到 ljcut-recorder.exe")?;
 
@@ -539,8 +700,10 @@ fn begin_recording(
 
     // 註冊 F10 全域快捷鍵以停止錄影（錄影期間才註冊，避免平時佔用）
     let _ = app.global_shortcut().register("F10");
-    // 置頂錄製指示視窗（主視窗最小化時仍看得到狀態）
-    show_rec_indicator(app);
+    // 置頂錄製指示視窗（主視窗最小化時仍看得到狀態；可在錄影設定關掉）
+    if rec_opts.show_indicator {
+        show_rec_indicator(app, geom);
+    }
     // 把主視窗最小化，讓使用者看到要錄的內容（停止時會自動還原）
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.minimize();
@@ -628,7 +791,8 @@ pub async fn start_recording(app: AppHandle, fps: Option<u32>) -> Result<String,
     let _ = overlay.close();
     std::thread::sleep(Duration::from_millis(300));
 
-    begin_recording(&app, &rec_opts, x, y, w, h, fps, mon_name)
+    let geom = target.map(|m| geom_of(m, Some((x, y, w, h)), work_areas_except(&app, m)));
+    begin_recording(&app, &rec_opts, x, y, w, h, fps, mon_name, geom)
 }
 
 fn cursor_pos() -> Option<(i32, i32)> {

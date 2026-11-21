@@ -214,6 +214,10 @@ pub fn start_sidecar(app: &AppHandle) {
                 std::thread::spawn(move || {
                     use std::io::{BufRead, BufReader};
                     for line in BufReader::new(out).lines().map_while(Result::ok) {
+                        // AI 工具每 0.3 秒查一次命令結果，這些行只是雜訊；其他存取紀錄（含 /poll）保留，查斷線要用
+                        if line.contains("GET /api/control/commands/") && line.ends_with("200 OK") {
+                            continue;
+                        }
                         log::info!("[sidecar] {line}");
                     }
                 });

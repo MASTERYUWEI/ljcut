@@ -5,6 +5,8 @@
     <meta charset="utf-8">
     <title>LJCUT 錄製中</title>
     <style>
+        /* 視窗本身不透明（Rust 端用視窗區域裁成藥丸形），不要用透明背景或陰影：
+           WebView2 透明視窗在 Windows 10 每秒重繪時周圍會破圖，陰影也會被視窗邊界切掉。 */
         * {
             margin: 0;
             padding: 0;
@@ -16,7 +18,7 @@
             width: 100%;
             height: 100%;
             overflow: hidden;
-            background: transparent;
+            background: #14141c;
             user-select: none;
             -webkit-user-select: none;
             font-family: 'Microsoft JhengHei', 'Segoe UI', sans-serif;
@@ -25,19 +27,20 @@
         .bar {
             display: flex;
             align-items: center;
-            gap: 10px;
+            gap: 8px;
             height: 100%;
-            background: rgba(20, 20, 28, 0.92);
-            border: 1px solid rgba(255, 59, 48, 0.5);
-            border-radius: 12px;
-            padding: 0 14px;
+            padding: 0 6px 0 12px;
             -webkit-app-region: drag;
-            box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
+            cursor: grab;
+        }
+
+        .bar:active {
+            cursor: grabbing;
         }
 
         .dot {
-            width: 10px;
-            height: 10px;
+            width: 9px;
+            height: 9px;
             border-radius: 50%;
             background: #ff3b30;
             animation: pulse 1.2s infinite;
@@ -58,29 +61,37 @@
 
         .timer {
             color: #fff;
-            font-size: 15px;
+            font-size: 13px;
             font-weight: 700;
             font-variant-numeric: tabular-nums;
-            min-width: 50px;
-        }
-
-        .hint {
-            color: rgba(255, 255, 255, 0.55);
-            font-size: 11px;
-            white-space: nowrap;
+            min-width: 40px;
+            line-height: 1;
         }
 
         .stop {
             -webkit-app-region: no-drag;
             margin-left: auto;
+            display: flex;
+            align-items: center;
+            gap: 5px;
             background: #ff3b30;
             color: #fff;
             border: none;
-            border-radius: 8px;
-            padding: 6px 14px;
-            font-size: 13px;
+            border-radius: 999px;
+            height: 22px;
+            padding: 0 10px 0 8px;
+            font-size: 12px;
             font-weight: 600;
+            font-family: inherit;
             cursor: pointer;
+        }
+
+        .stop::before {
+            content: '';
+            width: 8px;
+            height: 8px;
+            background: #fff;
+            border-radius: 1.5px;
         }
 
         .stop:hover {
@@ -90,11 +101,10 @@
 </head>
 
 <body>
-    <div class="bar">
+    <div class="bar" title="錄影中（這條不會錄進影片，可拖曳移開）">
         <span class="dot"></span>
         <span class="timer" id="t">0:00</span>
-        <span class="hint">F10 結束</span>
-        <button class="stop" id="stop">停止</button>
+        <button class="stop" id="stop" title="停止錄影（F10）">停止</button>
     </div>
     <script>
         let s = 0;

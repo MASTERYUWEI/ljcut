@@ -9,7 +9,13 @@ pub fn run() {
     let _ = dotenvy::dotenv();
 
     tauri::Builder::default()
-        .plugin(tauri_plugin_log::Builder::default().build())
+        .plugin(
+            tauri_plugin_log::Builder::default()
+                // 預設上限只有 40 KB、只留一份：後端的存取紀錄幾秒就把它洗掉，出事後查不到任何東西
+                .max_file_size(20_000_000)
+                .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepSome(3))
+                .build(),
+        )
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_dialog::init())
@@ -28,6 +34,7 @@ pub fn run() {
         .manage(commands::sidecar::SidecarState::default())
         .invoke_handler(tauri::generate_handler![
             commands::sidecar::get_backend_port,
+            commands::diag::frontend_log,
             commands::recorder::list_audio_devices,
             commands::recorder::set_rec_options,
             commands::recorder::start_region_select,
