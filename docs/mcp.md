@@ -33,12 +33,17 @@ LJ Cut 重開後不必重啟 MCP。
 | `ljcut_frames` | 指定時間點各抓一格拼圖；`domain` 可選 timeline／source |
 | `ljcut_silences` / `ljcut_scenes` / `ljcut_audio_levels` | 靜音區間、畫面變化點、每 N 秒音量（來源秒數） |
 | `ljcut_transcribe` | 語音辨識並寫入該素材所有片段；`fast=true` 用批次推論（約 4 倍速，專有名詞略不準） |
-| `ljcut_plan` | dry-run 一批操作，回傳 changes 與 dryRunId，不改專案 |
-| `ljcut_apply` | 套用 dryRunId；`userConfirmed` 必須是使用者明確同意後才填 true |
+| `ljcut_plan` | dry-run 一批操作，回傳 changes、dryRunId 與套用前審核 `audit`，不改專案 |
+| `ljcut_apply` | 套用 dryRunId；`userConfirmed` 必須是使用者明確同意後才填 true；審核有 block 項目時要帶 `acknowledge`（使用者逐條確認過的審核 id） |
+| `ljcut_review` | 審片意見：list／add（`time` 為成品時間軸，手機審片頁的意見用 `by:'phone'` 匯入）／update（status、reply）／delete |
 | `ljcut_check_cuts` | 每個接縫前後 0.4 秒各取一格，檢查接得順不順 |
 | `ljcut_undo` / `ljcut_redo` | 與 UI 共用 Ctrl+Z 堆疊 |
 | `ljcut_preview` / `ljcut_import` / `ljcut_save` / `ljcut_open` | 跳到某秒、匯入工作區檔案、另存／開啟 `.ljcut` |
-| `ljcut_export` / `ljcut_job` | 匯出（`wait=true` 等到完成）／查詢工作 |
+| `ljcut_export` / `ljcut_job` | 匯出（`wait=true` 等到完成）／查詢工作；`loudness`=youtube／teaching／off 覆蓋專案平台響度，結果含 `loudness {before, after, truePeak}`；配樂依專案設定混入 |
+| `ljcut_stock_search` / `ljcut_stock_fetch` / `ljcut_stock_credits` | 免費可商用素材：搜尋（附編號縮圖對照表）、下載到工作區並記錄授權、整理說明欄出處。見 [stock-media.md](stock-media.md) |
+| `ljcut_blender_guide` / `ljcut_blender_preview` / `ljcut_blender_render` / `ljcut_blender_job` | Blender 3D 動畫：讀 kit 說明、渲染預覽拼圖、背景正式渲染、查進度並匯入。見 [blender.md](blender.md) |
+
+觀察類工具（frames、overview、check_*、stock_search）的圖片存在 LJ Cut 真正的工作區（控制檔記錄的 `workspace`，安裝版是「文件\LJCUT 專案」）的 `observe/`，MCP 依控制檔讀取，不再受啟動參數 `--workspace` 影響。
 
 ### 剪輯操作（`ljcut_plan.operations`，時間皆為來源秒數）
 
@@ -114,6 +119,40 @@ LJ Cut 重開後不必重啟 MCP。
   預覽（`/api/overlay/media-decor`）與匯出用同一份。匯出時素材縮放後以遮罩 `alphamerge`、淡入淡出後疊上，聲音以 `amix` 混入。
 - **介面**：選取子母畫面後 ✎ 調音量（影片有聲音時）、↻ 換形狀；Shift+點移動左上角、Shift+拖曳設定位置與寬度。
   預覽時影片跟著主畫面播放（同倍速、漂移超過 0.2 秒校正），暫停時精準跳到對應秒數。
+
+## 套用前審核（2026-11-21，借鏡 Editkin 的 prepare → audit → apply）
+
+`dry_run` 回傳 `audit: [{id, level, code, message, clipId, source}]`，由 `frontend/src/planAudit.ts` 計算：
+
+| code | level | 何時出現 |
+|---|---|---|
+| `CUT_MID_WORD` | block | 剪點落在逐字稿某個詞的中間（離邊界 > 30ms） |
+| `TINY_CLIP` | block | 剪完新出現短於 0.3 秒的片段 |
+| `CUTS_SPEECH` | warn | 剪掉的區間有 ≥ 0.15 秒旁白（列出句子） |
+| `SPLITS_SUBTITLE` | warn | 一句字幕只剪掉一部分 |
+| `LARGE_DELETE` | warn | 一批刪掉超過 40% 長度 |
+| `FAST_SPEECH` | warn | 有旁白的區間加速超過 1.5 倍 |
+
+`apply` 時所有 block 都要列在 `acknowledge`，否則回 `AUDIT_BLOCKED`；計畫內容由 `dryRunId` 綁定（存在編輯器記憶體，外部無法改）。LJ Cut 畫面會跳提示列出審核結果。
+
+## 審片意見（`add_note`／`edit_note`／`delete_note`）
+
+存在素材上（`MediaItem.reviewNotes`，來源秒數），剪接後跟著移動；右欄「審片」分頁與時間尺紅旗顯示，快捷鍵 N 在播放頭記一條，也可「貼上多條」（一行一條「1:23 字幕 意見」）。
+`add_note` 用 `timelineTime`（成品時間軸秒數）或 `start`＋`mediaId`；欄位 `cat`（畫面／聲音／字幕／觀念／節奏／其他）、`text`、`status`（open／fixed／skip）、`reply`、`by`（user／ai／phone）。
+
+## 配樂與平台響度（專案 `audioMix`）
+
+- 左欄「配樂」選一首音樂鋪滿整段（可循環、起播秒數、淡出），「旁白時自動壓低」依字幕找旁白區段。
+- 壓低包絡由 `frontend/src/audioMix.ts::duckEnvelope` 算成 `[秒, dB]` 關鍵點，預覽 `<audio>` 音量與後端 `services/audio_mix.render_music` 用同一份線性內插。
+- 匯出對話框「平台響度」：YouTube −14／教學 −16 LUFS，兩階段 loudnorm（linear），匯出完成提示前後響度。
+- 時間軸配樂列顯示節拍點（`GET /api/audio/beats/{assetId}`，numpy 頻譜通量＋自相關，節拍器測試誤差 < 15ms）。
+- 存檔時配樂檔一起打包進 `assets/overlay/`。
+
+## 守門與旅程測試
+
+- `cd frontend; npm run check`：型別、node 測試、build、`scripts/check-arch.mjs --bundle`（循環引用、核心層不得引用 React／元件、主 bundle ≤ 560 KB）。
+- `backendenv\Scripts\python.exe scripts\journey_test.py`：暫存資料夾起獨立後端，匯入→剪接→存檔→清掉素材後重開→匯出→驗長度／影格數／剪接點影格對位／SRT／響度／原素材不變，證據在 `reports/journey/<時間>/`。
+- 覆寫存檔會保留上一版（隱藏的 `.上一版-名稱.ljcut`），「開啟」清單最下面可找回。
 
 ## 相關改動
 

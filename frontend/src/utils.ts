@@ -2,7 +2,7 @@ import type { Segment } from './types';
 /* ── LJCUT 共用工具函式（純函式，無元件狀態） ── */
 
 // ── 軌道標籤寬度 ──
-export const LABEL_W = 72;
+export const LABEL_W = 96;   // 時間軸各軌標籤欄寬：放得下「圖示＋兩個字」和小按鈕，靠左對齊
 
 // ── 格式化時間 m:ss ──
 export function formatTime(seconds: number): string {

@@ -221,6 +221,83 @@ class ControlTests(unittest.TestCase):
         self.assertEqual(self.post('/export',dict(project=project,burnSubtitles='false')).json()['detail']['code'],
             'INVALID_EXPORT_OPTION')
 
+    def _wait(self, job):
+        deadline = time.monotonic() + 120
+        while time.monotonic() < deadline:
+            result = self.client.get('/api/control/jobs/' + job['id'], headers=self.headers).json()
+            if result['status'] not in {'queued', 'running'}:
+                return result
+            time.sleep(.2)
+        self.fail('export timeout')
+
+    def test_export_with_music_ducking_and_platform_loudness(self):
+        """配樂鋪滿、旁白段壓低、匯出響度校到 −16 LUFS；全走控制 API（和 AI 匯出同一條路）"""
+        flags = 0x08000000 if os.name == 'nt' else 0
+        source = self.control.root / 'speech.mp4'
+        # 畫面＋「旁白」（1–3 秒有 440Hz 聲音，其餘靜音）
+        subprocess.run(['ffmpeg', '-v', 'error', '-f', 'lavfi', '-i', 'color=black:s=320x180:r=30:d=6', '-f', 'lavfi', '-i',
+                        "aevalsrc='if(between(t,1,3),0.2*sin(2*PI*440*t),0)':s=48000:d=6", '-shortest',
+                        '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', str(source)], check=True, capture_output=True, creationflags=flags)
+        music_src = self.control.root / 'bgm.wav'
+        subprocess.run(['ffmpeg', '-v', 'error', '-f', 'lavfi', '-i', "aevalsrc='0.3*sin(2*PI*110*t)':s=48000:d=4", '-ac', '2', str(music_src)],
+                       check=True, capture_output=True, creationflags=flags)
+        media = self.post('/media', {'path': source.name}).json()
+        asset = self.post('/asset', {'path': music_src.name}).json()
+        self.assertEqual(asset['type'], 'audio', asset)
+        clip = dict(id='c', mediaId=media['id'], trackIndex=0, startTime=0, trimStart=0, trimEnd=6, duration=6, speed=1,
+                    segments=[dict(id=0, start=1, end=3, text='旁白')])
+        env = [[0.75, 0], [1, -18], [3, -18], [3.6, 0]]
+        mix = {'loudness': 'teaching', 'music': {'asset': {'id': asset['id'], 'filename': 'bgm.wav', 'url': asset['url'], 'duration': asset['duration']},
+               'volume': 0.5, 'offset': 0, 'loop': True, 'fadeIn': 0, 'fadeOut': 0, 'duck': True, 'duckDb': 18, 'attack': .25, 'release': .6,
+               'envelope': env}}
+        project = dict(schemaVersion=1, projectId='music-export', mediaItems=[media], timelineClips=[clip], language='zh',
+                       subtitleStyle=dict(fontName='Arial', fontSize=48, posY=50), audioMix={k: v for k, v in mix.items()})
+        result = self._wait(self.post('/export', dict(project=project, revision=1, audioMix=mix)).json())
+        self.assertEqual(result['status'], 'completed', result)
+        self.assertAlmostEqual(FFmpegService.get_media_info(result['outputPath'])['duration'], 6, delta=0.05)
+        self.assertLess(abs(result['loudness']['after'] - (-16)), 1.0, result['loudness'])
+        from services import audio_mix as A
+        import numpy as np
+        x = A.decode(result['outputPath'])[:, 0]
+        # 110Hz 配樂在旁白段被壓低：用窄頻能量比較（避開 440Hz 旁白）
+        def band(seg, f):
+            spec = np.abs(np.fft.rfft(seg * np.hanning(seg.size)))
+            freqs = np.fft.rfftfreq(seg.size, 1 / 48000)
+            return 20 * np.log10(spec[(freqs > f - 5) & (freqs < f + 5)].max() + 1e-9)
+        during, after = band(x[int(1.5 * 48000):int(2.5 * 48000)], 110), band(x[int(4.2 * 48000):int(5.2 * 48000)], 110)
+        self.assertAlmostEqual(after - during, 18, delta=1.0)
+        # 配樂檔跟著專案打包，開啟時還原
+        self.assertEqual(self.post('/save', {'path': 'music.ljcut', 'project': project}).status_code, 200)
+        self.assertTrue((self.control.root / 'music.ljcut' / 'assets' / 'overlay' / Path(asset['url']).name).is_file())
+        bad = dict(mix, loudness='loud')
+        self.assertEqual(self.post('/export', dict(project=project, audioMix=bad)).json()['detail']['code'], 'INVALID_AUDIO_MIX')
+
+    def test_overwrite_keeps_previous_version_and_symlink_cannot_escape(self):
+        fixture = create_fixture(self.control.root / 'fixture.mp4')
+        media = self.post('/media', {'path': 'fixture.mp4'}).json()
+        clip = {'id': 'c', 'mediaId': media['id'], 'trackIndex': 0, 'startTime': 0, 'trimStart': 0, 'trimEnd': 2, 'duration': 2, 'speed': 1, 'segments': []}
+        project = {'schemaVersion': 1, 'projectId': 'p', 'mediaItems': [media], 'timelineClips': [clip], 'language': 'zh',
+                   'subtitleStyle': {'fontName': 'Arial', 'fontSize': 30, 'posY': 90}}
+        self.assertEqual(self.post('/save', {'path': 'a.ljcut', 'project': project}).status_code, 200)
+        self.assertEqual(self.post('/save', {'path': 'a.ljcut', 'project': dict(project, language='en'), 'overwrite': True}).status_code, 200)
+        listed = self.client.get('/api/control/projects', headers=self.headers).json()
+        self.assertEqual([x['of'] for x in listed['previous']], ['a.ljcut'])
+        self.assertNotIn(listed['previous'][0]['path'], [x['path'] for x in listed['projects']])
+        self.assertEqual(self.post('/open', {'path': listed['previous'][0]['path']}).json()['language'], 'zh')
+        self.assertEqual(self.post('/open', {'path': 'a.ljcut'}).json()['language'], 'en')
+        # 工作區裡的符號連結指到外面：realpath 後仍要被擋（Windows 沒權限建立連結時跳過）
+        outside = Path(self.temp.name) / 'outside'
+        outside.mkdir()
+        (outside / 'secret.mp4').write_bytes(fixture.read_bytes())
+        try:
+            os.symlink(outside, self.control.root / 'link', target_is_directory=True)
+        except OSError:
+            if os.name != 'nt':
+                raise
+            import _winapi   # Windows 一般權限不能建符號連結，改用目錄連接點（同樣會跳出工作區）
+            _winapi.CreateJunction(str(outside), str(self.control.root / 'link'))
+        self.assertEqual(self.post('/media', {'path': 'link/secret.mp4'}).json()['detail']['code'], 'OUTSIDE_WORKSPACE')
+
     def test_speed_export_without_subtitles(self):
         fixture=create_fixture(self.control.root/'speed.mp4')
         output=self.root/'speed-output.mp4'

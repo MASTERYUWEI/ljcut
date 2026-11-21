@@ -1,6 +1,6 @@
 /* ── 螢幕錄影設定 Modal ── */
 import { StatusText } from './StatusText';
-import { X, Volume2, Mic, SlidersHorizontal, MonitorPlay, Film, MousePointer2, EyeOff, Sun, MousePointerClick, CircleDot } from 'lucide-react';
+import { X, Volume2, Mic, SlidersHorizontal, MonitorPlay, Film, MousePointer2, EyeOff, Sun, MousePointerClick, CircleDot, Timer } from 'lucide-react';
 import { useRef, useState } from 'react';
 import { useDialog } from '../useDialog';
 import type { RecOpts, RecQuality, RecFps, MicDevice } from '../types';
@@ -205,6 +205,18 @@ export function RecordingSettingsModal({
                     <label className="toggle-switch">
                         <input type="checkbox" checked={recOpts.clickEffect}
                             onChange={e => setRecOpts(o => ({ ...o, clickEffect: e.target.checked }))} />
+                        <span className="toggle-slider" />
+                    </label>
+                </div>
+                <div className="rec-setting-row">
+                    <label><Timer aria-hidden /> 錄影計時條</label>
+                    <span style={{ fontSize: 11, color: 'var(--fg-subtext0)', marginLeft: 'auto', marginRight: 8 }}
+                        title="錄影時螢幕上置頂的小計時條，放在錄影區域外、不會錄進影片。關掉後主視窗仍會縮到工作列，請按 F10 停止錄影">
+                        {recOpts.showIndicator ? '不會錄進影片' : '關掉後請按 F10 停止錄影'}
+                    </span>
+                    <label className="toggle-switch">
+                        <input type="checkbox" checked={recOpts.showIndicator}
+                            onChange={e => setRecOpts(o => ({ ...o, showIndicator: e.target.checked }))} />
                         <span className="toggle-slider" />
                     </label>
                 </div>

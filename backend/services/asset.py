@@ -12,6 +12,7 @@ from pathlib import Path
 
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 VIDEO_EXT = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".wmv", ".gif"}
+AUDIO_EXT = {".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".opus"}   # 配樂（不能當子母畫面）
 ID_RE = re.compile(r"a_[0-9a-f]{12}")
 
 
@@ -25,6 +26,11 @@ def probe(path: Path) -> dict:
     """讀取素材資訊；圖片的 duration 為 0。讀不到畫面時丟 ValueError。"""
     from .ffmpeg_service import FFmpegService
     info = FFmpegService.get_media_info(str(path))
+    if path.suffix.lower() in AUDIO_EXT:
+        duration = float(info.get("duration") or 0)
+        if duration <= 0 or not info.get("audio_codec"):
+            raise ValueError("讀不到配樂的聲音")
+        return {"type": "audio", "width": 0, "height": 0, "duration": round(duration, 3), "hasAudio": True}
     w, h = int(info.get("width") or 0), int(info.get("height") or 0)
     if not (w and h):
         raise ValueError("讀不到圖片／影片的畫面尺寸")
@@ -40,8 +46,8 @@ def probe(path: Path) -> dict:
 def import_file(source: Path, uploads: Path, filename: str | None = None) -> dict:
     """把檔案複製進素材庫，回傳中繼資料。"""
     ext = source.suffix.lower()
-    if ext not in IMAGE_EXT | VIDEO_EXT:
-        raise ValueError("子母畫面支援 PNG／JPG／WebP／BMP 圖片與 MP4／MOV／MKV／WebM／AVI／WMV／GIF 影片")
+    if ext not in IMAGE_EXT | VIDEO_EXT | AUDIO_EXT:
+        raise ValueError("素材支援 PNG／JPG／WebP／BMP 圖片、MP4／MOV／MKV／WebM／AVI／WMV／GIF 影片與 MP3／WAV／M4A／AAC／FLAC／OGG 配樂")
     aid = "a_" + uuid.uuid4().hex[:12]
     dest = asset_dir(uploads) / f"{aid}{ext}"
     shutil.copyfile(source, dest)

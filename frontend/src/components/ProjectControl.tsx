@@ -1,7 +1,7 @@
 /* 本機控制相關介面：拆成「頂部專案按鈕」與「設定裡的開發者工具」，不再常駐主畫面 */
 import { FolderOpen, Save, FolderSearch, FilePlus } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
-import { AUTOSAVE_PATH, autosaveProject, controlRequest, controlWorkspace, executeCommand, projectFile, retryControl, startNewProject } from '../controlClient';
+import { AUTOSAVE_PATH, autosaveProject, controlHealth, controlRequest, controlWorkspace, executeCommand, projectFile, retryControl, startNewProject } from '../controlClient';
 import { useStore } from '../store';
 import { StatusText } from './StatusText';
 import { useDialog } from '../useDialog';
@@ -43,6 +43,8 @@ function useProjectStatus() {
 export function ProjectFileButtons() {
     const workspace = useControlWorkspace();
     const [controlFailed, setControlFailed] = useState(false);
+    const [, healthTick] = useState(0);
+    useEffect(() => { const f = () => healthTick(n => n + 1); window.addEventListener('ljcut-control-health', f); return () => window.removeEventListener('ljcut-control-health', f); }, []);
     // 沒連上本機控制時，Ctrl+S 也要攔下來說明（不然會跳出瀏覽器的「另存網頁」）
     useEffect(() => {
         if (workspace) return;
@@ -145,7 +147,9 @@ export function ProjectFileButtons() {
         controlRequest('/projects').then(r => {
             if (open === 'save') { setProjects(r.projects ?? []); return; }
             const list = r.projects ?? [];
-            const all = r.autosave ? [{ path: r.autosave.path, name: '上次沒儲存的進度（自動存檔）', modified: r.autosave.modified, autosave: true }, ...list] : list;
+            const prev = (r.previous ?? []).map((x: { path: string; name: string; modified: number }) =>
+                ({ path: x.path, name: `「${x.name}」覆寫前的上一版`, modified: x.modified, autosave: true }));
+            const all = [...(r.autosave ? [{ path: r.autosave.path, name: '上次沒儲存的進度（自動存檔）', modified: r.autosave.modified, autosave: true }] : []), ...list, ...prev];
             setProjects(all);
             setPath(all.find((x: { path: string; autosave?: boolean }) => !x.autosave && x.path !== statusRef.current.path)?.path ?? '');
             // 焦點放到第一個「不是目前專案」的項目（方向鍵可上下選）
@@ -218,7 +222,11 @@ export function ProjectFileButtons() {
         return () => window.removeEventListener('keydown', onKey);
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [workspace]);
-    if (!workspace) return controlFailed ? <div className="project-file">
+    if (!workspace) return controlHealth.otherEditor ? <div className="project-file">
+        <span className="control-down" role="status">另一個 LJCUT 視窗正在控制此工作區，請在那個視窗存檔</span>
+        <button className="btn btn-sm" onClick={() => { void retryControl().then(ok => toast(ok ? 'info' : 'error', ok ? '正在接管…若對方還開著，約 15 秒後會退回' : '連不上 LJCUT 後端服務')); }}
+            title="對方已關閉時用這個接回控制；對方還開著會再退回">改由本視窗接管</button>
+    </div> : controlFailed ? <div className="project-file">
         <span className="control-down" role="status">無法存檔：本機控制未連線</span>
         <button className="btn btn-sm" onClick={() => { void retryControl().then(ok => toast(ok ? 'success' : 'error', ok ? '本機控制已重新連上，可以存檔了' : '還是連不上 LJCUT 後端服務。請等幾秒再試，或重新開啟 LJCUT。')); }}
             title="在背景重新連線，不會重新整理畫面、不會丟掉修改">重新連線</button>
@@ -334,7 +342,10 @@ export function DeveloperTools() {
     const [plan, setPlan] = useState('');
     const [report, setReport] = useState('');
     const [draft, setDraft] = useState<any>(null);
+    const [acked, setAcked] = useState<Set<string>>(new Set());
     const [busy, setBusy] = useState(false);
+    const audit: { id: string; level: 'block' | 'warn'; message: string }[] = draft?.audit ?? [];
+    const blocked = audit.some(i => i.level === 'block' && !acked.has(i.id));
     const run = async (action: () => unknown) => {
         setBusy(true);
         try { setReport(JSON.stringify(await action(), null, 2)); }
@@ -350,15 +361,25 @@ export function DeveloperTools() {
                     onChange={e => { setPlan(e.target.value); setDraft(null); }} />
                 <div className="dev-tools-actions">
                     <button className="btn" disabled={busy || !plan.trim()} onClick={() => run(async () => {
-                        setDraft(null);
+                        setDraft(null); setAcked(new Set());
                         const d = await executeCommand('dry_run', JSON.parse(plan)); setDraft(d); return d;
                     })}>檢查計畫（不修改）</button>
-                    <button className="btn btn-accent" disabled={!draft || busy} onClick={() => run(async () => {
+                    <button className="btn btn-accent" disabled={!draft || busy || blocked} title={blocked ? '先勾選確認每一個「擋下」項目' : undefined} onClick={() => run(async () => {
                         const result = await executeCommand('apply', { dryRunId: draft.dryRunId,
-                            sessionId: draft.sessionId, projectId: draft.projectId, expectedRevision: draft.revision, confirmed: true });
+                            sessionId: draft.sessionId, projectId: draft.projectId, expectedRevision: draft.revision, confirmed: true,
+                            acknowledge: [...acked] });
                         setDraft(null); return result;
                     })}>確認套用這批變更</button>
                 </div>
+                {audit.length > 0 && <ul className="plan-audit" aria-label="套用前審核">
+                    {audit.map(i => <li key={i.id} className={`plan-audit-item ${i.level}`}>
+                        {i.level === 'block'
+                            ? <label><input type="checkbox" checked={acked.has(i.id)} onChange={e => setAcked(prev => {
+                                const n = new Set(prev); if (e.target.checked) n.add(i.id); else n.delete(i.id); return n; })} />
+                                <b>擋下</b> {i.message}（我確認仍要這樣剪）</label>
+                            : <span><b>注意</b> {i.message}</span>}
+                    </li>)}
+                </ul>}
             </>}
             {report && <pre className="dev-tools-report" aria-label="操作結果">{report}</pre>}
         </div>

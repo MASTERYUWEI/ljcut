@@ -1,5 +1,6 @@
 import type { ZoomRegion } from './zoom';
 import type { Overlay } from './overlay';
+import type { ReviewNote } from './review';
 /* ── LJCUT 類型定義 ── */
 
 export interface Segment {
@@ -41,6 +42,7 @@ export interface MediaItem {
     transcript?: TranscribeResult; // 未經字幕編輯的原始辨識結果；來源時間（秒）
     zooms?: ZoomRegion[];   // 畫面縮放區段；來源時間（秒），見 zoom.ts
     overlays?: Overlay[];   // 標註疊加層（可多層，越後面越上層）；來源時間（秒），見 overlay.ts
+    reviewNotes?: ReviewNote[]; // 審片標註；來源時間（秒），見 review.ts
 }
 
 // ── 時間軸 Clip ──
@@ -98,6 +100,7 @@ export interface RecOpts {
     clickColor: string;
     cursorScale: number;
     cursorHidden: boolean;
+    showIndicator: boolean;   // 錄影時顯示置頂計時條（不會錄進影片）
 }
 
 export interface MicDevice {

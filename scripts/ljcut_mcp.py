@@ -21,6 +21,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from ljcut import Client  # noqa: E402
+import stock_media  # noqa: E402
+import blender_run  # noqa: E402
 
 PROTOCOL = "2025-06-18"
 WORKSPACE = Path("app_data/control")
@@ -37,17 +39,71 @@ def client() -> Client:
 
 
 def command(method, params=None, timeout=120):
-    res = client().command(method, params or {}, timeout=timeout)
+    try:
+        res = client().command(method, params or {}, timeout=timeout)
+    except RuntimeError as e:
+        if "EDITOR_OFFLINE" in str(e):
+            raise RuntimeError("LJ Cut 沒有在接收 AI 命令（EDITOR_OFFLINE）。若 LJ Cut 視窗還開著，表示它的 AI 控制迴圈停了："
+                               "標題列的 AI 狀態會在 30 秒內變紅顯示「連線中斷」，最長 2 分鐘內會自動換新迴圈接回；"
+                               "請隔 30 秒再試一次，一直不行才重新開啟 LJ Cut。") from e
+        raise
     if res.get("status") == "failed":
         err = res.get("error") or {}
         raise RuntimeError(f"{err.get('code', 'FAILED')}: {err.get('message', err)}")
-    if res.get("status") in {"queued", "delivered"}:
-        raise RuntimeError(f"LJ Cut 尚未回應（命令 {res.get('id')}）。編輯器是否開著？")
+    if res.get("status") == "queued":
+        raise RuntimeError(f"LJ Cut 在 {timeout} 秒內沒有取走命令 {res.get('id')}：編輯器的 AI 控制迴圈可能停了。"
+                           "它最長 2 分鐘內會自動換新迴圈接回（標題列 AI 狀態會先變紅再恢復）；請隔 30 秒再試，一直不行才重新開啟 LJ Cut。")
+    if res.get("status") == "delivered":
+        raise RuntimeError(f"LJ Cut 取走了命令 {res.get('id')} 但 {timeout} 秒內沒回覆（可能還在執行，或卡住）。"
+                           "修改類命令不要另建 ID 重送；先用 ljcut_status 確認結果。")
     return res.get("result")
 
 
+# 這次工具呼叫要顯示在 LJ Cut 標題列的自述（第一次讀狀態時帶過去，之後清掉）
+_NOTE = ""
+
+
 def state():
-    return command("state")
+    global _NOTE
+    note, _NOTE = _NOTE, ""
+    return command("state", {"note": note} if note else None)
+
+
+def _fmt_t(t):
+    try:
+        t = float(t)
+        return f"{int(t // 60)}:{int(t % 60):02d}"
+    except (TypeError, ValueError):
+        return "?"
+
+
+def narration(name, a):
+    """把工具呼叫翻成一句使用者看得懂的進行式（顯示在 LJ Cut 標題列，讓人看到 AI 在做什麼）。"""
+    if a.get("note"):
+        return str(a["note"])[:120]
+    times = a.get("times") or []
+    if name == "ljcut_frames" and times:
+        span = _fmt_t(min(times)) if len(times) == 1 else f"{_fmt_t(min(times))}–{_fmt_t(max(times))}"
+        return f"AI 正在看 {span} 的畫面（{len(times)} 格）"
+    return {
+        "ljcut_status": "AI 正在讀專案狀態", "ljcut_transcript": "AI 正在讀逐字稿",
+        "ljcut_overview": "AI 正在瀏覽整支影片", "ljcut_silences": "AI 正在找靜音段落",
+        "ljcut_scenes": "AI 正在找畫面切換點", "ljcut_audio_levels": "AI 正在看音量起伏",
+        "ljcut_cursor": "AI 正在讀錄影時的滑鼠點擊", "ljcut_check_cuts": "AI 正在檢查每個接縫",
+        "ljcut_check_zooms": "AI 正在檢查放大位置", "ljcut_check_overlays": "AI 正在檢查標註位置",
+        "ljcut_html_preview": "AI 正在試看 HTML 動畫",
+        "ljcut_stock_search": f"AI 正在素材庫找「{a.get('query', '')}」", "ljcut_stock_fetch": "AI 正在下載素材",
+        "ljcut_blender_preview": f"AI 正在用 Blender 試算 3D 畫面「{a.get('name', '')}」", "ljcut_blender_render": "AI 開始在背景渲染 3D 動畫",
+    }.get(name, "")
+
+
+def t_note(a):
+    """只在 LJ Cut 標題列顯示一句話，不改專案。"""
+    text = str(a.get("text") or "").strip()[:120]
+    if not text:
+        raise ValueError("text 不可空白")
+    command("state", {"note": text}, timeout=10)
+    return [text_block("已顯示在 LJ Cut 標題列")]
 
 
 def version(s):
@@ -91,8 +147,21 @@ def r2(x):
     return round(float(x), 2)
 
 
+def root() -> Path:
+    """LJ Cut 真正的工作區（控制檔記錄的 workspace）。安裝版是「文件／LJCUT 專案」，
+    和 MCP 啟動參數的 --workspace（只放控制檔）不同；觀察圖片、素材下載都以這裡為準。"""
+    try:
+        ws = json.loads((WORKSPACE / ".ljcut-control.json").read_text(encoding="utf-8")).get("workspace")
+        if ws:
+            return Path(ws)
+    except Exception:
+        pass
+    return WORKSPACE
+
+
 def image_block(rel_path):
-    data = (WORKSPACE / rel_path).read_bytes()
+    p = root() / rel_path
+    data = (p if p.is_file() else WORKSPACE / rel_path).read_bytes()
     return {"type": "image", "data": base64.b64encode(data).decode(), "mimeType": "image/jpeg"}
 
 
@@ -237,17 +306,94 @@ def t_plan(a):
         o.setdefault("trackId", "video-main")
         o.setdefault("timeDomain", "source")
     res = command("dry_run", {**version(s), "timeUnit": "seconds", "operations": ops})
+    audit = res.get("audit") or []
+    blocks = [i for i in audit if i.get("level") == "block"]
+    nxt = "把以上變更摘要給使用者確認後，才呼叫 ljcut_apply(dryRunId, userConfirmed=true)。"
+    if audit:
+        nxt = ("審核列出 " + str(len(audit)) + " 項（block " + str(len(blocks)) + "）：把每一項念給使用者聽。"
+               + ("block 項目通常是剪點錯了，優先修正計畫重新試算；使用者逐條確認仍要套用時，把那些 id 放進 ljcut_apply 的 acknowledge。" if blocks else "")
+               + nxt)
     return [text_block({"dryRunId": res.get("dryRunId"), "beforeDuration": res.get("beforeDuration"),
                         "afterDuration": res.get("afterDuration"), "changes": res.get("changes"),
-                        "next": "把以上變更摘要給使用者確認後，才呼叫 ljcut_apply(dryRunId, userConfirmed=true)。"})]
+                        "audit": audit, "next": nxt})]
 
 
 def t_apply(a):
     if a.get("userConfirmed") is not True:
         raise ValueError("必須先取得使用者對這批變更的明確確認，再以 userConfirmed=true 呼叫")
     s = state()
-    res = command("apply", {**version(s), "dryRunId": a["dryRunId"], "confirmed": True})
-    return [text_block({"applied": True, "revision": (res or {}).get("revision", res)})]
+    ack = a.get("acknowledge") or []
+    if not isinstance(ack, list) or not all(isinstance(x, str) for x in ack):
+        raise ValueError("acknowledge 必須是審核項目 id 的字串陣列")
+    res = command("apply", {**version(s), "dryRunId": a["dryRunId"], "confirmed": True, "acknowledge": ack})
+    res = res or {}
+    # 套用結果含整份專案快照，太大，只回模型需要的部分
+    return [text_block({"applied": True, "revision": (res.get("state") or {}).get("revision"),
+                        "changes": res.get("changes")})]
+
+
+def _tl_of(s, mid, src):
+    for c in s.get("timelineClips", []):
+        if c["mediaId"] == mid and c["trimStart"] - 1e-6 <= src < c["trimEnd"] + 1e-6:
+            return c["startTime"] + (min(src, c["trimEnd"]) - c["trimStart"]) / c["speed"]
+    return None
+
+
+def _parse_time(v):
+    if isinstance(v, (int, float)):
+        return float(v)
+    parts = str(v).strip().replace("：", ":").split(":")
+    t = 0.0
+    for p_ in parts:
+        t = t * 60 + float(p_)
+    return t
+
+
+def t_review(a):
+    """審片意見：list 讀全部；add 依「成品時間軸秒數」加；update 改狀態／回覆；delete 刪。
+    只碰審片意見（不剪片），所以內部直接試算＋套用，仍是一筆可 undo 的修改。"""
+    s = state()
+    action = a.get("action", "list")
+    if action == "list":
+        rows = []
+        for m in s.get("mediaItems", []):
+            for n in m.get("reviewNotes") or []:
+                tl = _tl_of(s, m["id"], n["t"])
+                rows.append({"noteId": n["id"], "timeline": None if tl is None else round(tl, 2),
+                             "time": "已剪掉" if tl is None else f"{int(tl // 60)}:{int(tl % 60):02d}",
+                             "mediaId": m["id"], "source": n["t"], "cat": n["cat"], "text": n["text"],
+                             "status": n["status"], "reply": n.get("reply", ""), "by": n.get("by", "user")})
+        rows.sort(key=lambda r: (r["timeline"] is None, r["timeline"] or 0))
+        want = a.get("status")
+        if want:
+            rows = [r for r in rows if r["status"] == want]
+        return [text_block({"notes": rows, "open": sum(r["status"] == "open" for r in rows),
+                            "next": "逐條處理：改完用 action=update、status=fixed（或 skip）＋reply 一句說明改了什麼。"})]
+    ops = []
+    if action == "add":
+        items = a.get("items") or []
+        if not isinstance(items, list) or not items:
+            raise ValueError("add 需要 items：[{time:'1:23' 或秒數（成品時間軸）, cat, text}]")
+        for it in items:
+            ops.append({"type": "add_note", "timelineTime": _parse_time(it["time"]), "cat": it.get("cat", "其他"),
+                        "text": str(it["text"]), "by": it.get("by", "ai")})
+    elif action == "update":
+        op = {"type": "edit_note", "noteId": a["noteId"]}
+        for k in ("status", "reply", "text", "cat"):
+            if k in a:
+                op[k] = a[k]
+        ops.append(op)
+    elif action == "delete":
+        ops.append({"type": "delete_note", "noteId": a["noteId"]})
+    else:
+        raise ValueError("action 需為 list／add／update／delete")
+    for o in ops:
+        o.update({"trackId": "video-main", "timeDomain": "source"})
+    res = command("dry_run", {**version(s), "timeUnit": "seconds", "operations": ops})
+    s2 = state()
+    command("apply", {**version(s2), "dryRunId": res["dryRunId"], "confirmed": True,
+                      "acknowledge": [i["id"] for i in res.get("audit") or []]})
+    return [text_block({"done": action, "changes": res.get("changes")})]
 
 
 def t_undo(_):
@@ -305,14 +451,19 @@ def t_open(a):
 
 def t_export(a):
     s = state()
-    job = command("export", {**version(s), "burnSubtitles": bool(a.get("burnSubtitles", False))})
+    params = {**version(s), "burnSubtitles": bool(a.get("burnSubtitles", False))}
+    if a.get("loudness"):
+        if a["loudness"] not in ("off", "youtube", "teaching"):
+            raise ValueError("loudness 需為 off／youtube／teaching")
+        params["loudness"] = a["loudness"]
+    job = command("export", params)
     if not a.get("wait", True):
         return [text_block(job)]
     deadline = time.monotonic() + float(a.get("timeoutSeconds", 1800))
     while job.get("status") in {"queued", "running"} and time.monotonic() < deadline:
         time.sleep(2)
         job = client().request(f"/jobs/{job['id']}")
-    return [text_block({k: job.get(k) for k in ("id", "status", "progress", "outputPath", "path", "error", "duration")
+    return [text_block({k: job.get(k) for k in ("id", "status", "progress", "outputPath", "path", "error", "duration", "loudness")
                         if job.get(k) is not None} | {"raw": job})]
 
 
@@ -492,6 +643,133 @@ def t_check_zooms(a):
 
 
 # ───────────────────────── 工具宣告 ─────────────────────────
+def _dur(x):
+    try:
+        return f"{float(x):.0f}s"
+    except (TypeError, ValueError):
+        return "-"
+
+
+def t_stock_search(a):
+    kind = a.get("kind", "video")
+    r = root()
+    res = stock_media.search(a["query"], kind, a.get("sources"), int(a.get("count") or 12),
+                             a.get("orientation", "landscape"), a.get("minDuration"), a.get("maxDuration"), root=r)
+    items = res["items"]
+    lines = [f"「{a['query']}」{kind} 找到 {len(items)} 筆（號碼對應下方對照表；授權都已篩成可商用、可改作）："]
+    for i, it in enumerate(items, 1):
+        size = f"{it['width']}x{it['height']}" if it.get("width") else "?"
+        lines.append(f"{i:2d}. {it['id']}  {size}  {_dur(it.get('duration'))}  {it['license']}  {it['title'][:60]}")
+    if res.get("relaxedQuery"):
+        lines.insert(1, f"（原關鍵字查無結果，已放寬成「{res['relaxedQuery']}」）")
+    if res["errors"]:
+        lines.append("來源失敗（其他來源照常）：" + "；".join(f"{k}: {v}" for k, v in res["errors"].items()))
+    if res["disabled"]:
+        lines.append("未啟用（缺免費金鑰，見 docs/stock-media.md）：" + "、".join(f"{k}（{v}）" for k, v in res["disabled"].items()))
+    out = [text_block("\n".join(lines))]
+    if items and kind != "audio":
+        sheet = stock_media.contact_sheet(items, r / "observe" / f"stock-{uuid.uuid4().hex[:8]}.jpg")
+        if sheet:
+            out.append(image_block(sheet.relative_to(r).as_posix()))
+    out.append(text_block("下一步：挑號碼 → ljcut_stock_fetch ids=[…]（dest 建議放在本專案資料夾的「素材庫」）。"
+                          "挑片：1080p 以上、無浮水印、鏡位對、長度要比需要的長；同組字重搜結果一樣，要換關鍵字或來源。"))
+    return out
+
+
+def t_stock_fetch(a):
+    r = root()
+    dest = a.get("dest") or "素材庫"
+    dpath = (r / dest).resolve()
+    if not dpath.is_relative_to(r.resolve()):
+        raise RuntimeError("dest 必須是工作區內的相對路徑")
+    done, errs = [], []
+    for i in a["ids"]:
+        try:
+            done.append(stock_media.fetch(i, dpath, r, max_mb=int(a.get("maxMB") or 600)))
+        except Exception as e:
+            errs.append(f"{i}: {e}")
+    imported = []
+    how = a.get("importAs", "none")
+    for d in done:
+        try:
+            if how == "asset" and d["kind"] in ("video", "image"):
+                res = client().request("/asset", {"path": d["path"]})
+                imported.append(f"{d['path']} → assetId {res['id']}")
+            elif how == "clip" and d["kind"] in ("video", "audio"):
+                s = state()
+                res = command("import", {**version(s), "path": d["path"]})
+                imported.append(f"{d['path']} → mediaId {res['mediaId']} clipId {res['clipId']}")
+        except Exception as e:
+            errs.append(f"匯入 {d['path']} 失敗：{e}")
+    out = [text_block({"downloaded": done, "imported": imported, "errors": errs})]
+    out.append(text_block("出處已寫入同資料夾 credits.json；成品文案前用 ljcut_stock_credits 取得說明欄出處段落。"))
+    return out
+
+
+def t_stock_credits(a):
+    txt = stock_media.credits_text(root() / (a.get("folder") or "素材庫"))
+    return [text_block(txt or "這個資料夾沒有素材出處紀錄。")]
+
+
+def t_blender_guide(_):
+    import ast
+    src = (Path(__file__).resolve().parent / "blender_kit.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    lines = [ast.get_docstring(tree) or "", "", "kit 函式："]
+    for n in tree.body:
+        if isinstance(n, ast.FunctionDef) and not n.name.startswith("_"):
+            sig = ast.unparse(n.args)
+            doc = (ast.get_docstring(n) or "").split("\n")[0]
+            lines.append(f"- kit.{n.name}({sig})" + (f"：{doc}" if doc else ""))
+    b = blender_run.find_blender()
+    lines += ["", f"Blender：{b or '未安裝（見 docs/blender.md）'}",
+              "規則：先 ljcut_blender_preview 看 6 格（半解析度），給使用者確認後才 ljcut_blender_render；"
+              "場景腳本也可直接用 bpy 原生 API；EEVEE 快，cycles 寫實但慢（實際秒數看預覽回報）。"]
+    return [text_block("\n".join(lines))]
+
+
+def t_blender_preview(a):
+    r = root()
+    res = blender_run.preview(a["name"], a.get("script"), r, a.get("frames") or "auto", int(a.get("scale") or 50),
+                              a.get("engine"), a.get("samples"))
+    meta = res["meta"]
+    if meta:
+        secs = round((meta.get("frameEnd", 1) - meta.get("frameStart", 1) + 1) / max(1, meta.get("fps", 30)), 2)
+        head = (f"{'預覽完成' if res['ok'] else '預覽失敗'}：{a['name']}，花 {res['seconds']} 秒；"
+                f"{meta.get('width')}x{meta.get('height')} {meta.get('fps')}fps，影格 {meta.get('frameStart')}–{meta.get('frameEnd')}"
+                f"（{secs} 秒），{meta.get('engine')}，Blender {meta.get('blender')} {res['gpu']}")
+    else:
+        head = f"預覽失敗：{a['name']}（場景腳本沒跑完）"
+    out = [text_block(head)]
+    if res["sheet"]:
+        out.append(image_block(res["sheet"]))
+    if res["log"]:
+        out.append(text_block("Blender 輸出（最後幾行）：\n" + res["log"]))
+    out.append(text_block(f"場景檔：3D/{a['name']}/scene.blend（可用 Blender 開啟微調）。確認後用 ljcut_blender_render 正式渲染。"))
+    return out
+
+
+def t_blender_render(a):
+    st = blender_run.start_final(root(), a["name"], a.get("engine"), a.get("samples"))
+    return [text_block({**st, "next": "用 ljcut_blender_job 查進度；完成後可帶 importAs=asset／clip 匯入"})]
+
+
+def t_blender_job(a):
+    r = root()
+    st = blender_run.status(r, a["name"])
+    out = [text_block(st)]
+    how = a.get("importAs", "none")
+    if st.get("state") == "done" and how != "none":
+        if how == "asset":
+            res = client().request("/asset", {"path": st["output"]})
+            out.append(text_block(f"已匯入子母畫面素材 assetId {res['id']}"))
+        else:
+            s = state()
+            res = command("import", {**version(s), "path": st["output"]})
+            out.append(text_block(f"已接到主時間軸最後：mediaId {res['mediaId']} clipId {res['clipId']}"))
+    return out
+
+
 NUM = {"type": "number"}
 OPS_DOC = (
     "剪輯操作陣列（依序執行；時間為來源素材秒數 src，區間左閉右開）。每個操作需 type；\n"
@@ -538,10 +816,13 @@ TOOLS = [
     ("ljcut_audio_levels", "每 N 秒的音量長條圖，看出講話、安靜、音樂段落。", {"mediaId": {"type": "string"}, "window": NUM}, [], t_audio),
     ("ljcut_transcribe", "對素材做語音辨識並把字幕放進時間軸上該素材的片段。fast=true 約 4 倍速但專有名詞較不準。可 undo。",
      {"mediaId": {"type": "string"}, "fast": {"type": "boolean"}, "language": {"type": "string"}}, [], t_transcribe),
-    ("ljcut_plan", "試算（dry-run）一批剪輯，不會改動專案；回傳每個變更與 dryRunId。" + OPS_DOC,
+    ("ljcut_plan", "試算（dry-run）一批剪輯，不會改動專案；回傳每個變更、dryRunId 與套用前審核 audit"
+     "（block：剪在詞中間、剪出不到 0.3 秒碎片；warn：剪掉旁白、字幕被切半、一次刪超過 40%、旁白加速超過 1.5 倍）。" + OPS_DOC,
      {"operations": {"type": "array", "items": {"type": "object"}}}, ["operations"], t_plan),
-    ("ljcut_apply", "套用 ljcut_plan 的結果。必須先把變更摘要給使用者並取得明確同意，userConfirmed 才能填 true。一批 = 一次 undo。",
-     {"dryRunId": {"type": "string"}, "userConfirmed": {"type": "boolean"}}, ["dryRunId", "userConfirmed"], t_apply),
+    ("ljcut_apply", "套用 ljcut_plan 的結果。必須先把變更摘要給使用者並取得明確同意，userConfirmed 才能填 true。一批 = 一次 undo。"
+     "審核有 block 項目時會被擋下；只有使用者逐條確認後，才把那些審核 id 放進 acknowledge。",
+     {"dryRunId": {"type": "string"}, "userConfirmed": {"type": "boolean"},
+      "acknowledge": {"type": "array", "items": {"type": "string"}}}, ["dryRunId", "userConfirmed"], t_apply),
     ("ljcut_check_cuts", "檢查剪接：每個片段接縫前後各取一格畫面，看接得順不順。", {"max": NUM, "offset": NUM}, [], t_check_cuts),
     ("ljcut_cursor", "讀取 LJ Cut 錄影時記下的滑鼠點擊（來源秒數、畫面比例座標），並給自動縮放建議（可直接當 ljcut_plan 的 operations）。"
      "沒有游標紀錄的素材請用 ljcut_frames grid=true 自己判斷位置。", {"mediaId": {"type": "string"}}, [], t_cursor),
@@ -562,9 +843,45 @@ TOOLS = [
     ("ljcut_import", "匯入工作區內的影片/音訊（相對路徑），接在時間軸最後。", {"path": {"type": "string"}}, ["path"], t_import),
     ("ljcut_save", "另存專案（工作區相對路徑，副檔名 .ljcut，不覆寫）。", {"path": {"type": "string"}}, ["path"], t_save),
     ("ljcut_open", "開啟工作區內的 .ljcut 專案（會取代目前時間軸）。", {"path": {"type": "string"}}, ["path"], t_open),
-    ("ljcut_export", "匯出成品影片（預設乾淨畫面不燒字幕）。wait=true 會等到完成並回傳路徑。",
-     {"burnSubtitles": {"type": "boolean"}, "wait": {"type": "boolean"}, "timeoutSeconds": NUM}, [], t_export),
+    ("ljcut_export", "匯出成品影片（預設乾淨畫面不燒字幕）。wait=true 會等到完成並回傳路徑。"
+     "配樂與旁白自動壓低依專案設定（左欄「配樂」）一起混進去；loudness=youtube(−14 LUFS)／teaching(−16)／off 覆蓋專案的平台響度，"
+     "完成時回傳 loudness {before, after, truePeak}，不必再另外跑 loudnorm。",
+     {"burnSubtitles": {"type": "boolean"}, "wait": {"type": "boolean"}, "timeoutSeconds": NUM,
+      "loudness": {"type": "string", "enum": ["off", "youtube", "teaching"]}}, [], t_export),
     ("ljcut_job", "查詢匯出工作狀態。", {"jobId": {"type": "string"}}, ["jobId"], t_job),
+    ("ljcut_stock_search", "搜尋免費可商用素材（影片／照片／配樂），回傳候選清單＋編號縮圖對照表，不下載。"
+     "來源：Wikimedia Commons、Openverse（照片／音樂，較慢）免金鑰；Pexels、Pixabay 有免費金鑰才啟用（生活類 B-roll 品質最好）；"
+     "nasa（太空／地球）、archive（老片）要用 sources 指定。關鍵字用英文 2–4 個字、主體在前、可加鏡位詞（aerial、close up、timelapse）。",
+     {"query": {"type": "string"}, "kind": {"type": "string", "enum": ["video", "image", "audio"]},
+      "sources": {"type": "array", "items": {"type": "string", "enum": list(stock_media.SOURCES)}},
+      "count": NUM, "orientation": {"type": "string", "enum": ["landscape", "portrait", "any"]},
+      "minDuration": NUM, "maxDuration": NUM}, ["query"], t_stock_search),
+    ("ljcut_stock_fetch", "下載 ljcut_stock_search 的候選到工作區（dest 相對路徑，預設「素材庫」），每檔旁寫 .license.json、資料夾累積 credits.json。"
+     "importAs=asset 匯入成子母畫面素材、clip 接到主時間軸最後、none 只下載。",
+     {"ids": {"type": "array", "items": {"type": "string"}}, "dest": {"type": "string"},
+      "importAs": {"type": "string", "enum": ["none", "asset", "clip"]}, "maxMB": NUM}, ["ids"], t_stock_fetch),
+    ("ljcut_stock_credits", "把資料夾內所有下載素材的出處整理成 YouTube 說明欄段落（CC BY／BY-SA 必須標註）。",
+     {"folder": {"type": "string"}}, [], t_stock_credits),
+    ("ljcut_blender_guide", "Blender 3D 動畫：場景小工具 kit 的函式清單、範例、渲染規則，以及這台電腦的 Blender 路徑。寫場景腳本前先讀。",
+     {}, [], t_blender_guide),
+    ("ljcut_blender_preview", "建立／更新 3D 場景（script＝用 kit.* 或 bpy 的 Python）並渲染幾格預覽（預設 6 格、半解析度），回傳編號拼圖。"
+     "script 省略時重用上次的場景。不會改動 LJ Cut 專案。",
+     {"name": {"type": "string", "description": "英數或中文，同名覆寫：工作區 3D/<name>/"}, "script": {"type": "string"},
+      "frames": {"type": "string", "description": "'auto' 或逗號分隔影格號"}, "scale": NUM,
+      "engine": {"type": "string", "enum": ["eevee", "cycles"]}, "samples": NUM}, ["name"], t_blender_preview),
+    ("ljcut_blender_render", "在背景正式渲染整段（低優先權，中斷可續算），成品 3D/<name>/<name>.mp4。要先預覽並經使用者確認。",
+     {"name": {"type": "string"}, "engine": {"type": "string", "enum": ["eevee", "cycles"]}, "samples": NUM},
+     ["name"], t_blender_render),
+    ("ljcut_blender_job", "查正式渲染進度（已完成影格／總影格）；完成後 importAs=asset 匯入成子母畫面、clip 接到主時間軸最後。",
+     {"name": {"type": "string"}, "importAs": {"type": "string", "enum": ["none", "asset", "clip"]}}, ["name"], t_blender_job),
+    ("ljcut_review", "審片意見（使用者看片時記的「幾分幾秒要改什麼」，也顯示在 LJ Cut 右欄「審片」與時間尺旗標）。"
+     "action=list（可加 status=open）讀清單；add 加 items=[{time:'1:23' 或秒數＝成品時間軸, cat:畫面/聲音/字幕/觀念/節奏/其他, text, by:'phone'|'ai'}]"
+     "（手機審片頁的意見就用這個匯入，by='phone'）；update 用 noteId 改 status(open/fixed/skip)／reply；delete。只動審片意見、不剪片，可 undo。",
+     {"action": {"type": "string", "enum": ["list", "add", "update", "delete"]}, "status": {"type": "string"},
+      "items": {"type": "array", "items": {"type": "object"}}, "noteId": {"type": "string"},
+      "reply": {"type": "string"}, "text": {"type": "string"}, "cat": {"type": "string"}}, [], t_review),
+    ("ljcut_note", "在 LJ Cut 標題列顯示一句你正在做什麼（約 8 秒），讓使用者看到 AI 的進度，例如「正在幫 1:07 找游標位置」。不改專案。",
+     {"text": {"type": "string"}}, ["text"], t_note),
 ]
 HANDLERS = {name: fn for name, _, _, _, fn in TOOLS}
 
@@ -607,8 +924,14 @@ def handle(msg):
         if not fn:
             reply(mid, error={"code": -32602, "message": f"未知工具 {p.get('name')}"})
             return
+        global _NOTE
+        args = p.get("arguments") or {}
         try:
-            reply(mid, {"content": fn(p.get("arguments") or {})})
+            _NOTE = narration(p.get("name"), args)
+        except Exception:
+            _NOTE = ""
+        try:
+            reply(mid, {"content": fn(args)})
         except Exception as e:  # 工具錯誤回給模型看，不中斷 server
             reply(mid, {"content": [text_block(f"錯誤：{e}")], "isError": True})
     else:

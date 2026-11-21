@@ -341,3 +341,61 @@ test('humanizeError: raw exceptions become plain guidance, raw text kept for cop
     assert.equal(humanizeError('片段不存在').message, '片段不存在');          // 已是中文的訊息不動
     assert.equal(humanizeError('Error: 片段 4012 不存在').message, '片段 4012 不存在');   // 401 不可誤判
 });
+
+test('套用前審核：剪在詞中間、剪出碎片會擋下；剪掉旁白、切半字幕、大量刪除會提醒', () => {
+    const p: any = project();
+    p.timelineClips[0].segments = [
+        { id: 0, start: 1, end: 3, text: '先打開機械設定', words: [{ word: '先', start: 1, end: 1.3, probability: 1 },
+            { word: '打開', start: 1.3, end: 1.9, probability: 1 }, { word: '機械設定', start: 1.9, end: 3, probability: 1 }] },
+        { id: 1, start: 5, end: 6, text: '這段是停頓後的說明' }];
+    replaceProject(p, version());
+    const op = (start: number, end: number) => ({ type: 'ripple_delete' as const, clipId: 'clip1', trackId: 'video-main' as const,
+        timeDomain: 'source' as const, start, end });
+    // 剪點 1.6 落在「打開」中間 → block
+    const mid = dryRun({ ...version(), timeUnit: 'seconds', operations: [op(1.6, 4)] });
+    const midBlock = mid.audit.find(i => i.code === 'CUT_MID_WORD');
+    assert(midBlock && midBlock.level === 'block' && midBlock.message.includes('打開'));
+    assert(mid.audit.some(i => i.code === 'SPLITS_SUBTITLE' && i.level === 'warn'));
+    assert(mid.audit.some(i => i.code === 'CUTS_SPEECH'));
+    assert.throws(() => applyPlan({ ...version(), dryRunId: mid.dryRunId, confirmed: true }), { code: 'AUDIT_BLOCKED' });
+    // 逐條確認後才能套用
+    applyPlan({ ...version(), dryRunId: mid.dryRunId, confirmed: true, acknowledge: mid.audit.filter(i => i.level === 'block').map(i => i.id) });
+    undo();
+    // 剪完剩 0.2 秒碎片 → block
+    const tiny = dryRun({ ...version(), timeUnit: 'seconds', operations: [op(0.2, 0.9)] });
+    assert(tiny.audit.some(i => i.code === 'TINY_CLIP' && i.level === 'block'));
+    // 剪在詞的邊界、沒有旁白的地方 → 沒有任何審核項目
+    const clean = dryRun({ ...version(), timeUnit: 'seconds', operations: [op(3, 4.5)] });
+    assert.deepEqual(clean.audit, []);
+    // 一次刪掉超過 40% → warn
+    const big = dryRun({ ...version(), timeUnit: 'seconds', operations: [op(3, 7)] });
+    assert(big.audit.some(i => i.code === 'LARGE_DELETE' && i.level === 'warn'));
+    assert(big.audit.some(i => i.code === 'CUTS_SPEECH' && i.message.includes('停頓後')));
+});
+
+test('審片意見：依成品時間記在來源秒數上，剪接後跟著移動，被剪掉時保留但不在時間軸', async () => {
+    const { flattenNotes, parseTime } = await import('../src/review');
+    const p: any = project();
+    p.timelineClips[0].bookend = 'intro'; p.timelineClips[0].trimEnd = 2; p.timelineClips[0].duration = 2;
+    p.timelineClips.push({ id: 'main', mediaId: 'media1', trackIndex: 0, startTime: 2, trimStart: 0, trimEnd: 8, speed: 1, duration: 8, segments: [] });
+    replaceProject(p, version());
+    // 成品 5 秒＝主片段來源 3 秒（前面有 2 秒片頭）
+    const d = dryRun({ ...version(), timeUnit: 'seconds', operations: [
+        { type: 'add_note', trackId: 'video-main', timeDomain: 'source', timelineTime: 5, cat: '字幕', text: '這裡少一個字', by: 'phone' },
+        { type: 'add_note', trackId: 'video-main', timeDomain: 'source', timelineTime: 8.5, cat: '畫面', text: '畫面空白' }] as any });
+    assert.deepEqual(d.audit, []);
+    applyPlan({ ...version(), dryRunId: d.dryRunId, confirmed: true });
+    let notes = flattenNotes(readState().mediaItems, readState().timelineClips);
+    // 同一素材被片頭與主片段共用時，來源 3 秒會先對到第一個包含它的片段 → 這裡用各自的時間檢查來源秒數
+    assert.deepEqual(notes.map(n => n.t).sort(), [3, 6.5]);
+    assert.equal(parseTime('1:23'), 83); assert.equal(parseTime('123'), 83); assert.equal(parseTime('1:02:03'), 3723);
+    // 狀態切換與回覆
+    const id = notes.find(n => n.text === '畫面空白')!.id;
+    const e = dryRun({ ...version(), timeUnit: 'seconds', operations: [{ type: 'edit_note', trackId: 'video-main', timeDomain: 'source', noteId: id, status: 'fixed', reply: '補上畫面' }] as any });
+    applyPlan({ ...version(), dryRunId: e.dryRunId, confirmed: true });
+    notes = flattenNotes(readState().mediaItems, readState().timelineClips);
+    assert.equal(notes.find(n => n.id === id)!.status, 'fixed');
+    assert.throws(() => dryRun({ ...version(), timeUnit: 'seconds', operations: [{ type: 'add_note', trackId: 'video-main', timeDomain: 'source', timelineTime: 3, cat: '亂寫', text: 'x' }] as any }), { code: 'INVALID_NOTE' });
+    undo(); undo();
+    assert.equal(flattenNotes(readState().mediaItems, readState().timelineClips).length, 0);
+});

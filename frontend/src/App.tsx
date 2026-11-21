@@ -1,6 +1,6 @@
 /* ── LJCUT 主應用 ── */
 
-import { Clapperboard, Upload, CircleDot, Settings, Play, Pause, Square, Video, FolderOpen, Film, ZoomIn, PenLine, Captions, Plus, Sparkles, SpellCheck, Brain, Copy, Check, Download, X, Image as ImageIcon, ArrowUpRight, Type, Code, Focus, ListOrdered, Gauge, Undo2, Redo2, TriangleAlert, CheckCheck, CircleHelp, MousePointerClick, Minus, Scissors, Replace, MoveHorizontal, PanelLeftClose, PanelLeftOpen, FolderInput } from 'lucide-react';
+import { Clapperboard, Upload, CircleDot, Settings, Play, Pause, Square, Video, FolderOpen, Film, ZoomIn, PenLine, Captions, Plus, Sparkles, SpellCheck, Brain, Copy, Check, Download, X, Image as ImageIcon, ArrowUpRight, Type, Code, Focus, ListOrdered, Gauge, Undo2, Redo2, TriangleAlert, CheckCheck, CircleHelp, MousePointerClick, Minus, Scissors, Replace, MoveHorizontal, PanelLeftClose, PanelLeftOpen, FolderInput, Mic, Music } from 'lucide-react';
 import { useRef, useCallback, useState, useEffect, useLayoutEffect, useMemo } from 'react';
 import { useStore } from './store';
 import { api, onApiReady, getBase } from './api';
@@ -11,6 +11,7 @@ import { overlayAnim, isContentOverlay, mediaTime, TEMPLATE_KINDS, OVERLAY_LABEL
 import { getSprite, getHtmlDoc, getMediaDecor } from './overlaySprites';
 import { formatTime, formatTimestamp, generateRulerTicks, findSnapTime, LABEL_W, splitLongCues as splitLongCuesUtil } from './utils';
 import { SettingsModal } from './components/SettingsModal';
+import { VoiceReviewModal } from './components/VoiceReviewModal';
 import { RecordingSettingsModal } from './components/RecordingSettingsModal';
 import { SpeedMenu } from './components/SpeedMenu';
 import { ExportProgress } from './components/ExportProgress';
@@ -22,11 +23,17 @@ import { StatusText } from './components/StatusText';
 import { ShortcutHelp } from './components/ShortcutHelp';
 import { AiStatus } from './components/AiStatus';
 import { OverlayInspector } from './components/OverlayInspector';
+import ReviewPanel from './components/ReviewPanel';
+import { MusicControls } from './components/MusicControls';
+import { MusicPreview } from './components/MusicPreview';
+import { exportAudioMix, LOUDNESS_LABEL, speechSpans, type LoudnessPreset } from './audioMix';
+import { flattenNotes, fmtTime as fmtNoteTime } from './review';
 import { notify, toast, humanizeError } from './toast';
 import { useDialog } from './useDialog';
 import { pushUndo, undo, redo, projectData, dryRun, applyPlan, readState, history as editHistory, contentKey, sameContent, requestPreview, peekHistory, labelNextUndo } from './editSession';
 import { clippedSegments, splitClip, timelineSegments, toSourceTime, toTimelineTime, validateProject } from './editCore';
-import { registerPreviewReader , aiMarks } from './controlClient';
+import { registerPreviewReader , aiMarks, timelineRange } from './controlClient';
+import { AiCursor, playAiCursor, type AiCursorStep } from './components/AiCursor';
 import { transitionVisual } from './transitions';
 
 /** 找出時間點所在的字幕：區間左閉右開，並容忍跳轉時的微小誤差（點第 2 句不會亮第 1 句） */
@@ -128,6 +135,7 @@ export default function App() {
     const [isDraggingCue, setIsDraggingCue] = useState(false);
     const [selectedSegIds, setSelectedSegIds] = useState<Set<number>>(new Set());
     const [showSettings, setShowSettings] = useState(false);
+    const [showVoiceReview, setShowVoiceReview] = useState(false);
     const [showHelp, setShowHelp] = useState(false);
     const [overlayMenuOpen, setOverlayMenuOpen] = useState(false);
     const overlayMenuRef = useRef<HTMLDivElement>(null);
@@ -159,8 +167,10 @@ export default function App() {
     };
     const [overlayExpanded, setOverlayExpanded] = useState(() => { try { return localStorage.getItem('ljcut-overlay-expanded') !== '0'; } catch { return true; } });
     useEffect(() => { try { localStorage.setItem('ljcut-overlay-expanded', overlayExpanded ? '1' : '0'); } catch { /* 無法記住不影響 */ } }, [overlayExpanded]);
-    const [rightTab, setRightTab] = useState<'props' | 'subs'>('props');
-    const [leftCollapsed, setLeftCollapsed] = useState(() => { try { return localStorage.getItem('ljcut-left-collapsed') === '1'; } catch { return false; } });
+    const [rightTab, setRightTab] = useState<'props' | 'subs' | 'review'>('props');
+    const [reviewFocus, setReviewFocus] = useState(0);   // 快捷鍵 N：切到審片分頁並把焦點放進輸入框
+    // 視窗窄於 1100（旁邊開著 AI 時常見）預設收合左欄，把空間留給預覽；使用者展開過就記住
+    const [leftCollapsed, setLeftCollapsed] = useState(() => { try { const v = localStorage.getItem('ljcut-left-collapsed'); return v === null ? window.innerWidth < 1100 : v === '1'; } catch { return window.innerWidth < 1100; } });
     useEffect(() => { try { localStorage.setItem('ljcut-left-collapsed', leftCollapsed ? '1' : '0'); } catch { /* 無法記住不影響 */ } }, [leftCollapsed]);
     // I／O 標記：一次剪掉一段時間軸（時間軸秒數）
     const [marks, setMarks] = useState<{ in: number | null; out: number | null }>({ in: null, out: null });
@@ -180,12 +190,16 @@ export default function App() {
     const [recOpts, setRecOpts] = useState<RecOpts>(() => {
         const saved = parseInt(localStorage.getItem('ljcut.audioSyncMs') ?? '');
         const audioSyncMs = Number.isFinite(saved) ? saved : 250; // 預設鎖 250ms，之後讀回上次校正值
-        return { sysAudio: false, mic: false, quality: '1080p', fps: 60, micDevice: '', sysAudioDevice: '', micVol: 1.0, sysVol: 1.0, audioSyncMs, cursorGlow: false, clickEffect: false, glowColor: '#ffd228', clickColor: '#ffe65a', cursorScale: 1, cursorHidden: false };
+        const showIndicator = localStorage.getItem('ljcut.recShowIndicator') !== '0';
+        return { sysAudio: false, mic: false, quality: '1080p', fps: 60, micDevice: '', sysAudioDevice: '', micVol: 1.0, sysVol: 1.0, audioSyncMs, cursorGlow: false, clickEffect: false, glowColor: '#ffd228', clickColor: '#ffe65a', cursorScale: 1, cursorHidden: false, showIndicator };
     });
     // 音訊同步偏移持久化（每次變更即存，下次啟動自動讀回，不必重設）
     useEffect(() => {
         localStorage.setItem('ljcut.audioSyncMs', String(recOpts.audioSyncMs));
     }, [recOpts.audioSyncMs]);
+    useEffect(() => {
+        localStorage.setItem('ljcut.recShowIndicator', recOpts.showIndicator ? '1' : '0');
+    }, [recOpts.showIndicator]);
     const [micDevices, setMicDevices] = useState<MicDevice[]>([]);
     const micStreamRef = useRef<MediaStream | null>(null);
     const micAnimRef = useRef<number>(0);
@@ -365,7 +379,8 @@ export default function App() {
     // ── Resize 面板 ──
     // 窄視窗（< 1280，例如旁邊開著 AI）左欄預設窄一點，把空間留給預覽與時間軸
     // 欄寬：依視窗寬度給預設值，拖曳後記住
-    const [leftWidth, setLeftWidth] = useState(() => readWidth('ljcut-left-w', window.innerWidth < 1280 ? 170 : 240));
+    // 左欄要放得下配樂設定：至少 220（舊版記住的 170 也會被拉回來）
+    const [leftWidth, setLeftWidth] = useState(() => Math.max(220, readWidth('ljcut-left-w', window.innerWidth < 1280 ? 220 : 250)));
     const [rightWidth, setRightWidth] = useState(() => readWidth('ljcut-right-w', window.innerWidth < 1280 ? 290 : 340));
     useEffect(() => { try { localStorage.setItem('ljcut-left-w', String(leftWidth)); localStorage.setItem('ljcut-right-w', String(rightWidth)); } catch { /* 無法記住不影響 */ } }, [leftWidth, rightWidth]);
     // 時間軸是剪輯主角：預設約 40% 視窗高，拖曳後記住
@@ -394,7 +409,7 @@ export default function App() {
         addClip, updateClip, removeClip, setClipSpeed,
         setClipSegments,
         setSegments, updateSegment, setActiveSegment,
-        setSubtitleStyle,
+        setSubtitleStyle, audioMix, setAudioMix,
         setCurrentTime, setIsPlaying,
         setIsUploading, setIsTranscribing, setLanguage,
     } = useStore();
@@ -424,6 +439,15 @@ export default function App() {
     const controlWorkspace = useControlWorkspace();   // 片頭片尾需要本機控制工作區
 
     const pixelsPerSecond = 10 * zoom;
+    // 時間軸從空變成有內容（匯入、開啟專案）時，內容太短（佔不到可視寬度 40%）就自動「整段」，不留一大片空白
+    const prevDuration = useRef(0);
+    useEffect(() => {
+        const was = prevDuration.current; prevDuration.current = duration;
+        if (was > 0 || duration <= 0) return;
+        const w = (timelineAreaRef.current?.clientWidth ?? 0) - LABEL_W - 24;
+        if (w > 0 && duration * 10 * zoom < w * 0.4) setZoom(Math.max(0.1, Math.min(50, w / (duration * 10))));
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [duration]);
     const timelineWidth = duration > 0 ? duration * pixelsPerSecond : 0;
     const SNAP_THRESHOLD_SEC = 8 / pixelsPerSecond; // 8px 吸附範圍
 
@@ -527,6 +551,7 @@ export default function App() {
                     clickColor: recOpts.clickColor,
                     cursorScale: recOpts.cursorScale,
                     cursorHidden: recOpts.cursorHidden,
+                    showIndicator: recOpts.showIndicator,
                 });
 
                 // 開啟 overlay 選區窗
@@ -1112,7 +1137,7 @@ export default function App() {
             const videoW = outputMedia?.info.width || v?.videoWidth || 1920;
             const videoH = outputMedia?.info.height || v?.videoHeight || 1080;
 
-            let result: { outputPath: string; publicationId: string } | null = null;
+            let result: Awaited<ReturnType<typeof api.exportTimeline>> = null;
 
             // 單段與多段共用相同的時間軸輸出流程
             const clipsPayload = track0Clips.map(clip => {
@@ -1142,7 +1167,10 @@ export default function App() {
                 defaultFileName,
                 videoW, videoH,
                 (pct, stage, eta) => { setExportProgress(pct); setExportStage(stage ?? ''); setExportEta(eta ?? null); },
+                exportAudioMix(audioMix, track0Clips),
             );
+            if (result?.loudness?.after != null)
+                toast('success', `響度已校正：${result.loudness.before} → ${result.loudness.after} LUFS（目標 ${result.loudness.target}，峰值 ${result.loudness.truePeak} dBTP）`);
 
             if (result) {
                 setExportProgress(100);
@@ -1160,7 +1188,7 @@ export default function App() {
         } finally {
             setIsBurning(false);
         }
-    }, [fileId, segments, subtitleStyle, timelineClips, mediaItems, duration, setIsPlaying, burnSubs]);
+    }, [fileId, segments, subtitleStyle, timelineClips, mediaItems, duration, setIsPlaying, burnSubs, audioMix]);
 
     // ── 播放 ──
     const activeClipSpeed = useMemo(() => {
@@ -1544,7 +1572,9 @@ export default function App() {
         const onMove = (ev: MouseEvent) => {
             if (direction === 'left') {
                 const dx = ev.clientX - startX;
-                setLeftWidth(Math.max(80, Math.min(400, startLeft + dx)));
+                // 左欄只有兩種狀態：收合，或至少 220（放得下配樂設定）
+                const w = startLeft + dx;
+                if (w < 160) setLeftCollapsed(true); else { setLeftCollapsed(false); setLeftWidth(Math.max(220, Math.min(400, w))); }
             } else if (direction === 'right') {
                 const dx = ev.clientX - startX;
                 setRightWidth(Math.max(120, Math.min(500, startRight - dx)));
@@ -2050,7 +2080,7 @@ export default function App() {
             const v = { sessionId: s.sessionId, projectId: s.projectId, expectedRevision: s.revision };
             const draft = dryRun({ ...v, timeUnit: 'seconds', operations: operations.map(o => ({ trackId: 'video-main', timeDomain: 'source', ...o })) } as never);
             labelNextUndo(what);
-            applyPlan({ ...v, dryRunId: draft.dryRunId, confirmed: true });
+            applyPlan({ ...v, dryRunId: draft.dryRunId, confirmed: true, acknowledge: draft.audit.map(a => a.id) });   // 介面上的直接操作＝使用者本人的意圖
             return draft.changes as { zoomId?: string }[];
         } catch (e) {
             notify(`${what}失敗：${(e instanceof Error ? e.message : String(e)).replace(/疊加層/g, '標註')}`);
@@ -2135,6 +2165,77 @@ export default function App() {
     }, [mediaItems, selectedOverlayId]);
     const selectZoom = useCallback((id: string | null) => { setSelectedZoomId(id); if (id) setSelectedOverlayId(null); }, []);
     const selectOverlay = useCallback((id: string | null) => { setSelectedOverlayId(id); if (id) setSelectedZoomId(null); }, []);
+
+    // ── AI 套用修改後的「現身」：新物件閃幾下、幽靈游標走到時間軸與畫面上的位置、自動選取並把播放頭帶過去 ──
+    const [aiFresh, setAiFresh] = useState<Record<string, number>>({});
+    const ppsRef = useRef(pixelsPerSecond);
+    ppsRef.current = pixelsPerSecond;
+    useEffect(() => {
+        const timers: number[] = [];
+        const later = (fn: () => void, ms: number) => { timers.push(window.setTimeout(fn, ms)); };
+        const onApplied = (e: Event) => {
+            const changes = (e as CustomEvent<any[]>).detail;
+            if (!Array.isArray(changes) || !changes.length) return;
+            const fresh = changes.filter(c => !String(c?.type).startsWith('delete_')).map(c => c?.zoomId ?? c?.overlayId).filter(Boolean) as string[];
+            if (fresh.length) {
+                const now = Date.now();
+                setAiFresh(prev => ({ ...prev, ...Object.fromEntries(fresh.map(id => [id, now])) }));
+                later(() => setAiFresh(prev => Object.fromEntries(Object.entries(prev).filter(([, t]) => Date.now() - t < 30000))), 30500);
+            }
+            const first = changes.find(c => timelineRange(c));
+            if (!first) return;
+            const [a, b] = timelineRange(first)!;
+            // 標註／HTML 動畫多半有進場動畫：停在出現後一點點；縮放與剪接停在中間
+            const target = Math.max(0, first.overlayId ? Math.min(b - 0.05, a + Math.min(1.5, (b - a) / 2)) : Math.min(b - 0.05, (a + b) / 2));
+            const id: string | undefined = first.zoomId ?? first.overlayId;
+            const select = () => { if (first.zoomId) selectZoom(first.zoomId); else if (first.overlayId) selectOverlay(first.overlayId); };
+            const seek = () => { try { requestPreview(target); } catch { /* 超出範圍 */ } };
+            // 等新物件畫到時間軸上，再把它捲進視野，然後讓幽靈游標走過去
+            later(() => {
+                const el = id ? document.querySelector<HTMLElement>(`[data-ai-id="${CSS.escape(id)}"]`) : null;
+                el?.scrollIntoView({ block: 'nearest', inline: 'center', behavior: 'smooth' });
+                later(() => {
+                    const steps: AiCursorStep[] = [];
+                    // 1) 時間軸：新物件本身；剪接類用時間尺上的位置
+                    const r = el?.getBoundingClientRect();
+                    const tracks = tracksRef.current, ruler = rulerRef.current;
+                    let tx: number | null = null, ty = 0;
+                    if (r && r.width) { tx = r.left + Math.min(r.width / 2, 40); ty = r.top + r.height / 2; }
+                    else if (tracks && ruler) {
+                        const tr = tracks.getBoundingClientRect(), rr = ruler.getBoundingClientRect();
+                        tx = tr.left + LABEL_W + a * ppsRef.current - tracks.scrollLeft; ty = rr.top + rr.height / 2;
+                        if (tx < tr.left + LABEL_W || tx > tr.right) tx = null;
+                    }
+                    if (tx !== null) steps.push({ x: tx, y: ty, click: true, label: '改在這裡', then: select });
+                    // 2) 預覽畫面：縮放中心／標註位置
+                    const box = videoContainerRef.current?.getBoundingClientRect();
+                    const media = useStore.getState().mediaItems.find(m => m.id === first.mediaId);
+                    if (box && box.width && media?.info.width && media.info.height && (first.zoomId || first.overlayId)) {
+                        const aspect = media.info.width / media.info.height;
+                        const wide = box.width / box.height > aspect;
+                        const fw = wide ? box.height * aspect : box.width, fh = wide ? box.height : box.width / aspect;
+                        const fx = box.left + (box.width - fw) / 2, fy = box.top + (box.height - fh) / 2;
+                        let px = 0.5, py = 0.5;
+                        if (first.zoomId && Array.isArray(first.center)) [px, py] = first.center;
+                        const o = first.overlayId ? media.overlays?.find(v => v.id === first.overlayId) : undefined;
+                        if (o) {
+                            if ((o.kind === 'box' || o.kind === 'spotlight' || o.kind === 'media') && o.w) { px = o.x + o.w / 2; py = o.y + (o.h ?? o.w * 0.5) / 2; }
+                            else if (o.kind === 'arrow' || o.kind === 'step') { px = o.x; py = o.y; }
+                            else if (o.kind === 'title') { const pos = o.position ?? 'bottom-left'; px = pos.endsWith('left') ? 0.18 : 0.5; py = pos.startsWith('top') ? 0.1 : 0.88; }
+                        }
+                        steps.push({ x: fx + px * fw, y: fy + py * fh, click: true, label: first.zoomId ? `放大 ${first.scale ?? ''}x` : '標註', then: seek });
+                    } else if (tx !== null) {
+                        steps[steps.length - 1].then = () => { select(); seek(); };
+                    }
+                    if (!steps.length) { select(); seek(); return; }
+                    playAiCursor(steps);
+                }, 380);
+            }, 120);
+        };
+        window.addEventListener('ljcut-ai-applied', onApplied);
+        return () => { window.removeEventListener('ljcut-ai-applied', onApplied); timers.forEach(t => clearTimeout(t)); };
+    }, [selectZoom, selectOverlay]);
+    const isAiFresh = (id: string) => !!aiFresh[id] && Date.now() - aiFresh[id] < 30000;
     // 子母畫面：選檔 → 上傳素材庫 → 在播放頭加入（右下角、寬 30%）
     const assetInputRef = useRef<HTMLInputElement>(null);
     const addMediaFromFile = useCallback(async (file: File) => {
@@ -2536,6 +2637,28 @@ export default function App() {
     }, [timelineClips, mediaItems, pixelsPerSecond, drawFullWaveform]);
 
     const rulerTicks = generateRulerTicks(duration, pixelsPerSecond);
+    const reviewNotes = useMemo(() => flattenNotes(mediaItems, timelineClips), [mediaItems, timelineClips]);
+    const reviewOpenCount = reviewNotes.filter(n => n.status === 'open').length;
+    // 配樂：節拍（素材秒數，後端快取）換算到時間軸；旁白壓低區段與預覽／匯出同一份計算
+    const [musicBeats, setMusicBeats] = useState<{ id: string; bpm: number | null; beats: number[] } | null>(null);
+    const musicId = audioMix.music?.asset.id;
+    useEffect(() => {
+        if (!musicId || musicBeats?.id === musicId) return;
+        let alive = true;
+        api.musicBeats(musicId).then(r => { if (alive) setMusicBeats({ id: musicId, ...r }); }).catch(() => { /* 節拍只是輔助顯示 */ });
+        return () => { alive = false; };
+    }, [musicId, musicBeats?.id]);
+    const beatTimes = useMemo(() => {
+        const m = audioMix.music;
+        if (!m || !musicBeats || musicBeats.id !== m.asset.id) return [];
+        const out: number[] = [];
+        const dur = m.asset.duration;
+        for (const b of musicBeats.beats) if (b >= m.offset && b - m.offset < duration) out.push(b - m.offset);
+        if (m.loop) for (let base = dur - m.offset; base < duration; base += dur)
+            for (const b of musicBeats.beats) { if (base + b >= duration) break; out.push(base + b); }
+        return out.slice(0, 5000);
+    }, [audioMix.music, musicBeats, duration]);
+    const duckSpans = useMemo(() => speechSpans(timelineClips, (audioMix.music?.attack ?? 0.25) + (audioMix.music?.release ?? 0.6) + 0.3), [timelineClips, audioMix.music]);
 
     const mainJsx = (
         <div className="app">
@@ -2545,8 +2668,10 @@ export default function App() {
                 <h1>LJCUT</h1>
                 <ProjectFileButtons />
                 <AiStatus />
+                <AiCursor />
                 <div className="header-actions">
                     <button className="btn" onClick={() => setShowRecSettings(true)} title="螢幕錄影" aria-label="螢幕錄影"><CircleDot aria-hidden /><span className="btn-label">螢幕錄影</span></button>
+                    <button className="btn" onClick={() => setShowVoiceReview(true)} title="配音修正：逐句聽 AI 旁白、標記語調錯、錄正確版" aria-label="配音修正"><Mic aria-hidden /><span className="btn-label">配音修正</span></button>
                     {/* 匯出影片：只要時間軸上有片段就能匯出（純剪輯、無字幕也可） */}
                     {hasTimeline && (<>
                         <span className="header-sep" aria-hidden />
@@ -2604,6 +2729,10 @@ export default function App() {
                     <span className="rec-hotkey-hint">按 F10 結束</span>
                 </div>
             )}
+
+            {/* 配音修正 Modal */}
+            {showVoiceReview && <VoiceReviewModal onClose={() => setShowVoiceReview(false)} />}
+            <MusicPreview />
 
             {/* 設定 Modal */}
             {showSettings && (
@@ -2695,6 +2824,12 @@ export default function App() {
                                             </div>
                                         ))}
                                     </div>
+                                )}
+                                {hasTimeline && (
+                                    <section className="left-section" id="music-section" aria-labelledby="music-heading">
+                                        <h3 id="music-heading">配樂</h3>
+                                        <MusicControls />
+                                    </section>
                                 )}
                                 {controlWorkspace && hasTimeline && (
                                     <section className="left-section" id="bookend-section" aria-labelledby="bookend-heading">
@@ -2918,7 +3053,18 @@ export default function App() {
                             <input type="range" ref={rangeSliderRef} aria-label="播放位置" min={0} max={duration || 0} step={0.1} defaultValue={currentTime}
                                 onChange={(e) => seekTo(Number(e.target.value))}
                                 style={{ flex: 1, accentColor: 'var(--accent-amber)' }} />
-                            {hasTimeline && <>
+                        </div>
+                    )}
+
+                    {/* Timeline Resize Handle（水平） */}
+                    {(hasTimeline || primaryMedia) && <div className="resize-handle-h" onMouseDown={(e) => startResize('timeline', e)} />}
+
+                    {/* ── 多軌時間軸 ── */}
+                    {(hasTimeline || primaryMedia) && (
+                        <div className="timeline-area" ref={timelineAreaRef} onWheel={handleTimelineWheel} style={{ height: timelineHeight }}>
+                            <div className="timeline-tools">
+                            {/* 剪輯工具集中在時間軸工具列：左邊分割／片段選單，右邊 I／O 與比例 */}
+                            {hasTimeline && <span className="tools-left">
                                 <button className="btn btn-compact" title="在播放頭把片段切成兩段（S）"
                                     onClick={() => {
                                         const t = timelinePosRef.current;
@@ -2935,22 +3081,12 @@ export default function App() {
                                         speedUndoPushedRef.current = false;
                                         setSpeedMenu({ clipId: clip.id, x: r.left, y: r.bottom, splitTime: t });
                                     }}><Gauge aria-hidden />片段選單 ▾{activeClipSpeed !== 1 && <span className="speed-badge">{activeClipSpeed}x</span>}</button>
-                            </>}
-                        </div>
-                    )}
-
-                    {/* Timeline Resize Handle（水平） */}
-                    {(hasTimeline || primaryMedia) && <div className="resize-handle-h" onMouseDown={(e) => startResize('timeline', e)} />}
-
-                    {/* ── 多軌時間軸 ── */}
-                    {(hasTimeline || primaryMedia) && (
-                        <div className="timeline-area" ref={timelineAreaRef} onWheel={handleTimelineWheel} style={{ height: timelineHeight }}>
-                            <div className="timeline-tools">
+                            </span>}
                             {hasTimeline && <span className="mark-group" role="group" aria-label="I／O 標記">
                                 <button className={`btn btn-compact ${marks.in != null ? 'on' : ''}`} onClick={() => setMarks(m => ({ ...m, in: timelinePosRef.current }))}
-                                    title="在播放頭標記要剪掉的起點（I）" aria-label="標記起點 I">起點 I</button>
+                                    title="在播放頭標記要剪掉的起點（I）" aria-label="標記要剪掉的起點 I">剪起點 I</button>
                                 <button className={`btn btn-compact ${marks.out != null ? 'on' : ''}`} onClick={() => setMarks(m => ({ ...m, out: timelinePosRef.current }))}
-                                    title="在播放頭標記要剪掉的終點（O）" aria-label="標記終點 O">終點 O</button>
+                                    title="在播放頭標記要剪掉的終點（O）" aria-label="標記要剪掉的終點 O">剪終點 O</button>
                             </span>}
                             {(marks.in != null || marks.out != null) && <span className="mark-group" role="group" aria-label="I／O 區間">
                                 <button className="btn btn-compact btn-danger-soft" disabled={marks.in == null || marks.out == null} onClick={cutMarkedRange}
@@ -2977,6 +3113,11 @@ export default function App() {
                                             style={{ left: tick.time * pixelsPerSecond }}>
                                             <span className="ruler-label">{tick.label}</span>
                                         </div>
+                                    ))}
+                                    {reviewNotes.map(n => n.tl !== null && (
+                                        <button key={n.id} className={`review-flag ${n.status}`} style={{ left: n.tl * pixelsPerSecond }}
+                                            title={`${fmtNoteTime(n.tl)} ${n.cat}：${n.text}`} aria-label={`審片意見 ${fmtNoteTime(n.tl)}：${n.text}`}
+                                            onClick={(e) => { e.stopPropagation(); seekTo(n.tl!); setRightTab('review'); }} />
                                     ))}
                                 </div>
                             </div>
@@ -3087,6 +3228,23 @@ export default function App() {
                                     </div>
                                 </div>
 
+                                {/* 配樂軌：配樂範圍、旁白壓低區段（暗色）、節拍點 */}
+                                {audioMix.music && (
+                                    <div className="track music-track">
+                                        <div className="track-label" style={{ width: LABEL_W }}><Music aria-hidden />&nbsp;配樂</div>
+                                        <div className="track-content" style={{ width: timelineWidth }}>
+                                            <div className="music-bar" style={{ left: 0, width: Math.max(0, (audioMix.music.loop ? duration : Math.min(duration, audioMix.music.asset.duration - audioMix.music.offset))) * pixelsPerSecond }}
+                                                title={`${audioMix.music.asset.filename}${musicBeats?.bpm ? `・約 ${musicBeats.bpm} BPM` : ''}`}>
+                                                <span className="music-bar-name">{audioMix.music.asset.filename}{musicBeats?.bpm ? `　${musicBeats.bpm} BPM` : ''}</span>
+                                            </div>
+                                            {audioMix.music.duck && duckSpans.map(([a, b], i) => (
+                                                <div key={i} className="music-duck" style={{ left: a * pixelsPerSecond, width: Math.max(1, (b - a) * pixelsPerSecond) }} title={`旁白：配樂壓低 ${audioMix.music!.duckDb} dB`} />
+                                            ))}
+                                            {pixelsPerSecond >= 6 && beatTimes.map((b, i) => <div key={i} className="music-beat" style={{ left: b * pixelsPerSecond }} />)}
+                                        </div>
+                                    </div>
+                                )}
+
                                 {/* 縮放軌：區段存在素材上（來源秒數），依各片段換算到時間軸顯示 */}
                                 {mediaItems.some(m => m.info.width) && (
                                     <div className="track zoom-track">
@@ -3109,7 +3267,7 @@ export default function App() {
                                                     const width = Math.max(((b - a) / clip.speed) * pixelsPerSecond, 3);
                                                     const selected = z.id === selectedZoomId;
                                                     return (
-                                                        <div key={`${clip.id}-${z.id}`} className={`track-clip zoom-clip ${selected ? 'selected' : ''}`}
+                                                        <div key={`${clip.id}-${z.id}`} data-ai-id={z.id} className={`track-clip zoom-clip ${selected ? 'selected' : ''} ${isAiFresh(z.id) ? 'ai-fresh' : ''}`}
                                                             role="button" tabIndex={0} aria-pressed={selected} aria-label={`縮放 ${z.scale} 倍`}
                                                             onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); (e.currentTarget as HTMLElement).click(); } }}
                                                             style={{ left, width }}
@@ -3147,7 +3305,7 @@ export default function App() {
                                     const icon: Record<string, React.ReactNode> = { box: <Square aria-hidden />, arrow: <ArrowUpRight aria-hidden />, spotlight: <Focus aria-hidden />,
                                         step: <ListOrdered aria-hidden />, title: <Type aria-hidden />, html: <Code aria-hidden />, media: <ImageIcon aria-hidden /> };
                                     return (
-                                        <div className="track overlay-track" style={{ height: Math.max(40, rows * 28 + 8) }}>
+                                        <div className="track overlay-track" style={{ height: Math.max(52, rows * 28 + 8) }}>
                                             <div className="track-label zoom-track-label" style={{ width: LABEL_W }}>
                                                 <span><PenLine aria-hidden /> 標註</span>
                                                 {(allRows > 2) && <button className="track-more" onClick={() => setOverlayExpanded(v => !v)}
@@ -3185,10 +3343,11 @@ export default function App() {
                                                 </span>
                                             </div>
                                             <div className="track-content" style={{ width: timelineWidth }}>
+                                                {!placed.length && <span className="track-empty-hint">按左邊「＋」或 A 在播放頭加醒目框、箭頭或標題</span>}
                                                 {placed.filter(p => p.row < rows).map(({ o, clip, a, b, left, width, row }) => {
                                                     const selected = o.id === selectedOverlayId;
                                                     return (
-                                                        <div key={`${clip.id}-${o.id}`} className={`track-clip overlay-clip kind-${o.kind} ${selected ? 'selected' : ''}`}
+                                                        <div key={`${clip.id}-${o.id}`} data-ai-id={o.id} className={`track-clip overlay-clip kind-${o.kind} ${selected ? 'selected' : ''} ${isAiFresh(o.id) ? 'ai-fresh' : ''}`}
                                                             role="button" tabIndex={0} aria-pressed={selected} aria-label={`${OVERLAY_LABEL[o.kind]}${o.text ? `：${o.text}` : ''}`}
                                                             onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); (e.currentTarget as HTMLElement).click(); } }}
                                                             style={{ left, width, top: 4 + row * 28, height: 24 }}
@@ -3254,13 +3413,15 @@ export default function App() {
 
                 {/* 右側：字幕 */}
                 <aside className="panel-right" style={{ width: rightWidth }} aria-label="字幕校對與屬性">
-                    {(selectedOverlay || selectedZoom) && (
-                        <div className="right-tabs" role="tablist" aria-label="右欄">
-                            <button role="tab" aria-selected={rightTab === 'props'} className={`left-tab ${rightTab === 'props' ? 'active' : ''}`} onClick={() => setRightTab('props')}>
-                                {selectedOverlay ? '標註屬性' : '縮放屬性'}</button>
-                            <button role="tab" aria-selected={rightTab === 'subs'} className={`left-tab ${rightTab === 'subs' ? 'active' : ''}`} onClick={() => setRightTab('subs')}>字幕</button>
-                        </div>
-                    )}
+                    <div className="right-tabs" role="tablist" aria-label="右欄">
+                        {(selectedOverlay || selectedZoom) && <button role="tab" aria-selected={rightTab === 'props'} className={`left-tab ${rightTab === 'props' ? 'active' : ''}`} onClick={() => setRightTab('props')}>
+                            {selectedOverlay ? '標註屬性' : '縮放屬性'}</button>}
+                        <button role="tab" aria-selected={rightTab === 'subs' || (rightTab === 'props' && !(selectedOverlay || selectedZoom))} className={`left-tab ${rightTab === 'subs' || (rightTab === 'props' && !(selectedOverlay || selectedZoom)) ? 'active' : ''}`} onClick={() => setRightTab('subs')}>字幕</button>
+                        <button role="tab" aria-selected={rightTab === 'review'} className={`left-tab ${rightTab === 'review' ? 'active' : ''}`} onClick={() => setRightTab('review')}
+                            title="審片意見（N：在播放頭記一條）">審片{reviewOpenCount ? <span className="tab-badge">{reviewOpenCount}</span> : null}</button>
+                    </div>
+                    {rightTab === 'review' && <ReviewPanel media={mediaItems} clips={timelineClips} currentTime={currentTime}
+                        onSeek={seekTo} onOps={(ops, what) => runZoomOps(ops, what)} focusSignal={reviewFocus} />}
                     {(selectedOverlay || selectedZoom) && rightTab === 'props' && (
                         <OverlayInspector
                             key={selectedOverlay?.overlay.id ?? selectedZoom?.zoom.id}
@@ -3274,7 +3435,7 @@ export default function App() {
                             onHelp={openHelp}
                         />
                     )}
-                    <div className="right-subs" hidden={!!(selectedOverlay || selectedZoom) && rightTab === 'props'}>
+                    <div className="right-subs" hidden={(!!(selectedOverlay || selectedZoom) && rightTab === 'props') || rightTab === 'review'}>
                     <div className="subtitle-header">
                         <button className={`btn btn-sm ${proofMode ? 'on' : ''}`} aria-pressed={proofMode} onClick={() => {
                             if (!proofMode) { normalRight.current = rightWidth; setRightWidth(Math.round(window.innerWidth * 0.5)); }
@@ -3574,6 +3735,9 @@ export default function App() {
             if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'e') { e.preventDefault(); if (timelineClips.length) setShowExportModal(true); return; }
             if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'b') { e.preventDefault(); setLeftCollapsed(v => !v); return; }
             if (!e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && (e.key === 'z' || e.key === 'Z')) { e.preventDefault(); addZoomAtPlayhead(); return; }
+            if (!e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && (e.key === 'n' || e.key === 'N') && timelineClips.length) {
+                e.preventDefault(); if (isPlaying) togglePlay(); setRightTab('review'); setReviewFocus(v => v + 1); return;
+            }
             if (!e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && (e.key === 'a' || e.key === 'A')) {
                 const btn = document.querySelector<HTMLElement>('.overlay-track .zoom-mini-btn[aria-haspopup="menu"]');
                 if (btn) { e.preventDefault(); btn.click(); }
@@ -3679,6 +3843,12 @@ export default function App() {
                                 <span className="toggle-slider" />
                             </label>
                         </div>
+                        <div className="style-row" title="匯出時先量整支影片的響度，再校到平台建議值（不壓縮動態）。YouTube 會把太大聲的片子調小，太小聲的不會調大。">
+                            <label htmlFor="export-loudness">音量標準化</label>
+                            <select id="export-loudness" value={audioMix.loudness} onChange={e => { pushUndo('更改平台響度'); setAudioMix({ loudness: e.target.value as LoudnessPreset }); }}>
+                                {(Object.keys(LOUDNESS_LABEL) as LoudnessPreset[]).map(k => <option key={k} value={k}>{LOUDNESS_LABEL[k]}</option>)}
+                            </select>
+                        </div>
                         {(() => {
                             const main = timelineClips.filter(c => c.trackIndex === 0);
                             const subs = main.reduce((n, c) => n + c.segments.length, 0);
@@ -3697,12 +3867,13 @@ export default function App() {
                                         }}>到左側設定</button>}</dd>
                                     <dt>字幕</dt><dd>{subs} 句{subs === 0 ? '（上傳時不會有 CC）' : ''}</dd>
                                     <dt>縮放／標註</dt><dd>{zooms} 段／{overlays} 個</dd>
+                                    <dt>配樂</dt><dd>{audioMix.music ? `${audioMix.music.asset.filename}${audioMix.music.duck ? `（旁白時壓低 ${audioMix.music.duckDb} dB）` : ''}` : '無'}</dd>
                                     <dt>存檔位置</dt><dd>{settings.outputDir ? `${settings.outputDir}（開始後可改）` : '按「開始匯出」後選擇'}</dd>
                                 </dl>
                             );
                         })()}
                         {!burnSubs && (
-                            <div style={{ fontSize: 12, color: 'var(--accent-green)', padding: '2px 0 6px' }}>
+                            <div className="field-hint" style={{ padding: '2px 0 6px' }}>
                                 字幕另附檔：匯出乾淨畫面＋同名 SRT，上傳 YouTube 時自動掛成 CC 字幕
                             </div>
                         )}

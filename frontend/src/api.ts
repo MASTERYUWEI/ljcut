@@ -1,7 +1,6 @@
 /* ── API 層 (Tauri + 瀏覽器雙模式) ── */
 
 import type { UploadResult, TranscribeResult, Segment } from './types';
-import { controlHeaders } from './controlClient';
 
 // 偵測是否在 Tauri 環境
 const IS_TAURI = !!(window as any).__TAURI_INTERNALS__;
@@ -299,7 +298,8 @@ export const api = {
         videoWidth: number,
         videoHeight: number,
         onProgress: (pct: number, stage?: string, etaSeconds?: number | null) => void,
-    ): Promise<{ outputPath: string; publicationId: string } | null> {
+        audioMix?: unknown,
+    ): Promise<{ outputPath: string; publicationId: string; loudness?: { before: number | null; after: number | null; truePeak: number | null; target: number } | null } | null> {
         // 1. 存檔對話框
         let outputPath = '';
         if (IS_TAURI) {
@@ -335,6 +335,7 @@ export const api = {
                 export_id: currentExportId,
                 video_width: videoWidth || 1920,
                 video_height: videoHeight || 1080,
+                audio_mix: audioMix,
             }),
         });
         if (!res.ok) throw new Error(await res.text());
@@ -363,7 +364,7 @@ export const api = {
                     if (evt.error) throw new Error(evt.error);
                     if (evt.progress != null) onProgress(evt.progress, evt.stage, evt.eta_seconds);
                     if (evt.output_path) finalPath = evt.output_path;
-                    if (evt.done && evt.publication_id) return { outputPath: finalPath, publicationId: evt.publication_id };
+                    if (evt.done && evt.publication_id) return { outputPath: finalPath, publicationId: evt.publication_id, loudness: evt.loudness ?? null };
                 } catch (e) {
                     if (e instanceof Error && e.message) throw e;
                 }
@@ -457,6 +458,8 @@ export const api = {
         },
         onProgress: (pct: number, stage?: string) => void,
     ): Promise<{ video_id: string; watch_url: string; studio_url: string; warnings?: string[] }> {
+        // 延遲載入：api 是 controlClient 的底層，靜態互相引用會形成循環
+        const { controlHeaders } = await import('./controlClient');
         const res = await fetch(`${resolvedBase}/api/yt/upload`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', ...controlHeaders() },
@@ -589,6 +592,13 @@ export const api = {
         const body = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(body.detail ?? `上傳失敗：HTTP ${res.status}`);
         return body;
+    },
+
+    /** 配樂節拍點（素材秒數）；後端會快取 */
+    async musicBeats(assetId: string): Promise<{ bpm: number | null; beats: number[]; confidence: number }> {
+        const res = await fetch(`${resolvedBase}/api/audio/beats/${encodeURIComponent(assetId)}`);
+        if (!res.ok) throw new Error(`節拍偵測失敗：HTTP ${res.status}`);
+        return res.json();
     },
 
     getThumbnailUrl(fileId: string): string {

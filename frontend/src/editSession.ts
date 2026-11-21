@@ -3,6 +3,8 @@ import { durationOf, evaluateBookends, evaluatePlan, evaluateTransitions, requir
 import type { TransitionKind } from './transitions';
 import type { MediaItem } from './types';
 import type { EditPlan, ProjectData } from './editCore';
+import { DEFAULT_MIX, NEW_PROJECT_MIX } from './audioCheck';
+import { auditPlan, unacknowledged, type AuditItem } from './planAudit';
 
 let revision = 0;
 const sessionId = crypto.randomUUID();
@@ -11,11 +13,11 @@ let restoring = false;
 type Snapshot = { project: ProjectData; activeClipId: string | null; label?: string };
 const past: Snapshot[] = [];
 const future: Snapshot[] = [];
-const drafts = new Map<string, ReturnType<typeof evaluatePlan> & { revision: number; projectId: string }>();
+const drafts = new Map<string, ReturnType<typeof evaluatePlan> & { revision: number; projectId: string; audit: AuditItem[] }>();
 export function projectData(): ProjectData {
     const s = useStore.getState();
     return structuredClone({ schemaVersion: 1, projectId, mediaItems: s.mediaItems,
-        timelineClips: s.timelineClips, subtitleStyle: s.subtitleStyle, language: s.language });
+        timelineClips: s.timelineClips, subtitleStyle: s.subtitleStyle, language: s.language, audioMix: s.audioMix });
 }
 /** 專案內容的比對鍵（同一版本只算一次）：復原回到存檔時的內容時可判定為「已儲存」 */
 let keyCache = { revision: -1, key: '' };
@@ -42,7 +44,7 @@ export function readState() {
 }
 useStore.subscribe((s, prev) => {
     if (s.timelineClips !== prev.timelineClips || s.mediaItems !== prev.mediaItems
-        || s.subtitleStyle !== prev.subtitleStyle || s.language !== prev.language) {
+        || s.subtitleStyle !== prev.subtitleStyle || s.language !== prev.language || s.audioMix !== prev.audioMix) {
         revision++;
         drafts.clear();
         if (!restoring) future.length = 0;
@@ -73,7 +75,7 @@ function restore(snap: Snapshot, keepTime = false) {
     p.mediaItems = p.mediaItems.map(m => (!m.waveformPeaks?.length && peaks.has(m.id) ? { ...m, waveformPeaks: peaks.get(m.id)! } : m));
     const time = keepTime ? Math.min(useStore.getState().currentTime, durationOf(p.timelineClips)) : 0;
     useStore.setState({ mediaItems: p.mediaItems, timelineClips: p.timelineClips, subtitleStyle: p.subtitleStyle,
-        language: p.language, activeClipId: active?.id ?? null, segments: active?.segments ?? [],
+        language: p.language, audioMix: p.audioMix ?? { ...DEFAULT_MIX }, activeClipId: active?.id ?? null, segments: active?.segments ?? [],
         activeSegmentId: null, isPlaying: false, currentTime: time });
     requestPreview(time);
     notifyHistory();
@@ -128,7 +130,7 @@ export function replaceProject(p: ProjectData, expected: ExpectedVersion) {
 /** 新專案：清空素材與時間軸、清空復原歷史（保留字幕樣式與辨識語言等偏好） */
 export function newProject() {
     projectId = crypto.randomUUID();
-    useStore.setState({ mediaItems: [], timelineClips: [], activeClipId: null, segments: [], activeSegmentId: null,
+    useStore.setState({ mediaItems: [], timelineClips: [], activeClipId: null, segments: [], activeSegmentId: null, audioMix: { ...NEW_PROJECT_MIX },
         isPlaying: false, currentTime: 0 });
     past.length = 0; future.length = 0; notifyHistory();
 }
@@ -159,8 +161,10 @@ function rememberDraft(result: ReturnType<typeof evaluatePlan>) {
     const dryRunId = crypto.randomUUID();
     // Only plans at the current revision survive; bound memory for repeated proposals.
     if (drafts.size >= 20) drafts.delete(drafts.keys().next().value!);
-    drafts.set(dryRunId, { ...result, revision, projectId });
-    return { dryRunId, sessionId, projectId, revision, changes: result.changes,
+    // 套用前審核：block 要逐條 acknowledge 才能套用，warn 只列出來給人看
+    const audit = auditPlan(projectData(), result.next, result.changes);
+    drafts.set(dryRunId, { ...result, revision, projectId, audit });
+    return { dryRunId, sessionId, projectId, revision, changes: result.changes, audit,
         beforeDuration: result.beforeDuration, afterDuration: result.afterDuration,
         proposedClips: result.next.timelineClips, requiresConfirmation: true };
 }
@@ -174,11 +178,14 @@ export function draftProject(args: ExpectedVersion & { dryRunId: string }) {
     requireEdit(draft && draft.revision === revision && draft.projectId === projectId, 'STALE_DRY_RUN', 'dry-run 已過期，請重新驗證');
     return structuredClone(draft.next);
 }
-export function applyPlan(args: ExpectedVersion & { dryRunId: string; confirmed: boolean }) {
+export function applyPlan(args: ExpectedVersion & { dryRunId: string; confirmed: boolean; acknowledge?: string[] }) {
     checkVersion(args);
     requireEdit(args.confirmed === true, 'CONFIRMATION_REQUIRED', '需確認 dry-run 內容後才能套用');
     const draft = drafts.get(args.dryRunId);
     requireEdit(draft && draft.revision === revision && draft.projectId === projectId, 'STALE_DRY_RUN', 'dry-run 已過期，請重新驗證');
+    const open = unacknowledged(draft.audit, args.acknowledge);
+    requireEdit(open.length === 0, 'AUDIT_BLOCKED', '審核擋下這批修改，請逐條確認後在 acknowledge 帶上 ID：'
+        + open.map(i => `${i.id} ${i.message}`).join('；'));
     requireEdit(!useStore.getState().isTranscribing && !useStore.getState().isUploading,
         'EDITOR_BUSY', '匯入／辨識尚未完成，請稍後重試');
     pushUndo(); restore({ project: draft.next, activeClipId: useStore.getState().activeClipId }, true);   // 套用後播放頭留在原處

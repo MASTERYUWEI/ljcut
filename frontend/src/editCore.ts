@@ -3,6 +3,8 @@ import type { SubtitleStyle } from './store';
 import { TRANSITIONS, type TransitionKind } from './transitions';
 import { checkZooms, type ZoomRegion } from './zoom';
 import { checkOverlays, OVERLAY_KINDS, type Overlay } from './overlay';
+import { checkAudioMix, type AudioMix } from './audioCheck';
+import { checkNotes, REVIEW_CATS, timelineToSource, type ReviewNote } from './review';
 
 export const TRACKS = [{ id: 'video-main', index: 0, kind: 'video-with-audio' as const },
     { id: 'subtitles-main', index: 1, kind: 'clip-subtitles' as const }];
@@ -13,6 +15,8 @@ export interface ProjectData {
     timelineClips: TimelineClip[];
     subtitleStyle: SubtitleStyle;
     language: string;
+    /** 舊專案沒有這個欄位＝不加配樂、不調響度 */
+    audioMix?: AudioMix;
 }
 export class EditError extends Error {
     constructor(public code: string, message: string) { super(message); }
@@ -63,6 +67,8 @@ export function validateProject(p: ProjectData, continuous = false): void {
         && p.subtitleStyle.posY >= 0 && p.subtitleStyle.posY <= 100
         && p.subtitleStyle.bgOpacity >= 0 && p.subtitleStyle.bgOpacity <= 100,
     'INVALID_STYLE', '字幕樣式包含無效數值');
+    const mixError = checkAudioMix(p.audioMix);
+    requireEdit(!mixError, 'INVALID_AUDIO_MIX', mixError!);
     requireEdit(p.timelineClips.every(c => c && typeof c === 'object'), 'INVALID_CLIP', '片段格式無效');
     const mediaIds = new Set<string>();
     for (const m of p.mediaItems) {
@@ -73,6 +79,8 @@ export function validateProject(p: ProjectData, continuous = false): void {
         requireEdit(!zoomError, 'INVALID_ZOOM', zoomError!);
         const overlayError = checkOverlays(m.overlays, m.info.duration);
         requireEdit(!overlayError, 'INVALID_OVERLAY', overlayError!);
+        const noteError = checkNotes(m.reviewNotes, m.info.duration);
+        requireEdit(!noteError, 'INVALID_NOTE', noteError!);
         mediaIds.add(m.id);
     }
     const ids = new Set<string>();
@@ -120,7 +128,7 @@ export function validateProject(p: ProjectData, continuous = false): void {
 export type EditOperation = {
     type: 'ripple_delete' | 'add_subtitle' | 'split' | 'set_speed' | 'move_clip'
         | 'delete_clip' | 'edit_subtitle' | 'delete_subtitle' | 'add_zoom' | 'edit_zoom' | 'delete_zoom'
-        | 'add_overlay' | 'edit_overlay' | 'delete_overlay';
+        | 'add_overlay' | 'edit_overlay' | 'delete_overlay' | 'add_note' | 'edit_note' | 'delete_note';
     /** 省略時依來源秒數（start / at）自動找片段；同批前面的操作分割過也能正確定位 */
     clipId?: string;
     /** 省略 clipId 時可指定素材，避免同一來源時間出現在多個片段 */
@@ -163,6 +171,14 @@ export type EditOperation = {
     shape?: Overlay['shape'];
     border?: Overlay['border'];
     shadow?: boolean;
+    /** add_note：時間軸秒數（看成品時記的時間）；省略時用 start（來源秒數）＋ mediaId／clipId */
+    timelineTime?: number;
+    /** edit_note / delete_note 用 noteId 指定；cat／status／reply／by 見 review.ts */
+    noteId?: string;
+    cat?: ReviewNote['cat'];
+    status?: ReviewNote['status'];
+    reply?: string;
+    by?: ReviewNote['by'];
     review?: 'confirmed' | 'needs_review';
     reason?: string;
 };
@@ -269,6 +285,51 @@ function applyZoomOp(next: ProjectData, op: EditOperation, id: () => string): ob
         ...(visible.length ? {} : { warning: '此區段目前不在時間軸上（已被剪掉），不會出現在成品' }) };
 }
 
+function applyNoteOp(next: ProjectData, op: EditOperation, id: () => string): object {
+    if (op.type === 'add_note') {
+        let mediaId = op.mediaId ?? (op.clipId ? next.timelineClips.find(c => c.id === op.clipId)?.mediaId : undefined);
+        let t = op.start;
+        if (finite(op.timelineTime)) {
+            const hit = timelineToSource(next.timelineClips, op.timelineTime);
+            requireEdit(hit, 'CLIP_NOT_FOUND', `時間軸 ${op.timelineTime} 秒沒有片段`);
+            mediaId = hit.mediaId; t = hit.source;
+        } else if (!mediaId && finite(t)) {
+            const ids = [...new Set(next.timelineClips.filter(c => t! >= c.trimStart && t! < c.trimEnd).map(c => c.mediaId))];
+            requireEdit(ids.length === 1, ids.length ? 'CLIP_AMBIGUOUS' : 'CLIP_NOT_FOUND',
+                ids.length ? `來源時間 ${t} 出現在多個素材，請指定 mediaId` : `沒有片段包含來源時間 ${t}`);
+            mediaId = ids[0];
+        }
+        requireEdit(finite(t), 'INVALID_RANGE', 'add_note 需提供 timelineTime（時間軸秒數）或 start（來源秒數）');
+        const media = next.mediaItems.find(m => m.id === mediaId);
+        requireEdit(media, 'MEDIA_NOT_FOUND', `找不到素材 ${mediaId}`);
+        const note: ReviewNote = { id: id(), t: Math.round(t * 1000) / 1000, cat: op.cat ?? '其他', text: (op.text ?? '').trim(),
+            status: op.status ?? 'open', createdAt: Date.now(), ...(op.by ? { by: op.by } : {}), ...(op.reply ? { reply: op.reply } : {}) };
+        requireEdit(REVIEW_CATS.includes(note.cat), 'INVALID_NOTE', `類型需為 ${REVIEW_CATS.join('／')}`);
+        media.reviewNotes = [...(media.reviewNotes ?? []), note];
+        const error = checkNotes(media.reviewNotes, media.info.duration);
+        requireEdit(!error, 'INVALID_NOTE', error!);
+        return { type: op.type, noteId: note.id, mediaId: media.id, source: note.t, text: note.text };
+    }
+    requireEdit(typeof op.noteId === 'string', 'NOTE_REQUIRED', `${op.type} 需提供 noteId`);
+    const media = next.mediaItems.find(m => m.reviewNotes?.some(n => n.id === op.noteId));
+    requireEdit(media, 'NOTE_NOT_FOUND', `找不到審片標註 ${op.noteId}`);
+    const before = media.reviewNotes!.find(n => n.id === op.noteId)!;
+    if (op.type === 'delete_note') {
+        media.reviewNotes = media.reviewNotes!.filter(n => n.id !== op.noteId);
+        return { type: op.type, noteId: before.id, mediaId: media.id, removed: before };
+    }
+    const note: ReviewNote = { ...before };
+    if (op.text !== undefined) note.text = op.text.trim();
+    if (op.cat !== undefined) note.cat = op.cat;
+    if (op.status !== undefined) note.status = op.status;
+    if (op.reply !== undefined) { if (op.reply) note.reply = op.reply; else delete note.reply; }
+    if (finite(op.start)) note.t = op.start;
+    media.reviewNotes = media.reviewNotes!.map(n => n.id === note.id ? note : n);
+    const error = checkNotes(media.reviewNotes, media.info.duration);
+    requireEdit(!error, 'INVALID_NOTE', error!);
+    return { type: op.type, noteId: note.id, mediaId: media.id, status: note.status, before: { status: before.status, text: before.text } };
+}
+
 /** add_zoom / add_overlay：依 start 所在片段決定素材（可用 mediaId 或 clipId 指定）。 */
 function mediaForAdd(next: ProjectData, op: EditOperation) {
     requireEdit(finite(op.start) && finite(op.end), 'INVALID_RANGE', `${op.type} 需提供來源秒數 start、end`);
@@ -356,6 +417,10 @@ export function evaluatePlan(project: ProjectData, revision: number, plan: EditP
         }
         if (op.type === 'add_overlay' || op.type === 'edit_overlay' || op.type === 'delete_overlay') {
             changes.push(applyOverlayOp(next, op, id));
+            continue;
+        }
+        if (op.type === 'add_note' || op.type === 'edit_note' || op.type === 'delete_note') {
+            changes.push(applyNoteOp(next, op, id));
             continue;
         }
         const c = op.clipId ? next.timelineClips.find(c => c.id === op.clipId) : locateClip(next.timelineClips, op);

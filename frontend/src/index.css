@@ -3169,3 +3169,242 @@ button.ai-status:not(.active) .ai-dot { background: var(--fg-overlay0); }
 .seg-fit { font-size: 12px; padding: 4px 8px !important; border-left: 1px solid var(--bg-surface1) !important; }
 .help-dot { width: 20px; height: 20px; font-size: 12px; }
 .help-faq-group h4 { margin: 8px 0 2px; font-size: 12px; font-weight: 600; color: var(--accent-amber); }
+
+/* ── AI 現身層：進行式狀態、新物件閃爍、幽靈游標 ── */
+.ai-status.live { border-color: var(--accent-amber); color: var(--fg-text); }
+.ai-status.live .ai-dot { background: var(--accent-amber); animation: ai-pulse 0.9s ease-in-out infinite; }
+.track-clip.ai-fresh { outline: 2px solid var(--accent-amber); outline-offset: 1px; animation: ai-fresh-pulse 0.7s ease-in-out 4; z-index: 3; }
+@keyframes ai-fresh-pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(245, 165, 36, 0); } 50% { box-shadow: 0 0 0 5px rgba(245, 165, 36, .55); } }
+.ai-cursor { position: fixed; left: 0; top: 0; z-index: 9999; pointer-events: none; opacity: 0;
+  transition: transform 650ms cubic-bezier(.45, .05, .25, 1), opacity 250ms ease; will-change: transform; }
+.ai-cursor.on { opacity: 1; }
+.ai-cursor svg { display: block; filter: drop-shadow(0 2px 3px rgba(0,0,0,.5)); }
+.ai-cursor-tag { position: absolute; left: 18px; top: 20px; white-space: nowrap; font-size: 11px; font-weight: 700; line-height: 1;
+  padding: 3px 7px; border-radius: 999px; background: var(--accent-amber); color: #1b1b24; }
+.ai-cursor-ripple { position: absolute; left: -14px; top: -14px; width: 30px; height: 30px; border-radius: 50%;
+  border: 2px solid var(--accent-amber); animation: ai-ripple 600ms ease-out forwards; }
+@keyframes ai-ripple { from { transform: scale(.3); opacity: 1; } to { transform: scale(1.8); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .ai-cursor { display: none; }
+  .track-clip.ai-fresh, .ai-status.live .ai-dot { animation: none; }
+}
+
+/* AI 控制連線中斷（會自動重連）：藥丸轉成危險色，點開可立刻重連 */
+.ai-status.down, button.ai-status.down:hover { border-color: var(--danger); color: var(--danger); }
+button.ai-status.down .ai-dot { background: var(--danger); animation: ai-pulse 1.2s ease-in-out infinite; }
+.ai-log-down { margin: 0 0 8px; padding: 8px 10px; border-radius: 8px; font-size: 12px; line-height: 1.5;
+  color: var(--fg-text); background: color-mix(in srgb, var(--danger) 14%, transparent); border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent); }
+.ai-log-down .btn { margin-left: 6px; vertical-align: baseline; }
+@media (prefers-reduced-motion: reduce) { button.ai-status.down .ai-dot { animation: none; } }
+
+/* ── 配音修正 ── */
+.modal-box.voice-modal { width: min(860px, 94vw); max-width: none; display: flex; flex-direction: column; gap: 12px; }
+.modal-box.voice-modal .modal-header { margin-bottom: 0; }
+.voice-toolbar { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
+.voice-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--fg-subtext0); flex: 1; min-width: 200px; }
+.voice-field select { background: var(--bg-base); color: var(--fg-text); border: 1px solid var(--bg-surface2); border-radius: var(--radius-sm); padding: 6px 8px; font: inherit; font-size: 13px; }
+.voice-filters { display: flex; gap: 6px; flex-wrap: wrap; }
+.voice-chip { background: var(--bg-base); color: var(--fg-subtext1); border: 1px solid var(--bg-surface2); border-radius: 999px; padding: 3px 12px; font: inherit; font-size: 12.5px; cursor: pointer; }
+.voice-chip.active { border-color: var(--action); color: var(--fg-text); }
+.voice-chip-n { font-family: var(--font-mono); color: var(--fg-subtext0); margin-left: 2px; font-variant-numeric: tabular-nums; }
+.voice-msg { color: var(--fg-subtext0); font-size: 13px; padding: 8px 0; list-style: none; }
+.voice-msg code { font-family: var(--font-mono); font-size: 12px; color: var(--fg-subtext1); word-break: break-all; }
+.voice-error { color: var(--danger); }
+.voice-list { list-style: none; display: flex; flex-direction: column; gap: 6px; overflow-y: auto; max-height: 62vh; padding-right: 4px; }
+.voice-seg { font-family: var(--font-mono); font-size: 11px; letter-spacing: .06em; color: var(--fg-overlay0); text-transform: uppercase; margin: 8px 0 2px; }
+.voice-row { border: 1px solid var(--border); border-left: 3px solid var(--bg-surface2); border-radius: var(--radius-sm); background: var(--bg-mantle); padding: 8px 10px; display: flex; flex-direction: column; gap: 8px; }
+.voice-row.st-ok { border-left-color: var(--ok); }
+.voice-row.st-bad { border-left-color: var(--danger); }
+.voice-row.recording { border-color: var(--danger); }
+.voice-line { display: flex; align-items: center; gap: 10px; }
+.voice-text { flex: 1; min-width: 0; font-size: 14px; line-height: 1.55; color: var(--fg-text); }
+.voice-play { flex: none; width: 32px; height: 32px; border-radius: 50%; border: 1px solid var(--bg-surface2); background: var(--bg-surface0); color: var(--fg-text); display: grid; place-items: center; cursor: pointer; }
+.voice-play.on, .voice-play:hover:not(:disabled) { border-color: var(--action); color: var(--action); }
+.voice-play svg, .voice-btn svg { width: 15px; height: 15px; }
+.voice-acts, .voice-fix { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.voice-fix { padding-left: 42px; }
+.voice-btn { display: inline-flex; align-items: center; gap: 5px; background: var(--bg-surface0); color: var(--fg-subtext1); border: 1px solid var(--bg-surface2); border-radius: var(--radius-sm); padding: 4px 9px; font: inherit; font-size: 12.5px; cursor: pointer; white-space: nowrap; }
+.voice-btn:hover:not(:disabled) { color: var(--fg-text); border-color: var(--fg-overlay0); }
+.voice-btn:disabled, .voice-play:disabled { opacity: .45; cursor: default; }
+.voice-btn.good.on { color: var(--ok); border-color: var(--ok); }
+.voice-btn.bad.on { color: var(--danger); border-color: var(--danger); }
+.voice-btn.rec { color: var(--danger); }
+.voice-btn.rec.on { background: var(--danger); color: var(--bg-void); border-color: var(--danger); font-variant-numeric: tabular-nums; }
+.voice-note { flex: 1; min-width: 180px; background: var(--bg-base); color: var(--fg-text); border: 1px solid var(--bg-surface2); border-radius: var(--radius-sm); padding: 5px 8px; font: inherit; font-size: 13px; }
+.voice-note:focus, .voice-btn:focus-visible, .voice-play:focus-visible, .voice-chip:focus-visible { outline: 2px solid var(--action); outline-offset: 1px; }
+.voice-foot { font-size: 12px; color: var(--fg-subtext0); }
+
+/* 套用前審核清單（設定 → 進階的計畫檢查） */
+.plan-audit { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
+.plan-audit-item { padding: 6px 8px; border-radius: 6px; line-height: 1.5; }
+.plan-audit-item.block { background: color-mix(in srgb, #e5484d 14%, transparent); }
+.plan-audit-item.warn { background: color-mix(in srgb, #f5a524 14%, transparent); }
+.plan-audit-item b { margin-right: 4px; }
+.plan-audit-item label { display: flex; gap: 6px; align-items: flex-start; cursor: pointer; }
+
+/* ── 審片意見（右欄「審片」分頁＋時間尺上的旗標） ── */
+.review-flag { position: absolute; top: 0; width: 10px; height: 14px; margin-left: -1px; padding: 0; border: none; cursor: pointer;
+  background: var(--danger); clip-path: polygon(0 0, 100% 0, 100% 62%, 0 100%); z-index: 3; }
+.review-flag.fixed { background: var(--ok); opacity: .7; }
+.review-flag.skip { background: var(--fg-overlay0); opacity: .6; }
+.review-flag:hover, .review-flag:focus-visible { transform: scale(1.25); transform-origin: top left; }
+.tab-badge { margin-left: 5px; min-width: 16px; padding: 0 5px; border-radius: 8px; font-size: 11px; line-height: 16px;
+  background: var(--danger); color: #1b0d10; display: inline-block; text-align: center; font-variant-numeric: tabular-nums; }
+.review-panel { display: flex; flex-direction: column; gap: 8px; padding: 0 10px 12px; min-height: 0; overflow-y: auto; flex: 1; }
+.review-count { font-size: 12px; color: var(--fg-subtext0); font-variant-numeric: tabular-nums; }
+.review-form { display: flex; flex-direction: column; gap: 6px; padding: 8px; border-radius: var(--radius-sm); background: var(--glass-light); }
+.review-form textarea { width: 100%; resize: vertical; }
+.review-form-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.review-time { width: 72px; font-family: var(--font-mono); text-align: center; }
+.review-cats { display: flex; gap: 3px; flex-wrap: wrap; }
+.review-cat { border: 1px solid var(--border); background: transparent; color: var(--fg-subtext1); border-radius: 5px; padding: 1px 7px; font-size: 12px; cursor: pointer; }
+.review-cat.on { background: var(--action); color: var(--action-ink); border-color: var(--action); font-weight: 600; }
+.review-msg { font-size: 12px; color: var(--fg-subtext0); }
+.review-paste { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
+.review-filter { display: flex; gap: 4px; }
+.review-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.review-empty { color: var(--fg-subtext0); font-size: 12px; padding: 14px 6px; text-align: center; border: 1px dashed var(--border); border-radius: var(--radius-sm); }
+.review-item { display: grid; grid-template-columns: auto 1fr; gap: 8px; padding: 7px 8px; border-radius: var(--radius-sm); background: var(--glass-light); }
+.review-item.fixed, .review-item.skip { opacity: .6; }
+.review-tc { border: none; background: none; padding: 0; color: var(--action); font-family: var(--font-mono); font-weight: 700; font-size: 13px; cursor: pointer; align-self: start; font-variant-numeric: tabular-nums; }
+.review-tc:disabled { color: var(--fg-overlay0); cursor: default; font-family: var(--font); font-weight: 400; font-size: 11px; }
+.review-body { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.review-top { display: flex; align-items: center; gap: 5px; }
+.review-spacer { flex: 1; }
+.review-tag { font-size: 11px; padding: 0 6px; border-radius: 4px; background: color-mix(in srgb, var(--action) 18%, transparent); color: var(--action); }
+.review-status { font-size: 11px; padding: 0 6px; border-radius: 4px; border: none; cursor: pointer; }
+.review-status.open { background: color-mix(in srgb, var(--danger) 20%, transparent); color: var(--danger); }
+.review-status.fixed { background: color-mix(in srgb, var(--ok) 20%, transparent); color: var(--ok); }
+.review-status.skip { background: var(--bg-surface1); color: var(--fg-subtext0); }
+.review-by { font-size: 11px; color: var(--fg-subtext0); }
+.review-text { font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.review-reply { font-size: 12px; color: var(--ok); border-left: 2px solid var(--ok); padding-left: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.review-confirm { display: inline-flex; gap: 4px; align-items: center; font-size: 12px; }
+
+/* ── 配樂（左欄設定＋時間軸配樂列） ── */
+.music-controls { display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+.music-file { display: flex; align-items: center; gap: 6px; min-width: 0; flex-wrap: wrap; }
+.music-row { flex-wrap: wrap; }
+.music-file > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.music-file svg { width: 14px; height: 14px; flex-shrink: 0; color: var(--accent-teal); }
+.music-row { display: flex; align-items: center; gap: 8px; }
+.music-row input[type="range"] { flex: 1; min-width: 0; }
+.music-check { cursor: pointer; }
+.music-val { font-size: 12px; color: var(--fg-subtext0); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.music-num { width: 64px; }
+.music-track { height: 30px; }
+.music-track .track-content { position: relative; }
+.music-bar { position: absolute; top: 4px; bottom: 4px; border-radius: 4px; overflow: hidden;
+  background: color-mix(in srgb, var(--accent-teal) 22%, transparent); border: 1px solid color-mix(in srgb, var(--accent-teal) 45%, transparent); }
+.music-bar-name { position: sticky; left: 0; padding: 0 6px; font-size: 11px; line-height: 20px; color: var(--accent-teal); white-space: nowrap; }
+.music-duck { position: absolute; top: 4px; bottom: 4px; background: rgba(0, 0, 0, 0.38); pointer-events: none; }
+.music-beat { position: absolute; bottom: 4px; width: 1px; height: 7px; background: color-mix(in srgb, var(--accent-teal) 80%, white); pointer-events: none; }
+
+/* ═══════════════════════════════════════════════════════════════════
+   視覺平衡（2026-11-21 獨立審查後整理）
+   顏色只做一件事：琥珀＝主要動作、青綠＝選取／字幕、紅＝播放頭與錯誤、
+   紫＝審片意見；時間軸各軌顏色一律用 --track-* token。
+   ═══════════════════════════════════════════════════════════════════ */
+:root {
+  --radius-md: 10px;                 /* 之前未定義 → 對話框變直角 */
+  --review: var(--accent-mauve);     /* 審片意見：待處理不是錯誤，不用紅色 */
+  --track-zoom: #f0a8d0;             /* 畫面放大：粉色，和警示橘分開 */
+  --track-music: #8fa8d8;            /* 配樂：偏灰的藍，和字幕青綠分開 */
+  --ctl-h-sm: 24px;
+}
+
+/* ── 左欄：區塊標題清楚、中文不加字距、匯入區有素材後變矮 ── */
+.left-tab { letter-spacing: 0; }
+.left-section { margin: 16px 8px 0; padding-top: 14px; gap: 10px; }
+.left-section h3 { font-size: 13px; font-weight: 700; color: var(--fg-text); }
+.media-name { word-break: normal; overflow-wrap: anywhere; }
+.upload-zone-compact { padding: 10px !important; min-height: 44px !important; }
+
+/* 配樂設定：每列「標籤｜控制｜數值」三欄對齊 */
+.music-controls { gap: 8px; }
+.music-row { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; align-items: center; gap: 6px; flex-wrap: nowrap; }
+.music-row .music-key { font-size: 12px; color: var(--fg-subtext0); }
+.music-row .music-num { width: 100%; min-width: 0; }
+.music-check { display: flex; align-items: flex-start; gap: 6px; line-height: 1.45; }
+.music-check input { margin-top: 2px; flex-shrink: 0; }
+.music-file { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; gap: 6px; }
+.music-file svg { color: var(--track-music); }
+
+/* ── 時間軸：工具列變成真正的一列（不再浮在時間尺上）；標籤欄靠左對齊 ── */
+.timeline-tools { position: static; height: 32px; padding: 0 8px; display: flex; justify-content: flex-end; align-items: center; gap: 8px;
+  border-bottom: 1px solid var(--border); background: var(--glass); flex-shrink: 0; }
+.timeline-tools .seg-group, .timeline-tools .mark-group { box-shadow: none; }
+.track-label { justify-content: flex-start; padding: 0 10px; gap: 4px; letter-spacing: 0; }
+.zoom-track-label { align-items: flex-start; justify-content: center; padding: 4px 10px; gap: 3px; }
+.zoom-track-label > span:first-child { display: inline-flex; align-items: center; gap: 4px; }
+.track-label .lucide { flex-shrink: 0; }
+.track-empty-hint { left: 12px; }
+
+/* 時間尺上的標記：播放頭是唯一的紅色；AI 改過的地方改成小圓點；審片旗用紫色 */
+.ai-mark { width: 8px; height: 8px; margin-left: -4px; top: 3px; border-radius: 50%; clip-path: none; }
+.review-flag { background: var(--review); width: 9px; height: 13px; }
+.tab-badge { background: var(--review); color: #170f26; }
+
+/* 畫面放大軌、配樂軌改用 token 色 */
+.zoom-clip { background: color-mix(in srgb, var(--track-zoom) 16%, transparent); border-color: color-mix(in srgb, var(--track-zoom) 55%, transparent); color: var(--track-zoom); }
+.zoom-clip.selected { border-color: var(--track-zoom); box-shadow: 0 0 0 1px var(--track-zoom) inset; }
+.zoom-mini-btn { min-width: var(--ctl-h-sm); height: var(--ctl-h-sm); border-radius: var(--radius-sm);
+  border-color: var(--bg-surface2); background: var(--bg-surface0); }
+.zoom-mini-btn:hover:not(:disabled) { background: var(--bg-surface1); border-color: var(--fg-overlay0); }
+.music-track { height: 36px; }
+.music-bar { background: color-mix(in srgb, var(--track-music) 20%, transparent); border-color: color-mix(in srgb, var(--track-music) 50%, transparent); }
+.music-bar-name { color: var(--track-music); line-height: 26px; }
+.music-beat { background: color-mix(in srgb, var(--track-music) 85%, white); }
+
+/* ── 審片分頁：標題和表單對齊；琥珀只留給「加入」；狀態看得出可以點 ── */
+.review-panel .subtitle-header { padding: 12px 2px 6px; border-bottom: 0; }
+.review-label { font-size: 12px; color: var(--fg-subtext0); width: 28px; flex-shrink: 0; }
+.review-time { width: 110px; text-align: left; padding-left: 8px; }
+.review-cat { min-height: var(--ctl-h-sm); padding: 2px 9px; border-radius: var(--radius-sm); }
+.review-cat.on { background: color-mix(in srgb, var(--accent-teal) 18%, transparent); color: var(--accent-teal); border-color: var(--accent-teal); }
+.review-tag { background: var(--bg-surface1); color: var(--fg-subtext1); }
+.review-tc { color: var(--fg-text); }
+.review-status { border: 1px solid currentColor; padding: 0 7px; }
+.review-status.open { background: color-mix(in srgb, var(--review) 16%, transparent); color: var(--review); }
+.review-status:hover { filter: brightness(1.15); }
+.review-item { border-left: 3px solid var(--review); }
+.review-item.fixed { border-left-color: var(--ok); }
+.review-item.skip { border-left-color: var(--fg-overlay0); }
+
+/* ── 匯出對話框：標籤欄等寬，開關／選單靠右同一條線 ── */
+.modal-box .style-row { justify-content: space-between; }
+.modal-box .style-row label:first-child { min-width: 96px; }
+.modal-box .style-row select { flex: 0 1 230px; }
+
+/* ── 標題列：AI 狀態給多一點寬度 ── */
+.app-header { padding: 0 16px; gap: 10px; }
+.ai-status { max-width: min(380px, 30vw); }
+.music-row .music-val { min-width: 42px; text-align: right; }
+.panel-left .left-tab-body, .panel-left { overflow-x: hidden; }
+.review-form-row:has(.review-cats) { flex-wrap: nowrap; align-items: flex-start; }
+.review-form-row:has(.review-cats) .review-label { padding-top: 3px; }
+.review-cats { flex: 1; min-width: 0; }
+
+/* ── 覆核後第二輪（2026-11-21）：紫色只給審片意見；軌道高度放得下兩排標籤；小控制項同高 ── */
+:root {
+  --track-zoom: #c8d46e;               /* 畫面放大：黃綠，和琥珀主色、紫色審片、藍色標註都分開 */
+  --track-overlay: var(--accent-blue); /* 標註（醒目框、箭頭、聚光燈、步驟、標題、HTML、子母畫面）一律藍色系，用圖示區分種類 */
+  --track-sub: var(--accent-teal);
+  --track-video: var(--accent-teal);
+  --handle-hover: color-mix(in srgb, var(--accent-teal) 60%, transparent);
+}
+.track.zoom-track { height: 52px; }
+.overlay-clip.kind-title, .overlay-clip.kind-spotlight, .overlay-clip.kind-html {
+  background: color-mix(in srgb, var(--track-overlay) 20%, transparent);
+  border-color: color-mix(in srgb, var(--track-overlay) 60%, transparent); color: #b4cdfa; }
+.overlay-clip.selected { border-color: var(--track-overlay); box-shadow: 0 0 0 1px var(--track-overlay) inset; }
+.clip-trim-handle:hover { background: var(--handle-hover) !important; }
+.btn-compact, .track-more { min-height: var(--ctl-h-sm); border-radius: var(--radius-sm); }
+.track-more { height: auto; }
+.review-tag, .review-status { border-radius: var(--radius-sm); }
+.review-status { display: inline-flex; align-items: center; gap: 3px; }
+.review-cycle { width: 10px; height: 10px; opacity: .8; }
+.tools-left { display: flex; gap: 6px; align-items: center; margin-right: auto; }
+/* 工具列：靠左排（右側群組用 margin-left:auto 推到右邊），窄時換行，絕不往左溢出蓋住左欄 */
+.timeline-tools { justify-content: flex-start; flex-wrap: wrap; height: auto; min-height: 32px; padding: 3px 8px; row-gap: 4px; overflow: hidden; }
+.timeline-tools > .tools-left { margin-right: auto; }

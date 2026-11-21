@@ -1,3 +1,4 @@
+import { NEW_PROJECT_MIX, type AudioMix } from './audioCheck';
 /* ── Zustand 狀態管理 ── */
 
 import { create } from 'zustand';
@@ -29,6 +30,9 @@ interface AppState {
 
     // 字幕樣式
     subtitleStyle: SubtitleStyle;
+    /** 配樂、旁白自動壓低、匯出平台響度（見 audioMix.ts） */
+    audioMix: AudioMix;
+    setAudioMix: (patch: Partial<AudioMix>) => void;
 
     // 播放
     currentTime: number;
@@ -98,6 +102,7 @@ const initialState = {
     segments: [] as Segment[],
     activeSegmentId: null as number | null,
     subtitleStyle: { ...defaultStyle } as SubtitleStyle,
+    audioMix: { ...NEW_PROJECT_MIX } as AudioMix,
     currentTime: 0,
     isPlaying: false,
     previewRequest: { time: 0, serial: 0 },
@@ -235,6 +240,7 @@ export const useStore = create<AppState>((set, get) => ({
     }),
     setActiveSegment: (id) => set({ activeSegmentId: id }),
     setSubtitleStyle: (patch) => set((s) => ({ subtitleStyle: { ...s.subtitleStyle, ...patch } })),
+    setAudioMix: (patch) => set((s) => ({ audioMix: { ...s.audioMix, ...patch } })),
 
     // ── 播放 ──
     setCurrentTime: (time) => set({ currentTime: time }),

@@ -271,9 +271,13 @@ class FFmpegService:
         video_width: int = 1920,
         video_height: int = 1080,
         cancel_event=None,
+        project_audio: dict | None = None,
     ):
         """
         多 clip 串接匯出 — yield 進度 dict
+
+        project_audio（可省略）：{"music": {path, volume, offset, loop, fadeIn, fadeOut, envelope}, "loudness": -14 | -16 | None}
+            有配樂就混進去（壓低包絡由前端算好），有響度目標就兩階段 loudnorm；結果以 {"loudness": {...}} 事件回報。
 
         Args:
             clips: [{"video_path": str, "trim_start": float, "trim_end": float,
@@ -451,6 +455,10 @@ class FFmpegService:
                     f"fps={target_fps}",  # 統一影格率 → 強制 CFR
                 ]
                 transition_video, transition_audio = transition_filters(clips, idx)
+                if any(f.startswith("fade=t=out") for f in transition_video):
+                    # 變速後實際格數常比 output_duration 少幾格，淡出做到一半畫面就斷掉、再硬切到黑（EP15 片尾實測 239→131 停 4 格→9）。
+                    # 先複製最後一格補足長度，淡出才會完整；多出來的由上面的 -t 截掉。
+                    tail.append("tpad=stop_mode=clone:stop_duration=1")
                 tail.extend(transition_video)
                 if sprites:
                     # 內容層（框／箭頭／聚光燈／步驟）疊在原解析度畫面上，會跟著縮放；標題在縮放之後疊、固定在畫面上
@@ -650,6 +658,31 @@ class FFmpegService:
             ass_p = Path(ass_path)
             has_subs = ass_p.exists() and "Dialogue:" in ass_p.read_text(encoding="utf-8-sig", errors="ignore")
 
+            # ── Step 2.5: 配樂＋平台響度（先做成一個 WAV，最後一步直接封裝） ──
+            mixed_wav = None
+            if project_audio and (project_audio.get("music") or project_audio.get("loudness")):
+                from . import audio_mix as amix
+                yield {"progress": 71, "stage": "處理聲音（配樂／響度）", "eta_seconds": calc_eta(processed)}
+                main_wav = str(temp_dir / "main_audio.wav")
+                amix._run(["ffmpeg", "-y", "-v", "error", "-i", concat_out, "-vn", "-af",
+                           f"aresample=async=1,apad=whole_dur={total_duration}", "-t", str(total_duration),
+                           "-c:a", "pcm_s16le", "-ar", str(amix.SR), "-ac", "2", main_wav], cancel_event=cancel_event)
+                cur = main_wav
+                music = project_audio.get("music")
+                if music:
+                    music_wav = str(temp_dir / "music.wav")
+                    amix.render_music(music["path"], {**music, "total": total_duration}, music_wav)
+                    mixed = str(temp_dir / "mixed.wav")
+                    amix.mix(cur, music_wav, mixed, cancel_event)
+                    cur = mixed
+                target = project_audio.get("loudness")
+                if target:
+                    normed = str(temp_dir / "normalized.wav")
+                    report = amix.normalize(cur, normed, float(target), cancel_event)
+                    cur = normed
+                    yield {"progress": 72, "stage": "響度已校正", "loudness": report}
+                mixed_wav = cur
+
             # ── Step 3: 燒入字幕 ──
             ass_abs = str(Path(ass_path).resolve())
             ass_escaped = ass_abs.replace("\\", "/").replace(":", "\\:")
@@ -664,11 +697,12 @@ class FFmpegService:
             cmd_burn = [
                 "ffmpeg", "-y",
                 "-i", concat_out,
+                *(["-i", mixed_wav, "-map", "0:v:0", "-map", "1:a:0"] if mixed_wav else []),
                 "-progress", "pipe:1",
                 "-nostats",
                 *(["-vf", vf_sub, *codec_args] if has_subs else ["-c:v", "copy"]),
                 "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
-                "-af", f"aresample=async=1,apad=whole_dur={total_duration}",
+                *([] if mixed_wav else ["-af", f"aresample=async=1,apad=whole_dur={total_duration}"]),
                 "-t", str(total_duration), "-movflags", "+faststart",
                 output_path,
             ]

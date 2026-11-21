@@ -26,6 +26,7 @@ from . import observe
 from . import zoom as zoom_service
 from . import overlay as overlay_service
 from . import asset as asset_service
+from . import audio_mix as audio_mix_service
 
 
 def fail(code, message, status=400):
@@ -77,6 +78,11 @@ def project_payload(p):
 
 
 AUTOSAVE_NAME = '.autosave.ljcut'
+
+
+def previous_path(target: Path) -> Path:
+    """專案覆寫前的上一版：同資料夾的隱藏專案「.上一版-名稱.ljcut」"""
+    return target.parent / f'.上一版-{target.name}'
 
 
 def default_workspace() -> Path:
@@ -587,6 +593,14 @@ class LocalControl:
                             overlay_dir.mkdir(exist_ok=True)
                             await asyncio.to_thread(place_asset, src, overlay_dir / src.name,
                                                     target / 'assets' / 'overlay' if overwrite else None)
+                # 配樂也一起打包（和子母畫面素材放同一個資料夾，開啟時一起還原）
+                music = ((p.get('audioMix') or {}).get('music') or {}) if isinstance(p.get('audioMix'), dict) else {}
+                mid = (music.get('asset') or {}).get('id') if isinstance(music, dict) else None
+                src = asset_service.find(self.uploads, mid) if mid else None
+                if src and not (overlay_dir / src.name).exists():
+                    overlay_dir.mkdir(exist_ok=True)
+                    await asyncio.to_thread(place_asset, src, overlay_dir / src.name,
+                                            target / 'assets' / 'overlay' if overwrite else None)
                 (staging / 'project.json').write_text(json.dumps(p, ensure_ascii=False, indent=2), encoding='utf-8')
                 target.parent.mkdir(parents=True, exist_ok=True)
                 if overwrite:
@@ -598,7 +612,16 @@ class LocalControl:
                     except Exception:
                         backup.rename(target)
                         raise
-                    shutil.rmtree(backup, ignore_errors=True)
+                    if autosave:
+                        shutil.rmtree(backup, ignore_errors=True)
+                    else:
+                        # 保留覆寫前的上一版（隱藏資料夾，開啟清單裡可以找回；只留一份）
+                        prev = previous_path(target)
+                        shutil.rmtree(prev, ignore_errors=True)
+                        try:
+                            backup.rename(prev)
+                        except OSError:
+                            shutil.rmtree(backup, ignore_errors=True)
                 else:
                     staging.rename(target)
             finally:
@@ -617,8 +640,14 @@ class LocalControl:
                     continue
                 items.append({"path": d.relative_to(self.root).as_posix(), "name": d.stem, "modified": manifest.stat().st_mtime})
             items.sort(key=lambda x: -x["modified"])
+            previous = []
+            for it in items[:50]:
+                prev = previous_path(self.root / it["path"]) / 'project.json'
+                if prev.is_file():
+                    previous.append({"path": prev.parent.relative_to(self.root).as_posix(), "of": it["path"],
+                                     "name": it["name"], "modified": prev.stat().st_mtime})
             auto = self.root / AUTOSAVE_NAME / 'project.json'
-            return {"workspace": str(self.root), "projects": items[:50],
+            return {"workspace": str(self.root), "projects": items[:50], "previous": previous,
                     "autosave": {"path": AUTOSAVE_NAME, "modified": auto.stat().st_mtime} if auto.is_file() else None}
 
         @r.post('/open')
@@ -692,6 +721,10 @@ class LocalControl:
                 offset += length
             if not clips:
                 fail('EMPTY_TIMELINE', '時間軸沒有片段')
+            try:
+                audio_mix_opts = audio_mix_service.resolve(body.get('audioMix'), offset, self.uploads)
+            except ValueError as error:
+                fail('INVALID_AUDIO_MIX', str(error))
             jid = uuid.uuid4().hex
             out_dir = self.root / 'exports' / jid
             out_dir.mkdir(parents=True)
@@ -714,7 +747,8 @@ class LocalControl:
                 job['status'] = 'running'
                 try:
                     for ev in FFmpegService.export_timeline_with_progress(clips, str(ass), job['outputPath'],
-                            use_nvenc=False, video_width=width, video_height=height, cancel_event=job['cancel']):
+                            use_nvenc=False, video_width=width, video_height=height, cancel_event=job['cancel'],
+                            project_audio=audio_mix_opts):
                         job.update(ev)
                     publication = publications.record_export(job['outputPath'], subtitle_clips, offset,
                         next(m['filename'] for m in project['mediaItems'] if m['id'] == main['mediaId']))

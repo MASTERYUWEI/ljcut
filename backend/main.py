@@ -114,6 +114,8 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="LJCUT API", version="0.1.0", lifespan=lifespan)
 local_control = LocalControl(UPLOAD_DIR)
 app.include_router(local_control.router)
+from services import voice_review  # noqa: E402  配音修正（逐句標記＋錄正確版）
+app.include_router(voice_review.router)
 
 # CORS — 允許前端 dev server
 app.add_middleware(
@@ -365,6 +367,11 @@ async def export_timeline(body: dict = Body(default={})):
         video_width=video_width, video_height=video_height,
     )
 
+    try:
+        audio_mix_opts = resolve_audio_mix(body.get("audio_mix"), cumulative_offset, UPLOAD_DIR)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
     # 決定輸出路徑
     if not output_path:
         output_path = str(OUTPUT_DIR / "timeline_output.mp4")
@@ -376,11 +383,14 @@ async def export_timeline(body: dict = Body(default={})):
         _export_cancels[export_id] = cancel
 
     def generate():
+        loudness = None
         try:
             for event in FFmpegService.export_timeline_with_progress(
                 ffmpeg_clips, ass_path, output_path,
                 video_width=video_width, video_height=video_height, cancel_event=cancel,
+                project_audio=audio_mix_opts,
             ):
+                loudness = event.get("loudness", loudness)
                 yield f"data: {json.dumps(event)}\n\n"
             publication = publication_service.record_export(output_path, caption_clips, cumulative_offset)
             # 乾淨影片＋獨立 SRT：在成品旁邊放一份同檔名的字幕檔
@@ -392,7 +402,7 @@ async def export_timeline(body: dict = Body(default={})):
                 except OSError as err:
                     print(f"⚠️ 無法在成品旁寫入 SRT: {err}")
                     srt_sidecar = None
-            yield f"data: {json.dumps({'progress': 100, 'done': True, 'output_path': output_path, 'publication_id': publication['id'], 'srt_path': srt_sidecar})}\n\n"
+            yield f"data: {json.dumps({'progress': 100, 'done': True, 'output_path': output_path, 'publication_id': publication['id'], 'srt_path': srt_sidecar, 'loudness': loudness})}\n\n"
         except Exception as e:
             if cancel.is_set():
                 print("⏹ 匯出已取消")
@@ -515,8 +525,8 @@ async def upload_asset(file: UploadFile = File(...)):
     from services import asset as asset_service
     name = (file.filename or "").replace("\\", "/").rsplit("/", 1)[-1]
     ext = Path(name).suffix.lower()
-    if ext not in asset_service.IMAGE_EXT | asset_service.VIDEO_EXT:
-        raise HTTPException(400, "子母畫面支援 PNG／JPG／WebP／BMP 圖片與 MP4／MOV／MKV／WebM／AVI／WMV／GIF 影片")
+    if ext not in asset_service.IMAGE_EXT | asset_service.VIDEO_EXT | asset_service.AUDIO_EXT:
+        raise HTTPException(400, "支援 PNG／JPG／WebP／BMP 圖片、MP4／MOV／MKV／WebM／AVI／WMV／GIF 影片與 MP3／WAV／M4A／AAC／FLAC／OGG 配樂")
     tmp = UPLOAD_DIR / f".asset-{uuid.uuid4().hex}{ext}"
     try:
         with open(tmp, "wb") as f:
@@ -526,6 +536,27 @@ async def upload_asset(file: UploadFile = File(...)):
         raise HTTPException(400, str(e))
     finally:
         tmp.unlink(missing_ok=True)
+
+
+@app.get("/api/audio/beats/{asset_id}")
+async def audio_beats(asset_id: str):
+    """配樂的節拍點（素材秒數），時間軸配樂列顯示用。結果快取在素材旁的 .beats.json。"""
+    from services import asset as asset_service
+    from services import audio_mix
+    path = asset_service.find(UPLOAD_DIR, asset_id)
+    if not path:
+        raise HTTPException(404, f"找不到配樂 {asset_id}")
+    cache = path.with_name(path.name + ".beats.json")
+    if cache.is_file() and cache.stat().st_mtime >= path.stat().st_mtime:
+        return json.loads(cache.read_text(encoding="utf-8"))
+    res = await asyncio.to_thread(audio_mix.beats, str(path))
+    cache.write_text(json.dumps(res), encoding="utf-8")
+    return res
+
+
+def resolve_audio_mix(raw, total: float, uploads: Path):
+    from services import audio_mix
+    return audio_mix.resolve(raw, total, uploads)
 
 
 @app.post("/api/overlay/media-decor")
