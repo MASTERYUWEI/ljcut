@@ -151,7 +151,9 @@ LJ Cut 重開後不必重啟 MCP。
 ## 守門與旅程測試
 
 - `cd frontend; npm run check`：型別、node 測試、build、`scripts/check-arch.mjs --bundle`（循環引用、核心層不得引用 React／元件、主 bundle ≤ 560 KB）。
-- `backendenv\Scripts\python.exe scripts\journey_test.py`：暫存資料夾起獨立後端，匯入→剪接→存檔→清掉素材後重開→匯出→驗長度／影格數／剪接點影格對位／SRT／響度／原素材不變，證據在 `reports/journey/<時間>/`。
+- `backend\venv\Scripts\python.exe scripts\journey_test.py`：暫存資料夾起獨立後端，匯入→剪接→存檔→清掉素材後重開→匯出→驗長度／影格數／剪接點影格對位／SRT／響度／原素材不變，證據在 `reports/journey/<時間>/`。
+- `backend\venv\Scripts\python.exe scripts\corpus_test.py [案例…]`：**逐格驗證匯出**（點子來自 Concat 的 corpus，程式自寫）。測試素材每格左上角有條碼寫著「素材幾、第幾格」，每個素材秒數開頭有一聲音高代表素材的嗶；匯出後逐格讀回，和由片段設定推算的答案比對，連聲音位置一起驗，並比對雙胞胎做法與存檔重開。案例在 `scripts/corpus/cases.py`，證據在 `reports/corpus/<時間>/`。條碼素材抓不到所有真實情況（例如配音比畫面長、剪到素材尾端），改到匯出時還要拿一支真實專案重匯，和舊成品比對音畫偏移。
+  2026-11-26 第一次跑就抓到兩個真問題並已修正：裁切點不在整格上時匯出比預覽晚一格（odd-trim）；多段剪接時每段畫面進位成整格、聲音照實際長度，畫面越接越晚（many-cuts：12 段差 5 格）。現在每段切在成品的共用格線上。
 - 覆寫存檔會保留上一版（隱藏的 `.上一版-名稱.ljcut`），「開啟」清單最下面可找回。
 
 ## 相關改動

@@ -2,6 +2,7 @@
 
 import json
 import os
+import math
 import subprocess
 from fractions import Fraction
 from pathlib import Path
@@ -339,6 +340,15 @@ class FFmpegService:
                 return None  # 還估不準
             return int(max(0, el * (1 - frac) / frac))
 
+        # 每段在成品格線上的範圍：第 i 段佔成品第 grid[i]～grid[i+1]-1 格（預覽的定義：成品第 k 格顯示「k/fps 這一刻」所在的片段）。
+        # 畫面與聲音都切在這條格線上 → 切點最多偏不到一格、而且不累積。
+        # 以前每段各自進位成整格、聲音照實際長度，接越多段畫面越晚（12 段 0.517 秒就差 5 格）。逐格驗證：scripts/corpus_test.py many-cuts
+        starts, acc = [], 0.0
+        for c in clips:
+            starts.append(acc)
+            acc += float(c.get("output_duration", 0))
+        grid = [math.ceil(t * target_fps - 1e-6) for t in starts] + [math.ceil(acc * target_fps - 1e-6)]
+
         html_renderer = None   # HTML 動畫需要時才開無頭瀏覽器，整個匯出共用一個
         try:
             # ── Step 1: 逐 clip 產生標準化暫存檔 ──
@@ -346,9 +356,12 @@ class FFmpegService:
                 if cancel_event is not None and cancel_event.is_set():
                     raise RuntimeError('Export cancelled')
                 video_path = clip["video_path"]
-                trim_start = float(clip.get("trim_start", 0))
-                trim_end = float(clip.get("trim_end", 0))
                 speed = float(clip.get("speed", 1.0))
+                # 這段在格線上的起點比片段起點晚 lead 秒（不到一格），長度是整數格；來源範圍跟著換算
+                lead = grid[idx] / target_fps - starts[idx]
+                frames_here = max(1, grid[idx + 1] - grid[idx])
+                trim_start = float(clip.get("trim_start", 0)) + lead * speed
+                trim_end = trim_start + frames_here / target_fps * speed
                 clip_dur = trim_end - trim_start
 
                 # PCM avoids adding AAC encoder priming at every edit boundary.
@@ -357,14 +370,21 @@ class FFmpegService:
 
                 cmd = ["ffmpeg", "-y"]
                 cmd.append('-nostdin')
-                # 裁切
-                if trim_start > 0:
-                    cmd += ["-ss", str(trim_start)]
-                cmd += ["-i", video_path]
                 media_info = FFmpegService.get_media_info(video_path)
+                # 裁切：畫面對齊預覽——播放器在時間 t 顯示的是「起點 ≤ t 的最後一格」，
+                # 所以跳轉點往下對齊到那一格的起點（直接 -ss 0.517 會丟掉 0.5 開始的那格，整段晚一格）；
+                # 聲音仍從真正的裁切點開始（下面 atrim 補回不到一格的差）。逐格驗證：scripts/corpus_test.py odd-trim
+                src_fps = float(media_info.get('fps') or 0)
+                seek = math.floor(trim_start * src_fps + 1e-6) / src_fps if src_fps > 0 else trim_start
+                audio_lead = max(0.0, trim_start - seek)
+                if seek > 0:
+                    cmd += ["-ss", f"{seek:.6f}"]
+                cmd += ["-i", video_path]
                 has_audio = bool(media_info.get('audio_codec'))
                 if not has_audio:
                     cmd += ['-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=48000']
+                # 沒有聲音時補的是 anullsrc，不用對齊
+                a_trim = [f"atrim=start={audio_lead:.6f}"] if (audio_lead > 1e-6 and has_audio) else []
                 src_w, src_h = media_info.get('width') or 0, media_info.get('height') or 0
                 seg_out = (clip_dur / speed) if clip_dur > 0 else 0
 
@@ -431,8 +451,7 @@ class FFmpegService:
                     sprites.append((o, info, inp))
                     cmd += ["-loop", "1", "-framerate", str(target_fps), "-t", f"{seg_out + 1:.3f}", "-i", info["path"]]
 
-                cmd += ['-map', '[vout]' if sprites else '0:v:0',
-                        '-map', '[aout]' if audio_mix else ('0:a:0' if has_audio else '1:a:0')]
+                cmd += ['-map', '[vout]', '-map', '[aout]']   # 畫面、聲音一律走下面的濾鏡圖
                 if clip_dur > 0:
                     cmd += ["-t", str(clip_dur / speed)]
 
@@ -455,10 +474,10 @@ class FFmpegService:
                     f"fps={target_fps}",  # 統一影格率 → 強制 CFR
                 ]
                 transition_video, transition_audio = transition_filters(clips, idx)
-                if any(f.startswith("fade=t=out") for f in transition_video):
-                    # 變速後實際格數常比 output_duration 少幾格，淡出做到一半畫面就斷掉、再硬切到黑（EP15 片尾實測 239→131 停 4 格→9）。
-                    # 先複製最後一格補足長度，淡出才會完整；多出來的由上面的 -t 截掉。
-                    tail.append("tpad=stop_mode=clone:stop_duration=1")
+                # 一律複製最後一格補足長度、多的由 -t 截掉：每段必須剛好是格線上的格數。
+                # 片段剪到素材尾端時來源常不夠長（配音比畫面長、變速後少幾格），串接時下一段會往前擠、音畫越接越錯開
+                # （露營片實測：不補時片尾聲音早 106ms）；淡出也才做得完整（EP15 片尾實測 239→131 停 4 格→9）。
+                tail.append("tpad=stop_mode=clone:stop_duration=1")
                 tail.extend(transition_video)
                 if sprites:
                     # 內容層（框／箭頭／聚光燈／步驟）疊在原解析度畫面上，會跟著縮放；標題在縮放之後疊、固定在畫面上
@@ -528,7 +547,7 @@ class FFmpegService:
                     if audio_mix:
                         # 子母畫面的聲音：與主聲音同樣變速，延後到出現時間，依音量混入（不壓低主聲音）
                         main_a = "0:a" if has_audio else "1:a"
-                        graph.append(f"[{main_a}]{','.join(['asetpts=PTS-STARTPTS', *_atempo(speed)])},"
+                        graph.append(f"[{main_a}]{','.join([*a_trim, 'asetpts=PTS-STARTPTS', *_atempo(speed)])},"
                                      f"aformat=sample_rates=48000:channel_layouts=stereo[am]")
                         mixes = ["[am]"]
                         for n, (ainp, o, ta) in enumerate(audio_mix):
@@ -537,21 +556,13 @@ class FFmpegService:
                                          f"aformat=sample_rates=48000:channel_layouts=stereo,volume={o['volume']:.3f},"
                                          f"adelay={delay}:all=1[ap{n}]")
                             mixes.append(f"[ap{n}]")
-                        post = ",".join(transition_audio) if transition_audio else "anull"
+                        post = ",".join([*transition_audio, "apad"])   # 補滿這段長度，見下方 af_parts 的說明
                         graph.append(f"{''.join(mixes)}amix=inputs={len(mixes)}:duration=first:normalize=0,{post}[aout]")
-                    script = temp_dir / f"clip_{idx}.fc.txt"
-                    script.write_text(";\n".join(graph), encoding="utf-8")
-                    cmd += ["-filter_complex_script", str(script)]
-                elif zooms:
-                    # 縮放表達式可能很長：寫成檔案讀入，避開 Windows 命令列 32K 字元上限
-                    vf_file = temp_dir / f"clip_{idx}.vf.txt"
-                    vf_file.write_text(",".join([f"setpts={speed_expr}", *fit_step, *tail]), encoding="utf-8")
-                    cmd += ["-filter_script:v", str(vf_file)]
                 else:
-                    cmd += ["-vf", ",".join([f"setpts={speed_expr}", *fit_step, *tail])]
+                    graph = [f"[0:v]{','.join([f'setpts={speed_expr}', *fit_step, *tail])}[vout]"]
 
                 # 音訊：重置 PTS（+ 變速）並統一格式
-                af_parts = ["asetpts=PTS-STARTPTS"]
+                af_parts = [*a_trim, "asetpts=PTS-STARTPTS"]
                 if speed != 1.0:
                     remaining = speed
                     while remaining > 2.0:
@@ -561,8 +572,15 @@ class FFmpegService:
                         remaining = 0.5
                     af_parts.append(f"atempo={remaining:.4f}")
                 af_parts.extend(transition_audio)
-                if not audio_mix:   # 有子母畫面聲音時，音訊已在 filter_complex 裡處理
-                    cmd += ["-af", ",".join(af_parts)]
+                # 補靜音到這段的長度（多的由 -t 截掉）：串接時聲音是緊貼著接的，這段聲音短一點，後面全部往前擠。
+                af_parts.append("apad")
+                if not audio_mix:   # 有子母畫面聲音時，音訊已在上面的濾鏡圖裡處理
+                    graph.append(f"[{'0:a' if has_audio else '1:a'}]{','.join(af_parts)}[aout]")
+                # 一律寫成濾鏡圖檔：縮放表達式可能很長（避開 Windows 命令列 32K 上限）；
+                # 而且 -vf/-af 簡單寫法在 ffmpeg 7.1 遇到「atempo>1 ＋ apad ＋ -t」會卡住不結束，濾鏡圖寫法不會。
+                script = temp_dir / f"clip_{idx}.fc.txt"
+                script.write_text(";\n".join(graph), encoding="utf-8")
+                cmd += ["-filter_complex_script", str(script)]
 
                 cmd += [
                     "-r", str(target_fps),
