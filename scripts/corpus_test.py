@@ -50,7 +50,10 @@ class Backend:
             s.bind(("127.0.0.1", 0)); port = s.getsockname()[1]
         env = {**os.environ, "LJCUT_DATA_DIR": str(self.tmp / "data"), "LJCUT_CONTROL_WORKSPACE": str(self.ws), "PYTHONUTF8": "1"}
         self.log = open(self.tmp / "backend.log", "w", encoding="utf-8")
-        self.proc = subprocess.Popen([str(PY), str(ROOT / "backend" / "server_entry.py"), "--port", str(port)], cwd=str(ROOT / "backend"),
+        # LJCUT_CORPUS_BACKEND＝打包後的 ljcut-backend.exe：發版前確認凍結版也帶到這次的修正
+        exe = os.environ.get("LJCUT_CORPUS_BACKEND")
+        cmd = [exe] if exe else [str(PY), str(ROOT / "backend" / "server_entry.py")]
+        self.proc = subprocess.Popen([*cmd, "--port", str(port)], cwd=str(ROOT / "backend"),
                                      env=env, stdout=self.log, stderr=subprocess.STDOUT, creationflags=FLAGS)
         self.base = f"http://127.0.0.1:{port}"
         deadline = time.monotonic() + 90
